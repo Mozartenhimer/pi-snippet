@@ -20,11 +20,26 @@ class FakeTui implements TuiLike {
 	lines: string[] = [];
 	written: string[] = [];
 	listeners: Array<(data: string) => { consume?: boolean } | undefined> = [];
+	/** pi-tui's buffer-relative cursor row bookkeeping. */
+	hardwareCursorRow = 0;
+	renderRequests = 0;
+
+	requestRender(): void {
+		this.renderRequests++;
+	}
+	/**
+	 * Where the cursor really is on screen, 1-based, as the emulator would
+	 * answer a DSR query. null: the terminal never answers (fallback path).
+	 */
+	cursorScreenRow: number | null = 1;
 	terminal = {
 		columns: 80,
 		rows: 24,
 		write: (data: string) => {
 			this.written.push(data);
+			if (data.includes("\x1b[6n") && this.cursorScreenRow !== null) {
+				this.send(`\x1b[${this.cursorScreenRow};1R`);
+			}
 		},
 	};
 
@@ -39,10 +54,16 @@ class FakeTui implements TuiLike {
 		};
 	}
 
-	/** Drives a render the way TUI.doRender does, so the cache fills. */
+	/**
+	 * Drives a render the way TUI.doRender does, so the cache fills. The cursor
+	 * lands on the last buffer line; on screen that is bottom-aligned once the
+	 * buffer overflows the terminal (a row-0 start, like `script` gives).
+	 */
 	draw(lines: string[]): void {
 		this.lines = lines;
 		this.render(this.terminal.columns);
+		this.hardwareCursorRow = Math.max(0, lines.length - 1);
+		this.cursorScreenRow = Math.min(lines.length, this.terminal.rows);
 	}
 
 	send(data: string): { consume?: boolean } | undefined {
@@ -180,6 +201,61 @@ describe("hit testing", () => {
 		// "やる " is 5 columns; the chip runs from column 5 to 5 + 3 + 10 + 1.
 		tui.send(click(8, 1));
 		assert.deepEqual(activated, ["1"]);
+	});
+});
+
+describe("screen offset (pi launched mid-screen — the Ghostty case)", () => {
+	it("maps clicks through the true offset when pi started below a shell prompt", () => {
+		// pi drew two lines starting at screen row 11: shell history above is not
+		// pi's, and pi never clears the screen.
+		tui.draw(["Want me to [1 rebuild the solution]", "or press a key"]);
+		tui.hardwareCursorRow = 1; // cursor on buffer line 1 …
+		tui.cursorScreenRow = 12; // … which really sits at screen row 12
+		tui.send(click(13, 11)); // the chip's true screen position
+		assert.deepEqual(activated, ["1"]);
+		assert.ok(tui.renderRequests > 0, "insertion must repaint: consumed input skips pi's render pass");
+		tui.send(click(13, 1)); // where the naive mapping would look
+		assert.deepEqual(activated, ["1"], "screen row 1 is shell scrollback, not pi");
+	});
+
+	it("issues one cursor-position query per click burst and consumes the report", () => {
+		tui.draw(["Want me to [1 rebuild the solution]"]);
+		tui.cursorScreenRow = null; // hold the answer to inspect the exchange
+		tui.send(click(13, 1));
+		tui.send(click(41, 1));
+		const queries = tui.written.filter((w) => w.includes("\x1b[6n"));
+		assert.equal(queries.length, 1, "second click reuses the outstanding query");
+		assert.deepEqual(activated, [], "clicks wait for the terminal's answer");
+		const result = tui.send("\x1b[1;1R");
+		assert.deepEqual(result, { consume: true }, "the report never reaches the editor");
+		assert.deepEqual(activated, ["1"], "both clicks resolve; only the first hits");
+	});
+
+	it("falls back to the bottom-aligned mapping when the terminal never answers", async () => {
+		const silent = new FakeTui();
+		silent.cursorScreenRow = null;
+		const local: string[] = [];
+		const localChips = new ClickableText({
+			onActivate: (t) => local.push(t.id),
+			dsrTimeoutMs: 10,
+		});
+		localChips.attach(silent);
+		localChips.setTargets([{ id: "1", text: "[1 rebuild the solution]" }]);
+		silent.draw(["Want me to [1 rebuild the solution]"]);
+		silent.cursorScreenRow = null;
+		silent.send(click(13, 1));
+		assert.deepEqual(local, []);
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		assert.deepEqual(local, ["1"], "row-0 launches still work without DSR support");
+		localChips.detach();
+	});
+
+	it("legacy hitTest still maps through a bottom-aligned viewport", () => {
+		const lines = Array.from({ length: 30 }, (_, i) => `line ${i}`);
+		lines[29] = "Want me to [1 rebuild the solution]";
+		tui.draw(lines);
+		assert.equal(chips.hitTest(23, 12)?.id, "1");
+		assert.equal(chips.hitTest(22, 12), null);
 	});
 });
 

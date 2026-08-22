@@ -511,6 +511,7 @@ The TUI also supports real clicking, via terminal mouse reporting (DECSET 1000 +
 - Hit testing matches the *rendered text* of each `[N label]` span on the visible screen — no position markers are embedded in the message, so the session file and the model's context stay clean. Both halves of a span wrapped across lines are clickable.
 - Mouse reporting is terminal-wide: while on, the wheel is delivered to the application (terminal scrollback stops responding) and click-drag selection needs Shift. To keep that cost small, reporting is engaged only while the latest finalized message actually has suggestions, and can be toggled off entirely in `/suggestions`.
 - Wheel, right-button, motion, and release events are swallowed while reporting is on, so no escape sequences leak into the editor as typed garbage.
+- Screen-to-buffer mapping is anchored with a cursor-position report (DSR, `ESC[6n`) issued at click time: pi never clears the screen and draws with relative cursor moves only, so when pi is launched below an existing shell prompt its first buffer line is not screen row 0. The DSR answer, correlated with pi-tui's buffer-relative cursor bookkeeping, gives the exact offset; a terminal that never answers falls back to a bottom-aligned mapping. After an insertion the TUI is asked to repaint — consumed input bypasses pi's own render pass.
 
 Web and TUI share: the parser, the tag constant, the prompt snippet, the ten-suggestion cap, and the sanitization rules. They differ only in the render target and the input event.
 
