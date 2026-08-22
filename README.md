@@ -22,6 +22,16 @@ pi-clik [--port 3141] [--cwd dir] [--pi-bin pi] [--no-open] [--isolate] [-- <ext
 
 Extra pi args pass through, e.g. `node bin/pi-clik.js -- --model claude-haiku-4-5 --no-session`.
 
+## TUI variant
+
+The same feature works in the plain pi terminal UI, no server needed:
+
+```bash
+pi -e /path/to/pi-clik/dist/extension/pi-clik-tui.js
+```
+
+Suggestions render as numbered bracketed spans in the transcript — `Want me to [1 rebuild the solution] or [2 run the tests]?` — via pi's markdown transformer hook, which is display-only: stored messages keep their raw `<pi:suggest>` tags, so sessions stay compatible with the web client. `Alt+1..4` inserts the Nth suggestion of the most recent finalized assistant message into the editor (only that message is addressable). `/suggestions` toggles the feature or just the hotkeys; `--no-suggestions` disables it for a session. Install globally with `pi install` pointing at the built file, or pass `-e` per run.
+
 ## How it works
 
 | Piece | File | Role |
