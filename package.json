@@ -1,7 +1,7 @@
 {
 	"name": "pi-clik",
 	"version": "0.1.0",
-	"description": "Inline suggestion snippets for pi: a web UI where the model's suggested replies render as clickable chips",
+	"description": "Inline suggestion snippets for pi: the model's suggested replies become clickable chips in a web UI and in the terminal",
 	"type": "module",
 	"license": "MIT",
 	"bin": {
@@ -12,7 +12,7 @@
 		"build:web": "esbuild src/web/main.ts --bundle --format=esm --outfile=dist/web/main.js --sourcemap && node scripts/copy-static.js",
 		"build:server": "esbuild src/server/server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.js && esbuild src/extension/pi-clik.ts --bundle --platform=node --format=esm --outfile=dist/extension/pi-clik.js && esbuild src/extension/pi-clik-tui.ts --bundle --platform=node --format=esm --outfile=dist/extension/pi-clik-tui.js",
 		"check": "tsc --noEmit",
-		"test": "vitest run test/parser.test.ts test/render.test.ts test/composer.test.ts test/app.test.ts test/tui.test.ts test/tui-mouse.test.ts",
+		"test": "vitest run --exclude '**/e2e-*.test.ts' --exclude '**/node_modules/**'",
 		"test:e2e": "vitest run test/e2e-haiku.test.ts",
 		"start": "node bin/pi-clik.js",
 		"gen:widths": "vite-node scripts/gen-char-width.mjs",
