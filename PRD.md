@@ -50,7 +50,7 @@ We want the affordance to be *ambient*: visible where the suggestion was made, i
 - NG2. **Not** a permission or confirmation mechanism. Those stay with `ctx.ui.confirm`.
 - NG3. **Not** a structured action system. A suggestion is plain text destined for the composer, nothing more. It cannot call tools, set flags, or change modes.
 - NG4. **Not** required for the model to function. An agent that never emits a suggestion tag works exactly as it does today.
-- NG5. Terminal click support. TUI gets a keyboard-addressable variant (§12); real clicking is web-only.
+- NG5. ~~Terminal click support~~ *(originally descoped; since implemented via terminal mouse reporting — see §12)*. The TUI keeps the keyboard-addressable variant as the default affordance.
 
 ---
 
@@ -64,7 +64,7 @@ Two designs were considered and rejected before landing here.
 
 **Inline markup in the assistant text** (this PRD) has neither problem. There is no tool call, so there is no round-trip and no control-flow risk. The suggestion sits exactly where the model made it.
 
-The web client is the right surface because a rendered message is already a tree of DOM nodes. Attaching a click handler to a span is free. The terminal can't do this: pi-tui parses input into keys and routes them to the focused component, and the markdown pipeline gives an extension no way to learn what row or column a span landed on.
+The web client is the right surface because a rendered message is already a tree of DOM nodes. Attaching a click handler to a span is free. The terminal has no such tree: pi-tui parses input into keys and routes them to the focused component. Clicking there requires terminal mouse reporting plus hit-testing the rendered screen — possible (§12), but with real costs the web surface doesn't pay.
 
 ---
 
@@ -503,6 +503,14 @@ Consequences of that hook returning *markdown* rather than components:
 - There is no click and no hover. `Alt+N` is the only affordance.
 - The transformer must stay pure — the addressable set is derived on message finalize and held in extension state, never built during transformation.
 - Scrolled-away suggestions remain hotkey-addressable but invisible. Only the most recent finalized message is addressable, to avoid `2` meaning two different things.
+
+### 12.1 Click to insert
+
+The TUI also supports real clicking, via terminal mouse reporting (DECSET 1000 + SGR 1006):
+
+- Hit testing matches the *rendered text* of each `[N label]` span on the visible screen — no position markers are embedded in the message, so the session file and the model's context stay clean. Both halves of a span wrapped across lines are clickable.
+- Mouse reporting is terminal-wide: while on, the wheel is delivered to the application (terminal scrollback stops responding) and click-drag selection needs Shift. To keep that cost small, reporting is engaged only while the latest finalized message actually has suggestions, and can be toggled off entirely in `/suggestions`.
+- Wheel, right-button, motion, and release events are swallowed while reporting is on, so no escape sequences leak into the editor as typed garbage.
 
 Web and TUI share: the parser, the tag constant, the prompt snippet, the ten-suggestion cap, and the sanitization rules. They differ only in the render target and the input event.
 
