@@ -9,9 +9,15 @@
  */
 
 import assert from "node:assert/strict";
-import { beforeEach, describe, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import { ClickableText, findSpans, stripAnsi, type TuiLike } from "../src/extension/tui-mouse.js";
+import {
+	charWidth,
+	ClickableText,
+	findSpans,
+	stripAnsi,
+	type TuiLike,
+} from "../src/extension/tui-mouse.js";
 
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
@@ -256,6 +262,35 @@ describe("screen offset (pi launched mid-screen — the Ghostty case)", () => {
 		tui.draw(lines);
 		assert.equal(chips.hitTest(23, 12)?.id, "1");
 		assert.equal(chips.hitTest(22, 12), null);
+	});
+});
+
+describe("glyph widths (generated from Ghostty's table)", () => {
+	it("measures the widths a hand-written table got wrong", () => {
+		// Each of these disagreed with Ghostty before the table was generated.
+		expect(charWidth(0x231a)).toBe(2); // ⌚ watch — emoji outside U+1F300..1F9FF
+		expect(charWidth(0x26aa)).toBe(2); // ⚪ circle
+		expect(charWidth(0x2e9a)).toBe(1); // unassigned hole in the CJK radicals block
+		expect(charWidth(0x0651)).toBe(0); // Arabic combining mark
+		expect(charWidth(0x3099)).toBe(0); // combining kana voiced mark
+	});
+
+	it("measures the glyphs chips actually use", () => {
+		expect(charWidth(0x00b9)).toBe(1); // ¹ superscript one
+		expect(charWidth(0x2070)).toBe(1); // ⁰ superscript zero
+		expect(charWidth("a".codePointAt(0)!)).toBe(1);
+		expect(charWidth(0x4e00)).toBe(2); // CJK ideograph
+	});
+
+	it("a chip containing an emoji still hit-tests on the right columns", () => {
+		chips.setTargets([{ id: "1", text: "¹⌚ set a timer" }]);
+		tui.draw(["ok ¹⌚ set a timer"]);
+		// "ok " is 3 columns, "¹" 1, "⌚" 2 — so "set" starts at column 7.
+		tui.send(click(8, 1));
+		expect(activated).toEqual(["1"]);
+		activated.length = 0;
+		tui.send(click(3, 1)); // the space before the chip
+		expect(activated).toEqual([]);
 	});
 });
 

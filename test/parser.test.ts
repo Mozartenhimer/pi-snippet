@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	MAX_SUGGESTIONS_PER_MESSAGE,
 	parseSuggestions,
 	visibleStreamingPrefix,
 } from "../src/shared/suggestions.js";
@@ -91,20 +92,28 @@ describe("parseSuggestions — edge case matrix (PRD §11)", () => {
 		expect(chipTexts(`<pi:suggest>${exact}</pi:suggest>`)).toEqual([exact]);
 	});
 
-	it("more than 10 per message: first 10 chip, rest plain (10.11)", () => {
-		const nums = Array.from({ length: 12 }, (_, i) => i + 1);
+	it("caps a message at MAX_SUGGESTIONS_PER_MESSAGE, rest plain (10.11)", () => {
+		const cap = MAX_SUGGESTIONS_PER_MESSAGE;
+		const nums = Array.from({ length: cap + 2 }, (_, i) => i + 1);
 		const input = nums.map((n) => `<pi:suggest>option ${n}</pi:suggest>`).join(" ");
 		const res = parseSuggestions(input);
-		expect(res.suggestions).toEqual(nums.slice(0, 10).map((n) => `option ${n}`));
+		expect(res.suggestions).toEqual(nums.slice(0, cap).map((n) => `option ${n}`));
 		expect(flatText(input)).toBe(
-			`${nums.slice(0, 10).map((n) => `[option ${n}]`).join(" ")} option 11 option 12`,
+			`${nums.slice(0, cap).map((n) => `[option ${n}]`).join(" ")} option ${cap + 1} option ${cap + 2}`,
 		);
 	});
 
+	it("the cap is explicit, not a hardcoded ten", () => {
+		const input = Array.from({ length: 6 }, (_, i) => `<pi:suggest>o${i}</pi:suggest>`).join(" ");
+		expect(parseSuggestions(input, { maxPerMessage: 4 }).suggestions).toHaveLength(4);
+	});
+
 	it("respects acceptedSoFar for multi-block messages", () => {
-		expect(chipTexts("<pi:suggest>a</pi:suggest> <pi:suggest>b</pi:suggest>", { acceptedSoFar: 9 })).toEqual([
-			"a",
-		]);
+		expect(
+			chipTexts("<pi:suggest>a</pi:suggest> <pi:suggest>b</pi:suggest>", {
+				acceptedSoFar: MAX_SUGGESTIONS_PER_MESSAGE - 1,
+			}),
+		).toEqual(["a"]);
 	});
 
 	it("inside fenced code: verbatim, no parse (10.5)", () => {

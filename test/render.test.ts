@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
+import { MAX_SUGGESTIONS_PER_MESSAGE } from "../src/shared/suggestions.js";
 import { renderAssistantMarkdown } from "../src/web/chips.js";
 
 const base = { live: true, streaming: false, chipsEnabled: true };
@@ -49,11 +50,14 @@ describe("renderAssistantMarkdown — chips", () => {
 		expect(el.querySelector("code")!.textContent).toBe("<pi:suggest>");
 	});
 
-	it("renders at most ten chips (E3)", () => {
-		const md = Array.from({ length: 11 }, (_, i) => `<pi:suggest>option ${i + 1}</pi:suggest>`).join(" and ");
+	it("renders at most MAX_SUGGESTIONS_PER_MESSAGE chips, rest plain (E3)", () => {
+		const cap = MAX_SUGGESTIONS_PER_MESSAGE;
+		const md = Array.from({ length: cap + 1 }, (_, i) => `<pi:suggest>option ${i + 1}</pi:suggest>`).join(
+			" and ",
+		);
 		const el = render(md);
-		expect(el.querySelectorAll("button.chip").length).toBe(10);
-		expect(el.textContent).toContain("option 11");
+		expect(el.querySelectorAll("button.chip").length).toBe(cap);
+		expect(el.textContent).toContain(`option ${cap + 1}`);
 	});
 
 	it("cannot inject markup through suggestion content (E5)", () => {

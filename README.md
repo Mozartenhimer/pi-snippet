@@ -30,7 +30,7 @@ The same feature works in the plain pi terminal UI, no server needed:
 pi -e /path/to/pi-clik/dist/extension/pi-clik-tui.js
 ```
 
-Suggestions render as bold accent-colored spans led by a small superscript number — `Want me to ¹rebuild the solution or ²run the tests?` — via pi's markdown transformer hook, which is display-only: stored messages keep their raw `<pi:suggest>` tags, so sessions stay compatible with the web client. `Alt+1..9,0` inserts the Nth suggestion of the most recent finalized assistant message into the editor (only that message is addressable). `/suggestions` toggles the feature or just the hotkeys; `--no-suggestions` disables it for a session. **Clicking a chip inserts it too**: terminal mouse reporting is engaged automatically while the latest message has suggestions (during that window the wheel belongs to pi and text selection needs Shift), and `/suggestions` can turn click-to-insert off. Install globally with `pi install` pointing at the built file, or pass `-e` per run.
+Suggestions render as bold accent-colored spans led by a small superscript number — `Want me to ¹rebuild the solution or ²run the tests?` — via pi's markdown transformer hook, which is display-only: stored messages keep their raw `<pi:suggest>` tags, so sessions stay compatible with the web client. `Alt+N` inserts the Nth suggestion of the most recent finalized assistant message into the editor (only that message is addressable). Ten digit keys address ten suggestions; for more, hold Alt and type two digits — `Alt` held while pressing `1` then `2` inserts the twelfth. A single digit commits immediately unless a longer number is still reachable, so the two-digit wait only exists when the message really has ten or more suggestions. `/suggestions` toggles the feature or just the hotkeys; `--no-suggestions` disables it for a session. **Clicking a chip inserts it too**: terminal mouse reporting is engaged automatically while the latest message has suggestions (during that window the wheel belongs to pi and text selection needs Shift), and `/suggestions` can turn click-to-insert off. Install globally with `pi install` pointing at the built file, or pass `-e` per run.
 
 ## How it works
 
@@ -41,7 +41,7 @@ Suggestions render as bold accent-colored spans led by a small superscript numbe
 | Extension | `src/extension/pi-clik.ts` | pi extension appending the snippet to the system prompt. Injects via both the chained `systemPrompt` return (direct providers) and `systemPromptOptions.appendSystemPrompt` (provider bridges like pi-claude-bridge that rebuild their own prompt). |
 | Web renderer | `src/web/chips.ts` | Stateless: parse → markdown with private-use sentinels → `marked` (raw HTML escaped) → DOM walk replacing sentinels with `<button class="chip">`. Chip text is set via `textContent`, so content can never inject markup. Chips inside link labels degrade to text (link wins). |
 | Composer | `src/web/composer.ts` | Insert-at-cursor with smart spacing; `execCommand("insertText")` so Ctrl+Z undoes an insertion as one unit. |
-| App | `src/web/main.ts` | WebSocket client, streaming accumulation, message list, Alt+1..9,0 hotkeys, settings toggles (chips / hotkeys, persisted in localStorage), visited state. |
+| App | `src/web/main.ts` | WebSocket client, streaming accumulation, message list, Alt+N hotkeys (multi-digit), settings toggles (chips / hotkeys, persisted in localStorage), visited state. |
 | Server | `src/server/server.ts` | Spawns pi RPC, serves the client, bridges JSONL ⇄ WebSocket verbatim. |
 
 Chips are inert while a message streams and become clickable when it finalizes. The hotkey-addressable set is derived once per finalized message, outside the render path.
@@ -49,6 +49,26 @@ Chips are inert while a message streams and become clickable when it finalizes. 
 ### Global-extension conflicts
 
 The server uses pi's normal extension discovery. If a globally installed extension interferes with the suggestion tags — e.g. a TUI suggestion extension that rewrites `<pi:suggest>` spans in stored messages into bracket form at `message_end` — run with `--isolate`: pi then starts with `--no-extensions` and only the extension packages from `~/.pi/agent/settings.json` (provider bridges keep working) plus pi-clik are loaded.
+
+## Testing against a real terminal
+
+Two parts of this feature cannot be honestly faked: what bytes a terminal sends
+for a key gesture, and how many cells a glyph occupies. Both are answered by
+linking Ghostty's own library (`libghostty-vt`, shipped with the Ghostty snap):
+
+```bash
+bash scripts/ghostty-env.sh      # locate libghostty-vt, build the helpers
+npm run check:widths             # our width table vs Ghostty's, codepoint by codepoint
+npm run gen:widths               # regenerate src/extension/char-width.ts from it
+python3 scripts/chord-live.py    # Alt+digit gestures, keystrokes encoded by Ghostty
+python3 scripts/click-offset-repro.py  # clicking with pi started mid-screen
+```
+
+The two Python harnesses drive a real `pi` under a pty with a small terminal
+emulator (they answer cursor-position queries, track a grid) and assert what
+lands in the editor. They need `pi` with a working provider; the Ghostty
+helpers are optional and the chord harness falls back to legacy key encodings
+without them.
 
 ## Tests
 

@@ -27,7 +27,7 @@
  * Hit testing matches the *rendered text* of each target rather than embedding
  * position markers in the message. That keeps escape sequences out of the
  * session file and out of what the model sees on later turns — the message
- * stays `[1 rebuild the solution]`, exactly as it reads.
+ * stays `¹rebuild the solution`, exactly as it reads.
  *
  * ## The cost, which is real
  *
@@ -42,6 +42,10 @@
  */
 
 import { appendFileSync } from "node:fs";
+
+import { charWidth } from "./char-width.js";
+
+export { charWidth } from "./char-width.js";
 
 export interface ClickTarget {
 	id: string;
@@ -72,7 +76,6 @@ export interface ClickableTextOptions {
 	dsrTimeoutMs?: number;
 }
 
-/** DECSET 1000 (button events) + 1006 (SGR coordinates, needed past column 223). */
 /** Diagnostics for click mapping; set PI_CLIK_CLICK_DEBUG to a file path. */
 function debugLog(message: () => string): void {
 	const path = process.env.PI_CLIK_CLICK_DEBUG;
@@ -84,6 +87,7 @@ function debugLog(message: () => string): void {
 	}
 }
 
+/** DECSET 1000 (button events) + 1006 (SGR coordinates, needed past column 223). */
 const MOUSE_ON = "\x1b[?1000h\x1b[?1006h";
 const MOUSE_OFF = "\x1b[?1006l\x1b[?1000l";
 const SGR_MOUSE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
@@ -336,28 +340,9 @@ export function stripAnsi(value: string): string {
 	return value.replace(ANSI, "");
 }
 
-/** Visible column of a character index, accounting for double-width glyphs. */
+/** Visible column of a character index, accounting for glyph widths. */
 function columnOf(visible: string, index: number): number {
 	let column = 0;
 	for (const char of visible.slice(0, index)) column += charWidth(char.codePointAt(0) ?? 0);
 	return column;
-}
-
-function charWidth(code: number): number {
-	if (code === 0) return 0;
-	// Combining marks and zero-width joiners occupy no cell.
-	if ((code >= 0x0300 && code <= 0x036f) || code === 0x200d || code === 0xfe0f) return 0;
-	if (
-		(code >= 0x1100 && code <= 0x115f) ||
-		(code >= 0x2e80 && code <= 0xa4cf) ||
-		(code >= 0xac00 && code <= 0xd7a3) ||
-		(code >= 0xf900 && code <= 0xfaff) ||
-		(code >= 0xfe30 && code <= 0xfe6f) ||
-		(code >= 0xff00 && code <= 0xff60) ||
-		(code >= 0xffe0 && code <= 0xffe6) ||
-		(code >= 0x1f300 && code <= 0x1f9ff)
-	) {
-		return 2;
-	}
-	return 1;
 }

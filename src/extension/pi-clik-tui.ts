@@ -12,9 +12,10 @@
  *   terminal-wide (the wheel stops scrolling the terminal and text selection
  *   needs Shift), so it is engaged only while the latest finalized message
  *   actually has suggestions, and can be toggled off in `/suggestions`.
- * - Alt+1..9,0 insert the Nth suggestion of the most recent finalized
- *   assistant message into the editor. Only that message is addressable, so a
- *   number never means two different things.
+ * - Alt+N inserts the Nth suggestion of the most recent finalized assistant
+ *   message into the editor. Holding Alt and typing two digits reaches 10 and
+ *   above. Only the latest message is addressable, so a number never means two
+ *   different things.
  * - `/suggestions` toggles the feature, the hotkeys, or click-to-insert; the
  *   `--no-suggestions` flag disables everything for a session.
  *
@@ -22,6 +23,7 @@
  * finalized message in the message_end handler and held in extension state,
  * never built during transformation (PRD §5.2 hard rule).
  */
+import { DigitChord } from "../shared/digit-chord.js";
 import { parseSuggestions } from "../shared/suggestions.js";
 import { chipLabel, toTuiMarkdown } from "../shared/tui-markdown.js";
 import { registerPromptSnippet } from "./common.js";
@@ -57,6 +59,51 @@ export default function piClikTui(pi: any): void {
 	});
 
 	/**
+	 * Alt+digit addressing. One digit is one suggestion; holding Alt and typing
+	 * two digits reaches 10 and up. A pending prefix shows in the status line
+	 * and settles when Alt is released (in terminals that report releases) or
+	 * when the chord times out.
+	 */
+	const chord = new DigitChord({
+		onCommit: (value) => {
+			const text = state.addressable[value - 1];
+			if (text === undefined || !lastCtx) return;
+			insertText(lastCtx, text);
+			tui?.requestRender?.();
+		},
+		onReject: (digits) => {
+			lastCtx?.ui?.notify?.(`No suggestion ${Number(digits)}`);
+		},
+		onPending: (digits) => {
+			lastCtx?.ui?.setStatus?.(digits === "" ? "" : `Alt+${digits}…`);
+			tui?.requestRender?.();
+		},
+	});
+
+	/**
+	 * Watch for the Alt key being released so a two-digit chord settles the
+	 * instant the user lets go, rather than waiting out the timeout.
+	 *
+	 * Dormant as things stand, and deliberately kept: a standalone modifier is
+	 * only reported under the Kitty keyboard protocol's REPORT_ALL flag (8), and
+	 * pi asks for flags 7 (disambiguate | report events | report alternates).
+	 * Measured against Ghostty's own encoder — see scripts/ghostty-keys.c — Alt
+	 * press and release encode to nothing at all at flag 7, and to
+	 * `CSI 57443;1:3u` at flag 15. So today every terminal settles on the
+	 * timeout, and this costs one regex per input chunk while a chord is
+	 * pending. If pi ever raises its flags, the gesture gets crisper for free.
+	 */
+	const ALT_RELEASE = /\x1b\[(57443|57449)(?:;[0-9:]*)?:3u/;
+	let releaseWatcher: (() => void) | null = null;
+	const watchAltRelease = (instance: TuiLike) => {
+		if (releaseWatcher) return;
+		releaseWatcher = instance.addInputListener((data: string) => {
+			if (chord.pending && ALT_RELEASE.test(data)) chord.release(state.addressable.length);
+			return undefined;
+		});
+	};
+
+	/**
 	 * Borrow the TUI instance: the footer factory receives it, so install a
 	 * do-nothing footer for a moment and immediately restore the default.
 	 */
@@ -76,9 +123,11 @@ export default function piClikTui(pi: any): void {
 	/** Engage mouse reporting only while there is something to click. */
 	const syncMouse = (ctx: any) => {
 		lastCtx = ctx;
+		const captured = captureTui(ctx);
+		if (captured) watchAltRelease(captured);
 		const want = state.enabled && state.clickEnabled && state.addressable.length > 0;
 		if (want) {
-			const instance = captureTui(ctx);
+			const instance = captured;
 			if (!instance) return;
 			clickable.attach(instance);
 			clickable.setTargets(
@@ -112,6 +161,9 @@ export default function piClikTui(pi: any): void {
 	});
 
 	pi.on("session_shutdown", () => {
+		chord.reset();
+		releaseWatcher?.();
+		releaseWatcher = null;
 		if (clickable.enabled) clickable.detach();
 	});
 
@@ -126,19 +178,20 @@ export default function piClikTui(pi: any): void {
 			suggestions.push(...res.suggestions);
 		}
 		state.addressable = suggestions;
+		chord.reset(); // digits typed against the previous message mean nothing now
 		syncMouse(ctx);
 	});
 
-	// Alt+1..9 for suggestions 1-9, Alt+0 for the 10th.
-	for (let n = 1; n <= 10; n++) {
-		const key = n === 10 ? "alt+0" : `alt+${n}`;
-		pi.registerShortcut(key, {
-			description: `Insert suggestion ${n} from the last reply`,
+	for (let n = 0; n <= 9; n++) {
+		pi.registerShortcut(`alt+${n}`, {
+			description:
+				n === 0
+					? "Insert suggestion 10 (or extend a two-digit number)"
+					: `Insert suggestion ${n} (hold Alt and type two digits for 10+)`,
 			handler: (ctx: any) => {
 				if (!state.enabled || !state.hotkeysEnabled || !ctx.hasUI) return;
-				const text = state.addressable[n - 1];
-				if (text === undefined) return;
-				insertText(ctx, text);
+				lastCtx = ctx;
+				chord.press(n, state.addressable.length);
 			},
 		});
 	}
@@ -149,7 +202,7 @@ export default function piClikTui(pi: any): void {
 			if (!ctx.hasUI) return;
 			const choice = await ctx.ui.select("Inline suggestions", [
 				`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
-				`Alt+1..9,0 shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
+				`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
 				`Click to insert: ${state.clickEnabled ? "on" : "off"} — toggle (mouse mode costs wheel scrolling while suggestions are shown)`,
 			]);
 			if (!choice) return;

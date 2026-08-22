@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MAX_SUGGESTIONS_PER_MESSAGE } from "../src/shared/suggestions.js";
 import { chipLabel, superscript, toTuiMarkdown } from "../src/shared/tui-markdown.js";
 
 describe("toTuiMarkdown (PRD §12)", () => {
@@ -53,12 +54,23 @@ describe("toTuiMarkdown (PRD §12)", () => {
 		).toBe("Sure — want me to rebuild the sol");
 	});
 
-	it("renders at most ten numbered spans", () => {
-		const nums = Array.from({ length: 11 }, (_, i) => i + 1);
+	it("renders at most MAX_SUGGESTIONS_PER_MESSAGE numbered spans", () => {
+		const cap = MAX_SUGGESTIONS_PER_MESSAGE;
+		const nums = Array.from({ length: cap + 1 }, (_, i) => i + 1);
 		const input = nums.map((n) => `<pi:suggest>o${n}</pi:suggest>`).join(" ");
 		expect(toTuiMarkdown(input, { isStreaming: false, enabled: true })).toBe(
-			`${nums.slice(0, 10).map((n) => `**\`${superscript(n)}o${n}\`**`).join(" ")} o11`,
+			`${nums
+				.slice(0, cap)
+				.map((n) => `**\`${superscript(n)}o${n}\`**`)
+				.join(" ")} o${cap + 1}`,
 		);
+	});
+
+	it("numbers past nine keep both digits superscripted", () => {
+		const input = Array.from({ length: 12 }, (_, i) => `<pi:suggest>o${i + 1}</pi:suggest>`).join(" ");
+		const out = toTuiMarkdown(input, { isStreaming: false, enabled: true });
+		expect(out).toContain("`\u00b9\u2070o10`");
+		expect(out).toContain("`\u00b9\u00b2o12`");
 	});
 
 	it("plain text passes through unchanged", () => {

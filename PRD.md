@@ -171,6 +171,7 @@ time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
 | Cmd/Ctrl+click chip | Insert **and** send. (Phase 3.) |
 | Tab to chip, Enter | Same as click. |
 | `Alt+1..9`, `Alt+0` | Insert the Nth suggestion (0 = tenth) of the most recent finalized assistant message. |
+| `Alt` held, two digits | Insert suggestion 10 and above: hold Alt, type `1` then `2` for the twelfth. |
 | Ctrl+Z after insertion | Undoes the insertion as a single unit, not character-by-character. |
 | Click chip in a scrolled-away older message | Works. Inserts, focuses composer, scrolls composer into view. |
 
@@ -240,7 +241,7 @@ time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
 ### Epic D — Keyboard and accessibility
 
 **D1.** As a keyboard user, I want to insert a suggestion without reaching for the mouse.
-*Accept:* `Alt+1..9` and `Alt+0` (tenth) address the latest message's suggestions.
+*Accept:* `Alt+1..9` and `Alt+0` (tenth) address the latest message's suggestions; holding Alt across two digits addresses 10 and above.
 
 **D2.** As a keyboard user, I want to Tab through chips in reading order.
 *Accept:* Chips are `<button>` elements in document order.
@@ -500,7 +501,7 @@ The parser is shared. The terminal path uses pi's markdown transformer hook, whi
 Consequences of that hook returning *markdown* rather than components:
 
 - Chips become bold spans in the theme's inline-code accent color, led by a small superscript number: `Want me to ¹rebuild the solution or ²run the tests?` (rendered via bold + code-span markdown; no brackets).
-- There is no click and no hover. `Alt+N` is the only affordance.
+- There is no hover. Click (§12.1) and `Alt+N` (§12.2) are the affordances.
 - The transformer must stay pure — the addressable set is derived on message finalize and held in extension state, never built during transformation.
 - Scrolled-away suggestions remain hotkey-addressable but invisible. Only the most recent finalized message is addressable, to avoid `2` meaning two different things.
 
@@ -513,7 +514,23 @@ The TUI also supports real clicking, via terminal mouse reporting (DECSET 1000 +
 - Wheel, right-button, motion, and release events are swallowed while reporting is on, so no escape sequences leak into the editor as typed garbage.
 - Screen-to-buffer mapping is anchored with a cursor-position report (DSR, `ESC[6n`) issued at click time: pi never clears the screen and draws with relative cursor moves only, so when pi is launched below an existing shell prompt its first buffer line is not screen row 0. The DSR answer, correlated with pi-tui's buffer-relative cursor bookkeeping, gives the exact offset; a terminal that never answers falls back to a bottom-aligned mapping. After an insertion the TUI is asked to repaint — consumed input bypasses pi's own render pass.
 
-Web and TUI share: the parser, the tag constant, the prompt snippet, the ten-suggestion cap, and the sanitization rules. They differ only in the render target and the input event.
+### 12.2 Addressing more than ten suggestions
+
+A terminal has ten digit keys, so `Alt+N` alone tops out at ten. Digits are therefore accumulated into a number:
+
+- Hold Alt and type `1` then `2` to address the twelfth suggestion. The two presses arrive about a millisecond apart, which is what makes the gesture legible.
+- A digit commits **immediately** when no longer number could exist — with four suggestions on screen, `Alt+3` inserts at once, because no 30-something is addressable. The wait only happens when the message really has ten or more.
+- An ambiguous prefix settles after 350 ms, or the moment the modifier lifts on surfaces that report it. The browser reports `keyup`; terminals mostly do not (see below).
+- `Alt+0` still means the tenth suggestion — zero addresses nothing on its own, so the existing muscle memory costs nothing.
+- The parser cap (`MAX_SUGGESTIONS_PER_MESSAGE`) is a runaway guard, not a style rule, and matches what two-digit addressing reaches. Taste is the prompt's job: the model is told two to four is normal.
+
+**On "release Alt to commit".** The obvious design — settle when the user lets go of Alt — is not available in the terminal today, and this was measured rather than assumed. Ghostty's own key encoder (linked via `scripts/ghostty-keys.c`) reports a standalone modifier only under the Kitty keyboard protocol's `REPORT_ALL` flag (8); pi requests flags 7, at which Alt press and release encode to **no bytes at all**. So the TUI settles on the timeout, and the release watcher stays dormant until pi raises its flags. The web client, which gets a real `keyup`, commits the instant Alt lifts.
+
+Web and TUI share: the parser, the tag constant, the prompt snippet, the cap, the digit-addressing rules, and the sanitization rules. They differ only in the render target and the input event.
+
+### 12.3 Agreeing with the terminal about glyph widths
+
+Click hit-testing turns a character index into a screen column, so our width table has to match the terminal's exactly — a glyph measured as one cell and drawn as two puts every later chip on that line one column off. A hand-written table was wrong for over a thousand codepoints, including emoji outside `U+1F300..1F9FF` (⌚, ⏩, ⚡ are all double-width) and combining marks outside Latin. `src/extension/char-width.ts` is therefore **generated** from Ghostty's own table (`ghostty::CodepointWidth` in libghostty-vt) by `npm run gen:widths`, and `npm run check:widths` verifies it still agrees.
 
 ---
 

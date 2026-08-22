@@ -1,4 +1,4 @@
-import { MAX_SUGGESTIONS_PER_MESSAGE, SUGGEST_TAG } from "./suggestions.js";
+import { SUGGEST_TAG, SUGGESTED_PER_MESSAGE } from "./suggestions.js";
 
 /**
  * The model-side contract (PRD §6). Appended to the system prompt by the
@@ -15,7 +15,7 @@ Rules:
 - Never emit the tag inside a code block, inline code span, file content, or a diff.
 - Never wrap text that isn't a plausible user utterance — don't wrap nouns, filenames, or fragments that only make sense inside your own sentence.
 - Zero suggestions is normal and correct for most messages. Don't force them.
-- At most ${MAX_SUGGESTIONS_PER_MESSAGE} suggestions per message. Keep each under 120 characters.
+- Usually two to four suggestions; ${SUGGESTED_PER_MESSAGE} is a lot and should be rare. Keep each under 120 characters.
 - The user may ignore all of them. Never assume a suggestion was taken, and never write text that only makes sense if one was.
 - The wrapped text must read as a grammatical continuation of your sentence; the chips replace nothing and the message must read naturally as prose.
 

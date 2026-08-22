@@ -6,6 +6,7 @@
  * streams assistant text with suggestion-safe buffering, and turns
  * <pi:suggest> spans into clickable chips that insert into the composer.
  */
+import { DigitChord } from "../shared/digit-chord.js";
 import { parseSuggestions } from "../shared/suggestions.js";
 import { renderAssistantMarkdown } from "./chips.js";
 import { insertSuggestion } from "./composer.js";
@@ -479,18 +480,31 @@ function onChipInsert(msgIdx: number, chipIndex: number, text: string): void {
 	composerEl.scrollIntoView({ block: "nearest" });
 }
 
-// Alt+1..9 (and Alt+0 for the 10th) inserts the Nth suggestion of the live message (PRD D1).
+// Alt+N inserts the Nth suggestion of the live message (PRD D1). Holding Alt
+// and typing two digits reaches 10 and above; releasing Alt settles it.
+const chord = new DigitChord({
+	onCommit: (value) => {
+		const text = state.liveSuggestions[value - 1];
+		if (text !== undefined) onChipInsert(state.liveIndex, value - 1, text);
+	},
+	onPending: (digits) => {
+		document.body.dataset.chord = digits;
+	},
+});
+
 window.addEventListener("keydown", (e) => {
 	if (!state.hotkeysEnabled || !state.chipsEnabled) return;
 	if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
 	const match = /^Digit([0-9])$/.exec(e.code);
 	if (!match) return;
-	// Alt+1..9 map to suggestions 1-9; Alt+0 is the 10th.
-	const n = (match[1] === "0" ? 10 : Number(match[1])) - 1;
-	const text = state.liveSuggestions[n];
-	if (text === undefined) return;
 	e.preventDefault();
-	onChipInsert(state.liveIndex, n, text);
+	chord.press(Number(match[1]), state.liveSuggestions.length);
+});
+
+// The browser reports the modifier lifting, so a two-digit chord commits the
+// moment the user lets go instead of waiting out the timeout.
+window.addEventListener("keyup", (e) => {
+	if (e.key === "Alt") chord.release(state.liveSuggestions.length);
 });
 
 // ---------------------------------------------------------------------------
