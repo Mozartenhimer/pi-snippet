@@ -49,11 +49,11 @@ describe("renderAssistantMarkdown — chips", () => {
 		expect(el.querySelector("code")!.textContent).toBe("<pi:suggest>");
 	});
 
-	it("renders at most four chips (E3)", () => {
-		const md = [1, 2, 3, 4, 5].map((n) => `<pi:suggest>option ${n}</pi:suggest>`).join(" and ");
+	it("renders at most ten chips (E3)", () => {
+		const md = Array.from({ length: 11 }, (_, i) => `<pi:suggest>option ${i + 1}</pi:suggest>`).join(" and ");
 		const el = render(md);
-		expect(el.querySelectorAll("button.chip").length).toBe(4);
-		expect(el.textContent).toContain("option 5");
+		expect(el.querySelectorAll("button.chip").length).toBe(10);
+		expect(el.textContent).toContain("option 11");
 	});
 
 	it("cannot inject markup through suggestion content (E5)", () => {

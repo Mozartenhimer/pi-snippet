@@ -19,7 +19,7 @@
 
 export const SUGGEST_TAG = "pi:suggest";
 export const MAX_SUGGESTION_LENGTH = 120;
-export const MAX_SUGGESTIONS_PER_MESSAGE = 4;
+export const MAX_SUGGESTIONS_PER_MESSAGE = 10;
 
 export interface SuggestOptions {
 	/** Tag name, configurable for rebranded distributions (PRD H3). */

@@ -9,7 +9,7 @@
  *
  * Loaded by the pi-clik server via `pi --mode rpc -e <this file>`. For
  * terminal sessions, use pi-clik-tui.ts instead, which additionally renders
- * suggestions as numbered bracketed spans and binds Alt+1..4.
+ * suggestions as numbered bracketed spans and binds Alt+1..9,0.
  */
 import { registerPromptSnippet } from "./common.js";
 

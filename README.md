@@ -30,18 +30,18 @@ The same feature works in the plain pi terminal UI, no server needed:
 pi -e /path/to/pi-clik/dist/extension/pi-clik-tui.js
 ```
 
-Suggestions render as numbered bracketed spans in the transcript — `Want me to [1 rebuild the solution] or [2 run the tests]?` — via pi's markdown transformer hook, which is display-only: stored messages keep their raw `<pi:suggest>` tags, so sessions stay compatible with the web client. `Alt+1..4` inserts the Nth suggestion of the most recent finalized assistant message into the editor (only that message is addressable). `/suggestions` toggles the feature or just the hotkeys; `--no-suggestions` disables it for a session. Install globally with `pi install` pointing at the built file, or pass `-e` per run.
+Suggestions render as numbered bracketed spans in the transcript — `Want me to [1 rebuild the solution] or [2 run the tests]?` — via pi's markdown transformer hook, which is display-only: stored messages keep their raw `<pi:suggest>` tags, so sessions stay compatible with the web client. `Alt+1..9,0` inserts the Nth suggestion of the most recent finalized assistant message into the editor (only that message is addressable). `/suggestions` toggles the feature or just the hotkeys; `--no-suggestions` disables it for a session. Install globally with `pi install` pointing at the built file, or pass `-e` per run.
 
 ## How it works
 
 | Piece | File | Role |
 |---|---|---|
-| Parser | `src/shared/suggestions.ts` | Pure function: raw assistant markdown → text/suggestion token stream. All sanitization rules (code fences, inline code, unclosed/nested tags, 120-char cap, 4-per-message cap) plus `visibleStreamingPrefix()` so partial tags are never painted mid-stream. |
+| Parser | `src/shared/suggestions.ts` | Pure function: raw assistant markdown → text/suggestion token stream. All sanitization rules (code fences, inline code, unclosed/nested tags, 120-char cap, 10-per-message cap) plus `visibleStreamingPrefix()` so partial tags are never painted mid-stream. |
 | Prompt snippet | `src/shared/prompt-snippet.ts` | The model-side contract (when to emit `<pi:suggest>`, worked good/bad examples). |
 | Extension | `src/extension/pi-clik.ts` | pi extension appending the snippet to the system prompt. Injects via both the chained `systemPrompt` return (direct providers) and `systemPromptOptions.appendSystemPrompt` (provider bridges like pi-claude-bridge that rebuild their own prompt). |
 | Web renderer | `src/web/chips.ts` | Stateless: parse → markdown with private-use sentinels → `marked` (raw HTML escaped) → DOM walk replacing sentinels with `<button class="chip">`. Chip text is set via `textContent`, so content can never inject markup. Chips inside link labels degrade to text (link wins). |
 | Composer | `src/web/composer.ts` | Insert-at-cursor with smart spacing; `execCommand("insertText")` so Ctrl+Z undoes an insertion as one unit. |
-| App | `src/web/main.ts` | WebSocket client, streaming accumulation, message list, Alt+1..4 hotkeys, settings toggles (chips / hotkeys, persisted in localStorage), visited state. |
+| App | `src/web/main.ts` | WebSocket client, streaming accumulation, message list, Alt+1..9,0 hotkeys, settings toggles (chips / hotkeys, persisted in localStorage), visited state. |
 | Server | `src/server/server.ts` | Spawns pi RPC, serves the client, bridges JSONL ⇄ WebSocket verbatim. |
 
 Chips are inert while a message streams and become clickable when it finalizes. The hotkey-addressable set is derived once per finalized message, outside the render path.

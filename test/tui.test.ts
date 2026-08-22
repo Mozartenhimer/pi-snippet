@@ -53,10 +53,11 @@ describe("toTuiMarkdown (PRD §12)", () => {
 		).toBe("Sure — want me to rebuild the sol");
 	});
 
-	it("renders at most four numbered spans", () => {
-		const input = [1, 2, 3, 4, 5].map((n) => `<pi:suggest>o${n}</pi:suggest>`).join(" ");
+	it("renders at most ten numbered spans", () => {
+		const nums = Array.from({ length: 11 }, (_, i) => i + 1);
+		const input = nums.map((n) => `<pi:suggest>o${n}</pi:suggest>`).join(" ");
 		expect(toTuiMarkdown(input, { isStreaming: false, enabled: true })).toBe(
-			"**[1 o1]** **[2 o2]** **[3 o3]** **[4 o4]** o5",
+			`${nums.slice(0, 10).map((n) => `**[${n} o${n}]**`).join(" ")} o11`,
 		);
 	});
 

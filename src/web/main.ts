@@ -479,13 +479,14 @@ function onChipInsert(msgIdx: number, chipIndex: number, text: string): void {
 	composerEl.scrollIntoView({ block: "nearest" });
 }
 
-// Alt+1..4 inserts the Nth suggestion of the live message (PRD D1).
+// Alt+1..9 (and Alt+0 for the 10th) inserts the Nth suggestion of the live message (PRD D1).
 window.addEventListener("keydown", (e) => {
 	if (!state.hotkeysEnabled || !state.chipsEnabled) return;
 	if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-	const match = /^Digit([1-4])$/.exec(e.code);
+	const match = /^Digit([0-9])$/.exec(e.code);
 	if (!match) return;
-	const n = Number(match[1]) - 1;
+	// Alt+1..9 map to suggestions 1-9; Alt+0 is the 10th.
+	const n = (match[1] === "0" ? 10 : Number(match[1])) - 1;
 	const text = state.liveSuggestions[n];
 	if (text === undefined) return;
 	e.preventDefault();

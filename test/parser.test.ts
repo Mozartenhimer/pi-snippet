@@ -91,15 +91,18 @@ describe("parseSuggestions — edge case matrix (PRD §11)", () => {
 		expect(chipTexts(`<pi:suggest>${exact}</pi:suggest>`)).toEqual([exact]);
 	});
 
-	it("more than 4 per message: first 4 chip, rest plain (10.11)", () => {
-		const input = [1, 2, 3, 4, 5].map((n) => `<pi:suggest>option ${n}</pi:suggest>`).join(" ");
+	it("more than 10 per message: first 10 chip, rest plain (10.11)", () => {
+		const nums = Array.from({ length: 12 }, (_, i) => i + 1);
+		const input = nums.map((n) => `<pi:suggest>option ${n}</pi:suggest>`).join(" ");
 		const res = parseSuggestions(input);
-		expect(res.suggestions).toEqual(["option 1", "option 2", "option 3", "option 4"]);
-		expect(flatText(input)).toBe("[option 1] [option 2] [option 3] [option 4] option 5");
+		expect(res.suggestions).toEqual(nums.slice(0, 10).map((n) => `option ${n}`));
+		expect(flatText(input)).toBe(
+			`${nums.slice(0, 10).map((n) => `[option ${n}]`).join(" ")} option 11 option 12`,
+		);
 	});
 
 	it("respects acceptedSoFar for multi-block messages", () => {
-		expect(chipTexts("<pi:suggest>a</pi:suggest> <pi:suggest>b</pi:suggest>", { acceptedSoFar: 3 })).toEqual([
+		expect(chipTexts("<pi:suggest>a</pi:suggest> <pi:suggest>b</pi:suggest>", { acceptedSoFar: 9 })).toEqual([
 			"a",
 		]);
 	});

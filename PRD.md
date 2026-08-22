@@ -118,7 +118,7 @@ Shipped as the extension's prompt snippet. Should include worked positive and ne
 - Never emit the tag inside a code block, inline code span, file content, or diff.
 - Never wrap text that isn't a plausible user utterance — don't wrap nouns, filenames, or fragments that only make sense in your sentence.
 - Zero suggestions is normal and correct for most messages. Don't force them.
-- Cap at four suggestions per message.
+- Cap at ten suggestions per message.
 - The user may ignore all of them. Never assume a suggestion was taken, and never write text that only makes sense if one is.
 
 **Positive example given to the model:**
@@ -170,7 +170,7 @@ time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
 | Click chip, text is selected in composer | Selection is replaced (standard insertion semantics). |
 | Cmd/Ctrl+click chip | Insert **and** send. (Phase 3.) |
 | Tab to chip, Enter | Same as click. |
-| `Alt+1..4` | Insert the Nth suggestion of the most recent finalized assistant message. |
+| `Alt+1..9`, `Alt+0` | Insert the Nth suggestion (0 = tenth) of the most recent finalized assistant message. |
 | Ctrl+Z after insertion | Undoes the insertion as a single unit, not character-by-character. |
 | Click chip in a scrolled-away older message | Works. Inserts, focuses composer, scrolls composer into view. |
 
@@ -240,7 +240,7 @@ time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
 ### Epic D — Keyboard and accessibility
 
 **D1.** As a keyboard user, I want to insert a suggestion without reaching for the mouse.
-*Accept:* `Alt+1..4` addresses the latest message's suggestions.
+*Accept:* `Alt+1..9` and `Alt+0` (tenth) address the latest message's suggestions.
 
 **D2.** As a keyboard user, I want to Tab through chips in reading order.
 *Accept:* Chips are `<button>` elements in document order.
@@ -265,8 +265,8 @@ time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
 **E2.** As a user, I don't want a chip that inserts something different from what it says.
 *Accept:* The inserted text is always exactly the chip's visible text content.
 
-**E3.** As a user, I don't want to be shown eight suggestions.
-*Accept:* Parser renders at most four per message; extras degrade to plain text.
+**E3.** As a user, I don't want to be shown a wall of suggestions.
+*Accept:* Parser renders at most ten per message; extras degrade to plain text.
 
 **E4.** As a user, I don't want the agent to suggest things and then act as though I chose one.
 *Accept:* Prompt snippet forbids it; caught in prompt eval suite (§14).
@@ -362,7 +362,7 @@ Three tests fail for what look like three unrelated reasons. Pick a thread:
 - <pi:suggest>show me all three failures in full</pi:suggest>
 ```
 
-Chips inside list items render normally. Alt+1 through Alt+4 map top to bottom.
+Chips inside list items render normally. Alt+1 through Alt+4 map top to bottom (Alt+5..9 and Alt+0 address any further suggestions).
 
 ---
 
@@ -446,9 +446,9 @@ At a narrow viewport, `show me all three failures in full` breaks after "three".
 
 ---
 
-### 10.11 Over-eager model, five suggestions
+### 10.11 Over-eager model, eleven suggestions
 
-**Model emits** five tags. Parser renders the first four as chips; the fifth renders as plain text. No error surfaced to the user. Counter incremented for prompt-tuning telemetry.
+**Model emits** eleven tags. Parser renders the first ten as chips; the eleventh renders as plain text. No error surfaced to the user. Counter incremented for prompt-tuning telemetry.
 
 ---
 
@@ -479,7 +479,7 @@ User reloads mid-conversation. All prior messages re-render from stored raw text
 | Empty content `<pi:suggest></pi:suggest>` | Dropped entirely |
 | Whitespace-only content | Dropped entirely |
 | Content > 120 chars | Rendered as plain text, no chip |
-| More than 4 per message | First 4 chip, rest plain |
+| More than 10 per message | First 10 chip, rest plain |
 | Inside fenced code | Verbatim, no parse |
 | Inside inline code | Verbatim, no parse |
 | Inside a link label | Chip suppressed; link wins |
@@ -504,7 +504,7 @@ Consequences of that hook returning *markdown* rather than components:
 - The transformer must stay pure — the addressable set is derived on message finalize and held in extension state, never built during transformation.
 - Scrolled-away suggestions remain hotkey-addressable but invisible. Only the most recent finalized message is addressable, to avoid `2` meaning two different things.
 
-Web and TUI share: the parser, the tag constant, the prompt snippet, the four-suggestion cap, and the sanitization rules. They differ only in the render target and the input event.
+Web and TUI share: the parser, the tag constant, the prompt snippet, the ten-suggestion cap, and the sanitization rules. They differ only in the render target and the input event.
 
 ---
 

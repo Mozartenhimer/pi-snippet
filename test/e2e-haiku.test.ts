@@ -130,7 +130,7 @@ describe.skipIf(!piAvailable)("e2e with live model", () => {
 
 				const res = parseSuggestions(text);
 				expect(res.suggestions.length).toBeGreaterThanOrEqual(1);
-				expect(res.suggestions.length).toBeLessThanOrEqual(4);
+				expect(res.suggestions.length).toBeLessThanOrEqual(10);
 				for (const s of res.suggestions) {
 					expect(s.length).toBeGreaterThan(0);
 					expect(s.length).toBeLessThanOrEqual(120);

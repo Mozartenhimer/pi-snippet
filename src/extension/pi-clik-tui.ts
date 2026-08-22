@@ -7,7 +7,7 @@
  *   solution]` — via pi's markdown transformer hook. The hook is display-only:
  *   stored messages keep their raw tags, so sessions stay compatible with the
  *   web client and any other consumer.
- * - Alt+1..4 insert the Nth suggestion of the most recent finalized assistant
+ * - Alt+1..9,0 insert the Nth suggestion of the most recent finalized assistant
  *   message into the editor. Only that message is addressable, so a number
  *   never means two different things.
  * - `/suggestions` toggles the feature or just the hotkeys; the
@@ -68,8 +68,10 @@ export default function piClikTui(pi: any): void {
 		state.addressable = suggestions;
 	});
 
-	for (const n of [1, 2, 3, 4]) {
-		pi.registerShortcut(`alt+${n}`, {
+	// Alt+1..9 for suggestions 1-9, Alt+0 for the 10th.
+	for (let n = 1; n <= 10; n++) {
+		const key = n === 10 ? "alt+0" : `alt+${n}`;
+		pi.registerShortcut(key, {
 			description: `Insert suggestion ${n} from the last reply`,
 			handler: (ctx: any) => {
 				if (!state.enabled || !state.hotkeysEnabled || !ctx.hasUI) return;
@@ -88,7 +90,7 @@ export default function piClikTui(pi: any): void {
 			if (!ctx.hasUI) return;
 			const choice = await ctx.ui.select("Inline suggestions", [
 				`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
-				`Alt+1..4 shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
+				`Alt+1..9,0 shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
 			]);
 			if (!choice) return;
 			if (choice.startsWith("Suggestions:")) {
