@@ -86,8 +86,8 @@ beforeEach(() => {
 	chips = new ClickableText({ onActivate: (target) => activated.push(target.id) });
 	chips.attach(tui);
 	chips.setTargets([
-		{ id: "1", text: "[1 rebuild the solution]" },
-		{ id: "2", text: "[2 run the tests]" },
+		{ id: "1", text: "¹rebuild the solution" },
+		{ id: "2", text: "²run the tests" },
 	]);
 });
 
@@ -107,7 +107,7 @@ describe("mouse mode", () => {
 	});
 
 	it("passes rendered lines through untouched", () => {
-		const lines = [`${BOLD}Want me to [1 rebuild the solution]?${RESET}`];
+		const lines = [`${BOLD}Want me to ¹rebuild the solution?${RESET}`];
 		tui.draw(lines);
 		assert.deepEqual(tui.render(80), lines);
 	});
@@ -121,27 +121,27 @@ describe("mouse mode", () => {
 
 describe("hit testing", () => {
 	it("activates the chip under the cursor", () => {
-		tui.draw([`${BOLD}Want me to [1 rebuild the solution] or [2 run the tests]?${RESET}`]);
+		tui.draw([`${BOLD}Want me to ¹rebuild the solution or ²run the tests?${RESET}`]);
 		// "Want me to " is 11 columns, so the first chip starts at column 11.
 		tui.send(click(13, 1));
 		assert.deepEqual(activated, ["1"]);
 	});
 
 	it("picks the right chip when two share a line", () => {
-		tui.draw(["Want me to [1 rebuild the solution] or [2 run the tests]?"]);
+		tui.draw(["Want me to ¹rebuild the solution or ²run the tests?"]);
 		tui.send(click(41, 1));
 		assert.deepEqual(activated, ["2"]);
 	});
 
 	it("ignores clicks just outside a chip", () => {
-		tui.draw(["Want me to [1 rebuild the solution] or [2 run the tests]?"]);
-		tui.send(click(11, 1)); // the space before "["
-		tui.send(click(36, 1)); // the space after "]"
+		tui.draw(["Want me to ¹rebuild the solution or ²run the tests?"]);
+		tui.send(click(11, 1)); // the space before the chip
+		tui.send(click(36, 1)); // the space after it
 		assert.deepEqual(activated, []);
 	});
 
 	it("ignores the wheel and other buttons", () => {
-		tui.draw(["Want me to [1 rebuild the solution]"]);
+		tui.draw(["Want me to ¹rebuild the solution"]);
 		tui.send(click(13, 1, 64)); // wheel up
 		tui.send(click(13, 1, 2)); // right button
 		assert.deepEqual(activated, []);
@@ -150,13 +150,13 @@ describe("hit testing", () => {
 	});
 
 	it("ignores button release", () => {
-		tui.draw(["Want me to [1 rebuild the solution]"]);
+		tui.draw(["Want me to ¹rebuild the solution"]);
 		tui.send("\x1b[<0;13;1m");
 		assert.deepEqual(activated, []);
 	});
 
 	it("counts columns past ANSI styling, not raw string offsets", () => {
-		tui.draw([`${BOLD}Want${RESET} me to ${BOLD}[1 rebuild the solution]${RESET}`]);
+		tui.draw([`${BOLD}Want${RESET} me to ${BOLD}¹rebuild the solution${RESET}`]);
 		tui.send(click(13, 1));
 		assert.deepEqual(activated, ["1"]);
 	});
@@ -165,7 +165,7 @@ describe("hit testing", () => {
 		// 30 lines of history in a 24-row terminal: only the last 24 are visible,
 		// so the chip on buffer line 29 sits on screen row 23.
 		const lines = Array.from({ length: 30 }, (_, i) => `line ${i}`);
-		lines[29] = "Want me to [1 rebuild the solution]";
+		lines[29] = "Want me to ¹rebuild the solution";
 		tui.draw(lines);
 		tui.send(click(13, 24));
 		assert.deepEqual(activated, ["1"]);
@@ -175,30 +175,30 @@ describe("hit testing", () => {
 
 	it("a chip scrolled off the top is not clickable", () => {
 		const lines = Array.from({ length: 30 }, (_, i) => `line ${i}`);
-		lines[0] = "Want me to [1 rebuild the solution]";
+		lines[0] = "Want me to ¹rebuild the solution";
 		tui.draw(lines);
 		for (let row = 1; row <= 24; row++) tui.send(click(13, row));
 		assert.deepEqual(activated, []);
 	});
 
 	it("both halves of a wrapped chip are clickable", () => {
-		tui.draw(["Want me to [1 rebuild the", "solution] or something else"]);
+		tui.draw(["Want me to ¹rebuild the", "solution or something else"]);
 		tui.send(click(20, 1));
 		tui.send(click(3, 2));
 		assert.deepEqual(activated, ["1", "1"]);
 	});
 
 	it("stale targets stop responding", () => {
-		tui.draw(["Want me to [1 rebuild the solution]"]);
+		tui.draw(["Want me to ¹rebuild the solution"]);
 		chips.setTargets([]);
 		tui.send(click(13, 1));
 		assert.deepEqual(activated, []);
 	});
 
 	it("handles double-width labels", () => {
-		chips.setTargets([{ id: "1", text: "[1 再構築する]" }]);
-		tui.draw(["やる [1 再構築する]"]);
-		// "やる " is 5 columns; the chip runs from column 5 to 5 + 3 + 10 + 1.
+		chips.setTargets([{ id: "1", text: "¹再構築する" }]);
+		tui.draw(["やる ¹再構築する"]);
+		// "やる " is 5 columns; the chip runs from column 5 to 5 + 1 + 10.
 		tui.send(click(8, 1));
 		assert.deepEqual(activated, ["1"]);
 	});
@@ -208,7 +208,7 @@ describe("screen offset (pi launched mid-screen — the Ghostty case)", () => {
 	it("maps clicks through the true offset when pi started below a shell prompt", () => {
 		// pi drew two lines starting at screen row 11: shell history above is not
 		// pi's, and pi never clears the screen.
-		tui.draw(["Want me to [1 rebuild the solution]", "or press a key"]);
+		tui.draw(["Want me to ¹rebuild the solution", "or press a key"]);
 		tui.hardwareCursorRow = 1; // cursor on buffer line 1 …
 		tui.cursorScreenRow = 12; // … which really sits at screen row 12
 		tui.send(click(13, 11)); // the chip's true screen position
@@ -219,7 +219,7 @@ describe("screen offset (pi launched mid-screen — the Ghostty case)", () => {
 	});
 
 	it("issues one cursor-position query per click burst and consumes the report", () => {
-		tui.draw(["Want me to [1 rebuild the solution]"]);
+		tui.draw(["Want me to ¹rebuild the solution"]);
 		tui.cursorScreenRow = null; // hold the answer to inspect the exchange
 		tui.send(click(13, 1));
 		tui.send(click(41, 1));
@@ -240,8 +240,8 @@ describe("screen offset (pi launched mid-screen — the Ghostty case)", () => {
 			dsrTimeoutMs: 10,
 		});
 		localChips.attach(silent);
-		localChips.setTargets([{ id: "1", text: "[1 rebuild the solution]" }]);
-		silent.draw(["Want me to [1 rebuild the solution]"]);
+		localChips.setTargets([{ id: "1", text: "¹rebuild the solution" }]);
+		silent.draw(["Want me to ¹rebuild the solution"]);
 		silent.cursorScreenRow = null;
 		silent.send(click(13, 1));
 		assert.deepEqual(local, []);
@@ -252,7 +252,7 @@ describe("screen offset (pi launched mid-screen — the Ghostty case)", () => {
 
 	it("legacy hitTest still maps through a bottom-aligned viewport", () => {
 		const lines = Array.from({ length: 30 }, (_, i) => `line ${i}`);
-		lines[29] = "Want me to [1 rebuild the solution]";
+		lines[29] = "Want me to ¹rebuild the solution";
 		tui.draw(lines);
 		assert.equal(chips.hitTest(23, 12)?.id, "1");
 		assert.equal(chips.hitTest(22, 12), null);
@@ -267,13 +267,13 @@ describe("helpers", () => {
 	});
 
 	it("finds every occurrence on a line", () => {
-		assert.deepEqual(findSpans("x [1 a] y [1 a]", "[1 a]"), [
-			{ start: 2, end: 7 },
-			{ start: 10, end: 15 },
+		assert.deepEqual(findSpans("x ¹a y ¹a", "¹a"), [
+			{ start: 2, end: 4 },
+			{ start: 7, end: 9 },
 		]);
 	});
 
 	it("returns nothing when the text is absent", () => {
-		assert.deepEqual(findSpans("nothing to see", "[1 a]"), []);
+		assert.deepEqual(findSpans("nothing to see", "¹a"), []);
 	});
 });

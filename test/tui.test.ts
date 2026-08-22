@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toTuiMarkdown } from "../src/shared/tui-markdown.js";
+import { chipLabel, superscript, toTuiMarkdown } from "../src/shared/tui-markdown.js";
 
 describe("toTuiMarkdown (PRD §12)", () => {
 	it("renders suggestions as numbered bracketed spans", () => {
@@ -7,7 +7,7 @@ describe("toTuiMarkdown (PRD §12)", () => {
 			"Want me to <pi:suggest>rebuild the solution</pi:suggest> or <pi:suggest>run the tests</pi:suggest>?",
 			{ isStreaming: false, enabled: true },
 		);
-		expect(out).toBe("Want me to **[1 rebuild the solution]** or **[2 run the tests]**?");
+		expect(out).toBe("Want me to **`¹rebuild the solution`** or **`²run the tests`**?");
 	});
 
 	it("continues numbering across blocks via acceptedSoFar", () => {
@@ -16,7 +16,7 @@ describe("toTuiMarkdown (PRD §12)", () => {
 			enabled: true,
 			parse: { acceptedSoFar: 2 },
 		});
-		expect(out).toBe("Then **[3 option c]**?");
+		expect(out).toBe("Then **`³option c`**?");
 	});
 
 	it("leaves code fences untouched", () => {
@@ -41,7 +41,7 @@ describe("toTuiMarkdown (PRD §12)", () => {
 				isStreaming: true,
 				enabled: true,
 			}),
-		).toBe("Want me to **[1 rebuild]** or");
+		).toBe("Want me to **`¹rebuild`** or");
 	});
 
 	it("finalized unclosed tag degrades to plain text (C4)", () => {
@@ -57,12 +57,31 @@ describe("toTuiMarkdown (PRD §12)", () => {
 		const nums = Array.from({ length: 11 }, (_, i) => i + 1);
 		const input = nums.map((n) => `<pi:suggest>o${n}</pi:suggest>`).join(" ");
 		expect(toTuiMarkdown(input, { isStreaming: false, enabled: true })).toBe(
-			`${nums.slice(0, 10).map((n) => `**[${n} o${n}]**`).join(" ")} o11`,
+			`${nums.slice(0, 10).map((n) => `**\`${superscript(n)}o${n}\`**`).join(" ")} o11`,
 		);
 	});
 
 	it("plain text passes through unchanged", () => {
 		const input = "Done — the migration ran clean.";
 		expect(toTuiMarkdown(input, { isStreaming: false, enabled: true })).toBe(input);
+	});
+
+	it("suggestion text containing backticks still renders as one code span", () => {
+		const out = toTuiMarkdown("Try <pi:suggest>use `npm test`</pi:suggest> now", {
+			isStreaming: false,
+			enabled: true,
+		});
+		expect(out).toBe("Try **`` ¹use `npm test` ``** now");
+	});
+});
+
+describe("chip labels", () => {
+	it("superscripts single and double digits", () => {
+		expect(superscript(1)).toBe("¹");
+		expect(superscript(10)).toBe("¹⁰");
+	});
+
+	it("label is the superscript directly against the text", () => {
+		expect(chipLabel(2, "run the tests")).toBe("²run the tests");
 	});
 });

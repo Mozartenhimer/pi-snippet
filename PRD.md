@@ -280,7 +280,7 @@ time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
 ### Epic F — Surface parity
 
 **F1.** As a TUI user, I want the same extension to work in the terminal, even without clicking.
-*Accept:* Chips become bracketed, numbered, highlighted spans; `Alt+N` inserts. (§12)
+*Accept:* Chips become bold accent-colored spans led by a superscript number; `Alt+N` inserts. (§12)
 
 **F2.** As a user of print mode (`-p`), I don't want tags in my piped output.
 *Accept:* Tags stripped to plain text before write.
@@ -499,7 +499,7 @@ The parser is shared. The terminal path uses pi's markdown transformer hook, whi
 
 Consequences of that hook returning *markdown* rather than components:
 
-- Chips become styled, numbered, bracketed spans: `Want me to [1 rebuild the solution] or [2 run the tests]?`
+- Chips become bold spans in the theme's inline-code accent color, led by a small superscript number: `Want me to ¹rebuild the solution or ²run the tests?` (rendered via bold + code-span markdown; no brackets).
 - There is no click and no hover. `Alt+N` is the only affordance.
 - The transformer must stay pure — the addressable set is derived on message finalize and held in extension state, never built during transformation.
 - Scrolled-away suggestions remain hotkey-addressable but invisible. Only the most recent finalized message is addressable, to avoid `2` meaning two different things.
@@ -508,7 +508,7 @@ Consequences of that hook returning *markdown* rather than components:
 
 The TUI also supports real clicking, via terminal mouse reporting (DECSET 1000 + SGR 1006):
 
-- Hit testing matches the *rendered text* of each `[N label]` span on the visible screen — no position markers are embedded in the message, so the session file and the model's context stay clean. Both halves of a span wrapped across lines are clickable.
+- Hit testing matches the *rendered text* of each `ⁿlabel` span on the visible screen — no position markers are embedded in the message, so the session file and the model's context stay clean. Both halves of a span wrapped across lines are clickable.
 - Mouse reporting is terminal-wide: while on, the wheel is delivered to the application (terminal scrollback stops responding) and click-drag selection needs Shift. To keep that cost small, reporting is engaged only while the latest finalized message actually has suggestions, and can be toggled off entirely in `/suggestions`.
 - Wheel, right-button, motion, and release events are swallowed while reporting is on, so no escape sequences leak into the editor as typed garbage.
 - Screen-to-buffer mapping is anchored with a cursor-position report (DSR, `ESC[6n`) issued at click time: pi never clears the screen and draws with relative cursor moves only, so when pi is launched below an existing shell prompt its first buffer line is not screen row 0. The DSR answer, correlated with pi-tui's buffer-relative cursor bookkeeping, gives the exact offset; a terminal that never answers falls back to a bottom-aligned mapping. After an insertion the TUI is asked to repaint — consumed input bypasses pi's own render pass.

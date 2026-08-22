@@ -3,11 +3,12 @@
  * (PRD §12, surface parity F1).
  *
  * - Injects the same prompt snippet as the web variant (shared, guarded).
- * - Renders <pi:suggest> spans as numbered bracketed spans — `[1 rebuild the
- *   solution]` — via pi's markdown transformer hook. The hook is display-only:
- *   stored messages keep their raw tags, so sessions stay compatible with the
- *   web client and any other consumer.
- * - Clicking a bracketed span inserts it into the editor. Mouse reporting is
+ * - Renders <pi:suggest> spans as bold accent-colored spans led by a small
+ *   superscript number — `¹rebuild the solution` — via pi's markdown
+ *   transformer hook. The hook is display-only: stored messages keep their raw
+ *   tags, so sessions stay compatible with the web client and any other
+ *   consumer.
+ * - Clicking a chip inserts it into the editor. Mouse reporting is
  *   terminal-wide (the wheel stops scrolling the terminal and text selection
  *   needs Shift), so it is engaged only while the latest finalized message
  *   actually has suggestions, and can be toggled off in `/suggestions`.
@@ -22,7 +23,7 @@
  * never built during transformation (PRD §5.2 hard rule).
  */
 import { parseSuggestions } from "../shared/suggestions.js";
-import { toTuiMarkdown } from "../shared/tui-markdown.js";
+import { chipLabel, toTuiMarkdown } from "../shared/tui-markdown.js";
 import { registerPromptSnippet } from "./common.js";
 import { ClickableText, type TuiLike } from "./tui-mouse.js";
 
@@ -81,7 +82,7 @@ export default function piClikTui(pi: any): void {
 			if (!instance) return;
 			clickable.attach(instance);
 			clickable.setTargets(
-				state.addressable.map((text, i) => ({ id: String(i + 1), text: `[${i + 1} ${text}]` })),
+				state.addressable.map((text, i) => ({ id: String(i + 1), text: chipLabel(i + 1, text) })),
 			);
 		} else if (clickable.enabled) {
 			clickable.detach();

@@ -5,7 +5,7 @@ Acts as a minimal terminal emulator on a pty: tracks a character grid and the
 cursor, and ANSWERS DSR (ESC[6n) queries the way a real terminal does. pi is
 started below 10 lines of shell output, so its buffer row 0 sits at screen row
 ~11 — exactly the offset that broke clicking in Ghostty. The driver waits for a
-suggestion chip "[1 ..." to render, clicks its true screen position once
+suggestion chip (superscript-led span) to render, clicks its true screen position once
 (no spraying), and then submits, so the session file proves the insertion.
 """
 import fcntl
@@ -139,7 +139,7 @@ def screen_text():
 
 def find_chip():
     for r, line in enumerate(screen_text()):
-        c = line.find("[1 ")
+        c = line.find("\u00b9")  # superscript 1 leads the first chip
         if c >= 0:
             return r, c, line
     return None
@@ -194,11 +194,12 @@ def main():
         print("WARNING: chip above row 10 — offset scenario not reproduced?")
 
     # Read the label so we know what text a successful click inserts.
-    m = re.search(r"\[1 ([^\]]*)\]?", line)
+    # First two words of the chip: enough to recognize the inserted text.
+    m = re.search(r"\u00b9(\S+(?: \S+)?)", line)
     label = (m.group(1) if m else "").strip()
     print("chip label: %r" % label)
 
-    click_col = c + 3  # inside the label
+    click_col = c + 2  # inside the label
     raw.write(b"\n<<<CLICK>>>\n")
     os.write(master, b"\x1b[<0;%d;%dM\x1b[<0;%d;%dm" % (click_col + 1, r + 1, click_col + 1, r + 1))
     pump(master, 3)
@@ -212,7 +213,7 @@ def main():
 
     # The editor lives at the bottom; the inserted text should now appear there
     # in a row BELOW the chip row (the transcript copy is at/above chip row).
-    inserted = any(label in l for i, l in enumerate(after) if i > r and l.strip() and "[1 " not in l)
+    inserted = any(label in l for i, l in enumerate(after) if i > r and l.strip() and "\u00b9" not in l)
     print("rows containing the label below the chip:")
     for i, l in enumerate(after):
         if i > r and label and label in l:
@@ -224,7 +225,7 @@ def main():
         os.write(master, b"\x1b1")
         pump(master, 2)
         probe = screen_text()
-        alt_worked = any(label in l for i, l in enumerate(probe) if i > r and "[1 " not in l)
+        alt_worked = any(label in l for i, l in enumerate(probe) if i > r and "\u00b9" not in l)
         print("alt+1 control probe inserted: %s" % alt_worked)
         for i, l in enumerate(probe):
             if i > r and label and label in l:
