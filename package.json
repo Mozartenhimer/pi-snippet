@@ -18,9 +18,11 @@
 		"gen:widths": "vite-node scripts/gen-char-width.mjs",
 		"check:widths": "vite-node scripts/check-widths.mjs"
 	},
+	"dependencies": {
+		"esbuild": "^0.24.0"
+	},
 	"devDependencies": {
 		"@types/node": "^22.0.0",
-		"esbuild": "^0.24.0",
 		"happy-dom": "^15.11.0",
 		"typescript": "^5.7.0",
 		"vitest": "^2.1.0"
