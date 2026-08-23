@@ -10,7 +10,7 @@ Below is what the machine created. Fable 5 did the initial design costing about 
 
 # pi-snippet
 
-Inline suggestion snippets for [pi](https://github.com/badlogic/pi-mono). The model marks spans of its own prose as *suggested user replies* by wrapping them in `<pi:snippet>…</pi:snippet>`; the extension renders those spans in pi's terminal UI so you can insert them into the composer with a click or a keystroke. Inserting never sends — you can edit the text, add to it, or ignore it.
+Inline suggestion snippets for [pi](https://github.com/earendil-works/pi-mono). The model marks spans of its own prose as *suggested user replies* by wrapping them in `<pi:snippet>…</pi:snippet>`; the extension renders those spans in pi's terminal UI so you can insert them into the composer with a click or a keystroke. Inserting never sends — you can edit the text, add to it, or ignore it.
 
 What the model writes:
 
