@@ -67,7 +67,7 @@ The parser is pure and the transformer is stateless: the set of addressable sugg
 
 ### Caps
 
-`MAX_SUGGESTION_LENGTH` (120 characters) and `MAX_SUGGESTIONS_PER_MESSAGE` (99) are runaway guards, not style rules — 99 is simply what two-digit `Alt` addressing can reach. What the model is actually told is `SUGGESTED_PER_MESSAGE`: two to four is normal, ten is a lot. Over-cap suggestions degrade to plain text rather than disappearing.
+`MAX_SUGGESTION_LENGTH` (120 characters) and `MAX_SUGGESTIONS_PER_MESSAGE` (99) are runaway guards, not style rules — 99 is simply what two-digit `Alt` addressing can reach. Over-cap suggestions degrade to plain text rather than disappearing.
 
 ## Ground truth from a real terminal
 
