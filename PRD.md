@@ -564,7 +564,7 @@ Click hit-testing turns a character index into a screen column, so our width tab
 - **OQ2.** Should visited state persist across reload? Leaning no — the session store shouldn't carry UI ephemera.
 - **OQ3.** What separator joins two consecutively-clicked suggestions? A space is the simplest; ", " reads better for lists; " and " is presumptuous. Leaning space, revisit with usage data.
 - **OQ4.** Does the model see its own tags in context on subsequent turns? Currently yes (raw text is what's stored). This probably reinforces the pattern usefully, but should be measured — it may also cause over-emission.
-- **OQ5.** Should suggestions be suppressed while the agent is mid-task (tool calls in flight) rather than at a natural stopping point?
+- **OQ5.** Should suggestions be suppressed while the agent is mid-task (tool calls in flight) rather than at a natural stopping point? As things stand there's no signal to suppress *with*: `message_end` fires once per finalized assistant message, including ones that also carry `tool_use` blocks, and the extension listens for nothing else (`turn_start`, `tool_call`, `agent_end`). So a message that tags a suggestion *and* calls a tool in the same turn makes that chip addressable (Alt+N and click both) while the tool is still running in the background, and the system prompt gives the model no guidance against that pattern. Believed rare in practice — a model asking the user something while also invoking a tool is an odd shape — so left unaddressed rather than adding a listener for a case with no observed occurrence yet.
 - **OQ6.** Should there be a "none of these, just typing" affordance, or is the composer itself sufficient? Strong prior: sufficient. Adding one reintroduces the picker.
 
 ---
