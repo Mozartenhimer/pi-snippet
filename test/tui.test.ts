@@ -5,14 +5,14 @@ import { chipLabel, superscript, toTuiMarkdown } from "../src/shared/tui-markdow
 describe("toTuiMarkdown (PRD §12)", () => {
 	it("renders suggestions as numbered markdown links", () => {
 		const out = toTuiMarkdown(
-			"Want me to <pi:snippet>rebuild the solution</pi:snippet> or <pi:snippet>run the tests</pi:snippet>?",
+			"Want me to <snippet>rebuild the solution</snippet> or <snippet>run the tests</snippet>?",
 			{ isStreaming: false, enabled: true },
 		);
 		expect(out).toBe("Want me to [¹rebuild the solution](chip:1) or [²run the tests](chip:2)?");
 	});
 
 	it("continues numbering across blocks via acceptedSoFar", () => {
-		const out = toTuiMarkdown("Then <pi:snippet>option c</pi:snippet>?", {
+		const out = toTuiMarkdown("Then <snippet>option c</snippet>?", {
 			isStreaming: false,
 			enabled: true,
 			parse: { acceptedSoFar: 2 },
@@ -21,12 +21,12 @@ describe("toTuiMarkdown (PRD §12)", () => {
 	});
 
 	it("leaves code fences untouched", () => {
-		const input = "```html\n<pi:snippet>not real</pi:snippet>\n```";
+		const input = "```html\n<snippet>not real</snippet>\n```";
 		expect(toTuiMarkdown(input, { isStreaming: false, enabled: true })).toBe(input);
 	});
 
 	it("strips tags to plain text when disabled", () => {
-		const out = toTuiMarkdown("Want me to <pi:snippet>rebuild</pi:snippet>?", {
+		const out = toTuiMarkdown("Want me to <snippet>rebuild</snippet>?", {
 			isStreaming: false,
 			enabled: false,
 		});
@@ -34,11 +34,11 @@ describe("toTuiMarkdown (PRD §12)", () => {
 	});
 
 	it("buffers partial tags while streaming (C1)", () => {
-		expect(toTuiMarkdown("Want me to <pi:sni", { isStreaming: true, enabled: true })).toBe(
+		expect(toTuiMarkdown("Want me to <sni", { isStreaming: true, enabled: true })).toBe(
 			"Want me to ",
 		);
 		expect(
-			toTuiMarkdown("Want me to <pi:snippet>rebuild</pi:snippet> or", {
+			toTuiMarkdown("Want me to <snippet>rebuild</snippet> or", {
 				isStreaming: true,
 				enabled: true,
 			}),
@@ -47,7 +47,7 @@ describe("toTuiMarkdown (PRD §12)", () => {
 
 	it("finalized unclosed tag degrades to plain text (C4)", () => {
 		expect(
-			toTuiMarkdown("Sure — want me to <pi:snippet>rebuild the sol", {
+			toTuiMarkdown("Sure — want me to <snippet>rebuild the sol", {
 				isStreaming: false,
 				enabled: true,
 			}),
@@ -57,7 +57,7 @@ describe("toTuiMarkdown (PRD §12)", () => {
 	it("renders at most MAX_SUGGESTIONS_PER_MESSAGE numbered spans", () => {
 		const cap = MAX_SUGGESTIONS_PER_MESSAGE;
 		const nums = Array.from({ length: cap + 1 }, (_, i) => i + 1);
-		const input = nums.map((n) => `<pi:snippet>o${n}</pi:snippet>`).join(" ");
+		const input = nums.map((n) => `<snippet>o${n}</snippet>`).join(" ");
 		expect(toTuiMarkdown(input, { isStreaming: false, enabled: true })).toBe(
 			`${nums
 				.slice(0, cap)
@@ -67,7 +67,7 @@ describe("toTuiMarkdown (PRD §12)", () => {
 	});
 
 	it("numbers past nine keep both digits superscripted", () => {
-		const input = Array.from({ length: 12 }, (_, i) => `<pi:snippet>o${i + 1}</pi:snippet>`).join(" ");
+		const input = Array.from({ length: 12 }, (_, i) => `<snippet>o${i + 1}</snippet>`).join(" ");
 		const out = toTuiMarkdown(input, { isStreaming: false, enabled: true });
 		expect(out).toContain("\u00b9\u2070o10");
 		expect(out).toContain("\u00b9\u00b2o12");
@@ -79,7 +79,7 @@ describe("toTuiMarkdown (PRD §12)", () => {
 	});
 
 	it("suggestion text containing brackets is escaped in the link label", () => {
-		const out = toTuiMarkdown("Try <pi:snippet>use [npm test]</pi:snippet> now", {
+		const out = toTuiMarkdown("Try <snippet>use [npm test]</snippet> now", {
 			isStreaming: false,
 			enabled: true,
 		});

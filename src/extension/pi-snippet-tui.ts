@@ -1,10 +1,10 @@
 /**
- * pi-snippet TUI extension: renders <pi:snippet> suggested-reply spans in
+ * pi-snippet TUI extension: renders <snippet> suggested-reply spans in
  * pi's terminal UI.
  *
  * - Injects the suggested-replies prompt contract (guarded against double
  *   injection).
- * - Renders <pi:snippet> spans as markdown links led by a small superscript
+ * - Renders <snippet> spans as markdown links led by a small superscript
  *   number — `¹rebuild the solution` — via pi's markdown transformer hook.
  *   The hook is display-only: stored messages keep their raw tags, so
  *   sessions stay readable by any other transcript consumer.

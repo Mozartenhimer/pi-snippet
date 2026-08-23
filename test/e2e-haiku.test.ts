@@ -3,7 +3,7 @@
  *
  * Spawns pi in RPC mode with the pi-snippet-tui extension loaded and global
  * extension discovery disabled, sends a prompt engineered to elicit
- * suggestions, and asserts that the model emits well-formed <pi:snippet>
+ * suggestions, and asserts that the model emits well-formed <snippet>
  * tags that our parser accepts.
  *
  * Requires: `pi` on PATH with a working provider (default claude-bridge).
@@ -112,7 +112,7 @@ function startRpc(): RpcRun {
 
 describe.skipIf(!piAvailable)("e2e with live model", () => {
 	it(
-		"model emits parseable <pi:snippet> tags when asked a two-option question",
+		"model emits parseable <snippet> tags when asked a two-option question",
 		async () => {
 			const rpc = startRpc();
 			try {

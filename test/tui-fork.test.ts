@@ -52,7 +52,7 @@ describe("pi-snippet-tui: fork/resume rehydration", () => {
 				type: "message",
 				message: {
 					role: "assistant",
-					content: [{ type: "text", text: "Pick <pi:snippet>the first</pi:snippet>." }],
+					content: [{ type: "text", text: "Pick <snippet>the first</snippet>." }],
 				},
 			},
 		];
@@ -72,7 +72,7 @@ describe("pi-snippet-tui: fork/resume rehydration", () => {
 				type: "message",
 				message: {
 					role: "assistant",
-					content: [{ type: "text", text: "Try <pi:snippet>rebuild</pi:snippet>?" }],
+					content: [{ type: "text", text: "Try <snippet>rebuild</snippet>?" }],
 				},
 			},
 		];
@@ -92,7 +92,7 @@ describe("pi-snippet-tui: fork/resume rehydration", () => {
 				type: "message",
 				message: {
 					role: "assistant",
-					content: [{ type: "text", text: "Try <pi:snippet>rebuild</pi:snippet>?" }],
+					content: [{ type: "text", text: "Try <snippet>rebuild</snippet>?" }],
 				},
 			},
 			{ type: "message", message: { role: "user", content: "ok, done" } },
@@ -114,7 +114,7 @@ describe("pi-snippet-tui: fork/resume rehydration", () => {
 				type: "message",
 				message: {
 					role: "assistant",
-					content: [{ type: "text", text: "Pick <pi:snippet>the first</pi:snippet>." }],
+					content: [{ type: "text", text: "Pick <snippet>the first</snippet>." }],
 				},
 			},
 			{ type: "message", message: { role: "user", content: "the first, thanks" } },

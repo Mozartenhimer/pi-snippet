@@ -1,5 +1,5 @@
 /**
- * Pure parser for inline suggestion tags (`<pi:snippet>...</pi:snippet>`).
+ * Pure parser for inline suggestion tags (`<snippet>...</snippet>`).
  *
  * Shared between the TUI transformer and tests.
  * No state, no DOM — takes raw assistant markdown, returns a token stream.
@@ -17,7 +17,7 @@
  *  9. More than maxPerMessage: first N are chips, the rest render plainly.
  */
 
-export const SNIPPET_TAG = "pi:snippet";
+export const SNIPPET_TAG = "snippet";
 export const MAX_SUGGESTION_LENGTH = 120;
 /**
  * Hard ceiling — a runaway-output guard, not a style rule. It matches what
@@ -277,7 +277,7 @@ const STREAM_RESOLVE_SLACK = 40;
  * ever painting raw or partial suggestion markup (PRD §7 Streaming, 10.7).
  *
  * Hidden (buffered) cases:
- *  - a trailing partial tag: `<pi`, `<pi:snippet`, `</pi:sug` …
+ *  - a trailing partial tag: `<sn`, `<snippet`, `</snip` …
  *  - a complete open tag whose close tag has not arrived yet
  *    (the whole construct is withheld until it resolves)
  *

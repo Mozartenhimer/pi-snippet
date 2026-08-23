@@ -9,12 +9,12 @@ Below is what the machine created. Fable 5 did the initial design costing about 
 
 # pi-snippet
 
-Inline suggestion snippets for [pi](https://github.com/earendil-works/pi-mono). The model marks spans of its own prose as *suggested user replies* by wrapping them in `<pi:snippet>…</pi:snippet>`; the extension renders those spans in pi's terminal UI so you can insert them into the composer with a click or a keystroke. Inserting never sends — you can edit the text, add to it, or ignore it.
+Inline suggestion snippets for [pi](https://github.com/earendil-works/pi-mono). The model marks spans of its own prose as *suggested user replies* by wrapping them in `<snippet>…</snippet>`; the extension renders those spans in pi's terminal UI so you can insert them into the composer with a click or a keystroke. Inserting never sends — you can edit the text, add to it, or ignore it.
 
 What the model writes:
 
 ```
-Want me to <pi:snippet>rebuild the solution</pi:snippet> or <pi:snippet>run the tests</pi:snippet>?
+Want me to <snippet>rebuild the solution</snippet> or <snippet>run the tests</snippet>?
 ```
 
 What you see in the terminal — link-styled text led by a small superscript number:
@@ -44,7 +44,7 @@ pi -e /path/to/pi-snippet/dist/extension/pi-snippet-tui.js
 
 Install it permanently with `pi install /path/to/pi-snippet/dist/extension/pi-snippet-tui.js`, or keep passing `-e` per run.
 
-Suggestions render through pi's markdown transformer hook, which is **display-only**: stored messages keep their raw `<pi:snippet>` tags, so a session stays readable by anything else that consumes the transcript.
+Suggestions render through pi's markdown transformer hook, which is **display-only**: stored messages keep their raw `<snippet>` tags, so a session stays readable by anything else that consumes the transcript.
 
 - **Click a chip** to insert it. Mouse reporting is a terminal-wide mode, so it is engaged only while the latest message actually has suggestions; during that window the scroll wheel belongs to pi and text selection needs Shift held.
 - **`Alt+N`** inserts the Nth suggestion of the most recent finalized message — only that message is addressable, so a number never means two things. Ten digit keys address ten suggestions; **beyond ten**, hold Alt and type two digits (Alt held across `1` then `2` inserts the twelfth). A single digit commits immediately unless a longer number is still reachable, so the brief wait only exists on a message with ten or more suggestions. `Alt+0` still means the tenth. The cap is 99 — see below.
