@@ -17,17 +17,13 @@ What the model writes:
 Want me to <snippet>rebuild the solution</snippet> or <snippet>run the tests</snippet>?
 ```
 
-What you see in the terminal — link-styled text led by a small superscript number:
+What you see in the terminal — link-styled text led by a small superscript number. The transformer's actual output is a markdown link (`[¹rebuild the solution](chip:1)`), so it renders the same way right here:
 
-```
-Want me to ¹rebuild the solution or ²run the tests?
-```
+> Want me to [¹rebuild the solution](chip:1) or [²run the tests](chip:2)?
 
 More than ten in one message still each get their own number, and `Alt` addresses all of them (see below):
 
-```
-¹do this ²or this ³or this ⁴or this ⁵or this ⁶or this ⁷or this ⁸or this ⁹or this ¹⁰or this ¹¹or this
-```
+> [¹do this](chip:1) [²or this](chip:2) [³or this](chip:3) [⁴or this](chip:4) [⁵or this](chip:5) [⁶or this](chip:6) [⁷or this](chip:7) [⁸or this](chip:8) [⁹or this](chip:9) [¹⁰or this](chip:10) [¹¹or this](chip:11)
 
 ## Build
 
@@ -57,7 +53,7 @@ Suggestions render through pi's markdown transformer hook, which is **display-on
 | Parser | `src/shared/suggestions.ts` | Pure function: raw assistant markdown → text/suggestion token stream. Holds every sanitization rule (code fences, inline code, unclosed and nested tags, blank-line spans, the 120-character length cap, the per-message cap) plus `visibleStreamingPrefix()`, so a partial tag is never painted mid-stream. |
 | Prompt snippet | `src/shared/prompt-snippet.ts` | The model-side contract: when to emit a tag, with worked good and bad examples. |
 | Digit addressing | `src/shared/digit-chord.ts` | Pure rules for turning typed digits into a suggestion number. |
-| TUI markdown | `src/shared/tui-markdown.ts` | Suggestion nodes → `**\`¹text\`**`, which pi paints as bold text in the inline-code accent color. |
+| TUI markdown | `src/shared/tui-markdown.ts` | Suggestion nodes → `[¹text](chip:N)`, which pi paints as link-colored text; the `chip:N` URL is inert and never navigated. |
 | Extension | `src/extension/pi-snippet-tui.ts`, `common.ts` | Injects the prompt snippet, installs the markdown transformer, and wires up the `Alt+N` shortcuts and click handling. Injection goes through both the chained `systemPrompt` return (direct providers) and `systemPromptOptions.appendSystemPrompt` (bridges like pi-claude-bridge, which rebuild their own prompt and ignore the former). |
 | Terminal clicking | `src/extension/tui-mouse.ts` | SGR mouse reporting plus hit-testing against the rendered text. Screen rows are mapped to buffer lines using a cursor-position report, because pi never clears the screen and its first line is wherever your shell prompt was. |
 | Glyph widths | `src/extension/char-width.ts` | Generated, not hand-written — see below. |
