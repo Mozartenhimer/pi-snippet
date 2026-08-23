@@ -38,7 +38,7 @@ export default function piClikTui(pi: any): void {
 	const state = {
 		enabled: true,
 		hotkeysEnabled: true,
-		clickEnabled: true,
+		clickEnabled: false,
 		/** Suggestions of the most recent finalized assistant message. */
 		addressable: [] as string[],
 	};
