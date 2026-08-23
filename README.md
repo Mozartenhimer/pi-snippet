@@ -18,10 +18,16 @@ What the model writes:
 Want me to <pi:snippet>rebuild the solution</pi:snippet> or <pi:snippet>run the tests</pi:snippet>?
 ```
 
-What you see in the terminal — bold accent-colored spans led by a small superscript number:
+What you see in the terminal — link-styled text led by a small superscript number:
 
 ```
 Want me to ¹rebuild the solution or ²run the tests?
+```
+
+More than ten in one message still each get their own number, and `Alt` addresses all of them (see below):
+
+```
+¹do this ²or this ³or this ⁴or this ⁵or this ⁶or this ⁷or this ⁸or this ⁹or this ¹⁰or this ¹¹or this
 ```
 
 ## Build
@@ -42,7 +48,7 @@ Install it permanently with `pi install /path/to/pi-snippet/dist/extension/pi-sn
 Suggestions render through pi's markdown transformer hook, which is **display-only**: stored messages keep their raw `<pi:snippet>` tags, so a session stays readable by anything else that consumes the transcript.
 
 - **Click a chip** to insert it. Mouse reporting is a terminal-wide mode, so it is engaged only while the latest message actually has suggestions; during that window the scroll wheel belongs to pi and text selection needs Shift held.
-- **`Alt+N`** inserts the Nth suggestion of the most recent finalized message — only that message is addressable, so a number never means two things. Ten digit keys address ten suggestions; beyond that, hold Alt and type two digits (Alt held across `1` then `2` inserts the twelfth). A single digit commits immediately unless a longer number is still reachable, so the brief wait only exists on a message with ten or more suggestions. `Alt+0` still means the tenth.
+- **`Alt+N`** inserts the Nth suggestion of the most recent finalized message — only that message is addressable, so a number never means two things. Ten digit keys address ten suggestions; **beyond ten**, hold Alt and type two digits (Alt held across `1` then `2` inserts the twelfth). A single digit commits immediately unless a longer number is still reachable, so the brief wait only exists on a message with ten or more suggestions. `Alt+0` still means the tenth. The cap is 99 — see below.
 - **`/snippets`** toggles three things independently: the feature, the `Alt` shortcuts, and click-to-insert. `--no-suggestions` disables everything for a session.
 
 ## How it works
