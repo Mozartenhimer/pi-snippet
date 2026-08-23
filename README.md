@@ -17,66 +17,23 @@ What the model writes:
 Want me to <snippet>rebuild the solution</snippet> or <snippet>run the tests</snippet>?
 ```
 
-What you see in the terminal — link-styled text led by a small superscript number. The transformer's actual output is a markdown link (`[¹rebuild the solution](chip:1)`); GitHub's sanitizer strips the `href` from the inert `chip:` scheme, so the examples below link to the subsections underneath instead, purely so this page actually renders them as working links the way the terminal does:
+What you see in the terminal — link-styled text led by a small superscript number. The transformer's actual output is a markdown link (`[¹rebuild the solution](chip:1)`) whose URL is inert and never navigated; GitHub's sanitizer strips the `href` from that `chip:` scheme entirely, so the examples below use plain `#N` anchors instead, purely so this page renders them link-styled the way the terminal does:
 
-Want me to [¹rebuild the solution](#rebuild-the-solution) or [²run the tests](#run-the-tests)?
+Want me to [¹rebuild the solution](#1) or [²run the tests](#2)?
 
 More than ten in one message still each get their own number, and `Alt` addresses all of them (see below):
 
-- [¹check the logs](#check-the-logs)
-- [²clear the cache](#clear-the-cache)
-- [³restart the server](#restart-the-server)
-- [⁴roll back the deploy](#roll-back-the-deploy)
-- [⁵grep the error](#grep-the-error)
-- [⁶bump the version](#bump-the-version)
-- [⁷open a ticket](#open-a-ticket)
-- [⁸ping the on-call](#ping-the-on-call)
-- [⁹skip for now](#skip-for-now)
-- [¹⁰rerun the pipeline](#rerun-the-pipeline)
-- [¹¹diff the config](#diff-the-config)
-
-### Examples
-
-Each suggestion above links here — these subsections exist only to give the chip links a real target, since GitHub strips the `href` off the `chip:` scheme the extension actually uses.
-
-#### Rebuild the solution
-*(chip target)*
-
-#### Run the tests
-*(chip target)*
-
-#### Check the logs
-*(chip target)*
-
-#### Clear the cache
-*(chip target)*
-
-#### Restart the server
-*(chip target)*
-
-#### Roll back the deploy
-*(chip target)*
-
-#### Grep the error
-*(chip target)*
-
-#### Bump the version
-*(chip target)*
-
-#### Open a ticket
-*(chip target)*
-
-#### Ping the on-call
-*(chip target)*
-
-#### Skip for now
-*(chip target)*
-
-#### Rerun the pipeline
-*(chip target)*
-
-#### Diff the config
-*(chip target)*
+- [¹check the logs](#1)
+- [²clear the cache](#2)
+- [³restart the server](#3)
+- [⁴roll back the deploy](#4)
+- [⁵grep the error](#5)
+- [⁶bump the version](#6)
+- [⁷open a ticket](#7)
+- [⁸ping the on-call](#8)
+- [⁹skip for now](#9)
+- [¹⁰rerun the pipeline](#10)
+- [¹¹diff the config](#11)
 
 ## Build
 
