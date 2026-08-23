@@ -1,10 +1,9 @@
 # Human generated content
- The idea here is that the questionaire type things are too limited, and I found myself copy and pasting content into my answer. Why can the llm make that a bit easier by suggesting snippets that might be good replies?
+ The idea here is that the questionaire type things are too limited, and I found myself copy and pasting content into my answer. Why can't the LLM make that a bit easier by suggesting snippets that might be good replies? See Human Compatible by Stuart Russell. 
 
 So that's what this does.
 
-An earlier version also had a web UI, but the best interface is the TUI, since it doesn't change my workflow now.
-
+An earlier version also had a web UI, but the best interface is the TUI for me at the moment. Mostly since it doesn't change my workflow now.
 
 Below is what the machine created. Fable 5 did the initial design costing about 93 $ in credits, refinement with opus 5 and sonnet 5.
 
