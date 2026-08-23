@@ -3,7 +3,7 @@
 	"version": "0.1.0",
 	"description": "Inline suggestion snippets for pi: the model's suggested replies become clickable chips in the terminal",
 	"type": "module",
-	"license": "MIT",
+	"license": "GPL-2.0-or-later",
 	"keywords": ["pi-package"],
 	"pi": {
 		"extensions": ["dist/extension/pi-snippet-tui.js"]
