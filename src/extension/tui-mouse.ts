@@ -76,9 +76,9 @@ export interface ClickableTextOptions {
 	dsrTimeoutMs?: number;
 }
 
-/** Diagnostics for click mapping; set PI_CLIK_CLICK_DEBUG to a file path. */
+/** Diagnostics for click mapping; set PI_SNIPPET_CLICK_DEBUG to a file path. */
 function debugLog(message: () => string): void {
-	const path = process.env.PI_CLIK_CLICK_DEBUG;
+	const path = process.env.PI_SNIPPET_CLICK_DEBUG;
 	if (!path) return;
 	try {
 		appendFileSync(path, `${message()}\n---\n`);

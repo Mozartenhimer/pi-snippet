@@ -1,5 +1,5 @@
 /**
- * Pure parser for inline suggestion tags (`<pi:suggest>...</pi:suggest>`).
+ * Pure parser for inline suggestion tags (`<pi:snippet>...</pi:snippet>`).
  *
  * Shared between surfaces (web renderer, tests, potential TUI transformer).
  * No state, no DOM — takes raw assistant markdown, returns a token stream.
@@ -17,7 +17,7 @@
  *  9. More than maxPerMessage: first N are chips, the rest render plainly.
  */
 
-export const SUGGEST_TAG = "pi:suggest";
+export const SNIPPET_TAG = "pi:snippet";
 export const MAX_SUGGESTION_LENGTH = 120;
 /**
  * Hard ceiling — a runaway-output guard, not a style rule. It matches what
@@ -68,7 +68,7 @@ interface Region {
 
 function resolveOpts(opts?: SuggestOptions) {
 	return {
-		tagName: opts?.tagName ?? SUGGEST_TAG,
+		tagName: opts?.tagName ?? SNIPPET_TAG,
 		maxLength: opts?.maxLength ?? MAX_SUGGESTION_LENGTH,
 		maxPerMessage: opts?.maxPerMessage ?? MAX_SUGGESTIONS_PER_MESSAGE,
 		acceptedSoFar: opts?.acceptedSoFar ?? 0,
@@ -280,7 +280,7 @@ const STREAM_RESOLVE_SLACK = 40;
  * ever painting raw or partial suggestion markup (PRD §7 Streaming, 10.7).
  *
  * Hidden (buffered) cases:
- *  - a trailing partial tag: `<pi`, `<pi:suggest`, `</pi:sug` …
+ *  - a trailing partial tag: `<pi`, `<pi:snippet`, `</pi:sug` …
  *  - a complete open tag whose close tag has not arrived yet
  *    (the whole construct is withheld until it resolves)
  *

@@ -21,11 +21,11 @@ import termios
 import time
 
 ROWS, COLS = 40, 110
-EXT = "/home/fcb/sw/pi-clik/dist/extension/pi-clik-tui.js"
+EXT = "/home/fcb/sw/pi-clik/dist/extension/pi-snippet-tui.js"
 PROMPT = ("I finished refactoring the auth module. Two obvious next steps: "
           "rebuild the project, or run the test suite. Ask me which I want.")
 
-raw = open("/tmp/pi-clik-click-raw.bin", "wb", buffering=0)
+raw = open("/tmp/pi-snippet-click-raw.bin", "wb", buffering=0)
 grid = [[" "] * COLS for _ in range(ROWS)]
 row = col = 0
 saved = (0, 0)

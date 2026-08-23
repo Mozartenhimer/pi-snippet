@@ -1,7 +1,7 @@
 /**
- * pi-clik server.
+ * pi-snippet server.
  *
- * Spawns `pi --mode rpc` with the pi-clik extension loaded, serves the web
+ * Spawns `pi --mode rpc` with the pi-snippet extension loaded, serves the web
  * client, and bridges the RPC JSONL protocol to browsers over a WebSocket:
  * client messages go to pi's stdin verbatim, pi's stdout lines are broadcast
  * to every connected client verbatim.
@@ -44,7 +44,7 @@ function parseArgs(argv: string[]): Options {
 		else if (a === "--isolate") opts.isolate = true;
 		else if (a === "--help" || a === "-h") {
 			console.log(
-				"usage: pi-clik [--port 3141] [--cwd dir] [--pi-bin pi] [--no-open] [--isolate] [-- <extra pi args>]",
+				"usage: pi-snippet [--port 3141] [--cwd dir] [--pi-bin pi] [--no-open] [--isolate] [-- <extra pi args>]",
 			);
 			process.exit(0);
 		} else if (a === "--") {
@@ -58,15 +58,15 @@ function parseArgs(argv: string[]): Options {
 }
 
 const opts = parseArgs(process.argv.slice(2));
-const extensionPath = join(here, "extension", "pi-clik.js");
+const extensionPath = join(here, "extension", "pi-snippet.js");
 
 /**
- * Normal runs use pi's regular extension discovery plus the pi-clik
+ * Normal runs use pi's regular extension discovery plus the pi-snippet
  * extension. `--isolate` instead runs pi with `--no-extensions` and re-adds
  * only the extension packages configured in ~/.pi/agent/settings.json
  * (keeping provider bridges working). Use it when a globally installed
  * extension interferes with the suggestion tags — e.g. a TUI suggestion
- * extension that rewrites <pi:suggest> spans in stored messages at
+ * extension that rewrites <pi:snippet> spans in stored messages at
  * message_end, destroying them before the web client can render chips.
  */
 function extensionArgs(): string[] {
@@ -98,7 +98,7 @@ function broadcast(line: string): void {
 
 function startPi(): void {
 	const args = ["--mode", "rpc", ...extensionArgs(), ...opts.piArgs];
-	console.log(`[pi-clik] starting: ${opts.piBin} ${args.join(" ")} (cwd: ${opts.cwd})`);
+	console.log(`[pi-snippet] starting: ${opts.piBin} ${args.join(" ")} (cwd: ${opts.cwd})`);
 	pi = spawn(opts.piBin, args, { cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"] });
 
 	let buf = "";
@@ -116,12 +116,12 @@ function startPi(): void {
 	pi.stderr.setEncoding("utf8");
 	pi.stderr.on("data", (chunk: string) => process.stderr.write(`[pi] ${chunk}`));
 	pi.on("exit", (code) => {
-		console.error(`[pi-clik] pi exited with code ${code}`);
-		broadcast(JSON.stringify({ type: "pi-clik", event: "proc-exit", code }));
+		console.error(`[pi-snippet] pi exited with code ${code}`);
+		broadcast(JSON.stringify({ type: "pi-snippet", event: "proc-exit", code }));
 	});
 	pi.on("error", (err) => {
-		console.error(`[pi-clik] failed to start pi: ${err.message}`);
-		broadcast(JSON.stringify({ type: "pi-clik", event: "proc-exit", code: -1 }));
+		console.error(`[pi-snippet] failed to start pi: ${err.message}`);
+		broadcast(JSON.stringify({ type: "pi-snippet", event: "proc-exit", code: -1 }));
 	});
 }
 
@@ -172,7 +172,7 @@ wss.on("connection", (socket) => {
 startPi();
 server.listen(opts.port, () => {
 	const url = `http://localhost:${opts.port}`;
-	console.log(`[pi-clik] web client at ${url}`);
+	console.log(`[pi-snippet] web client at ${url}`);
 	if (opts.open) {
 		const opener =
 			process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";

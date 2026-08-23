@@ -1,10 +1,10 @@
 /**
  * Live end-to-end test against a real model (Claude Haiku 4.5).
  *
- * Spawns pi in RPC mode exactly the way the pi-clik server does — with the
- * pi-clik extension loaded and global extension discovery disabled — sends a
+ * Spawns pi in RPC mode exactly the way the pi-snippet server does — with the
+ * pi-snippet extension loaded and global extension discovery disabled — sends a
  * prompt engineered to elicit suggestions, and asserts that the model emits
- * well-formed <pi:suggest> tags that our parser accepts.
+ * well-formed <pi:snippet> tags that our parser accepts.
  *
  * Requires: `pi` on PATH with a working provider (default claude-bridge).
  * Run with `npm run test:e2e`. Skipped automatically when pi is missing.
@@ -17,8 +17,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseSuggestions } from "../src/shared/suggestions.js";
 
-const PROVIDER = process.env.PI_CLIK_TEST_PROVIDER ?? "claude-bridge";
-const MODEL = process.env.PI_CLIK_TEST_MODEL ?? "claude-haiku-4-5";
+const PROVIDER = process.env.PI_SNIPPET_TEST_PROVIDER ?? "claude-bridge";
+const MODEL = process.env.PI_SNIPPET_TEST_MODEL ?? "claude-haiku-4-5";
 const TIMEOUT_MS = 240_000;
 
 const piAvailable = spawnSync("pi", ["--version"], { timeout: 10_000 }).status === 0;
@@ -42,7 +42,7 @@ interface RpcRun {
 
 function startRpc(): RpcRun {
 	const here = dirname(fileURLToPath(import.meta.url));
-	const extensionPath = join(here, "..", "dist", "extension", "pi-clik.js");
+	const extensionPath = join(here, "..", "dist", "extension", "pi-snippet.js");
 	const args = [
 		"--mode",
 		"rpc",
@@ -56,7 +56,7 @@ function startRpc(): RpcRun {
 		"--model",
 		MODEL,
 	];
-	const cwd = mkdtempSync(join(tmpdir(), "pi-clik-e2e-"));
+	const cwd = mkdtempSync(join(tmpdir(), "pi-snippet-e2e-"));
 	const proc = spawn("pi", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
 	proc.stderr.setEncoding("utf8");
 	let stderr = "";
@@ -112,7 +112,7 @@ function startRpc(): RpcRun {
 
 describe.skipIf(!piAvailable)("e2e with live model", () => {
 	it(
-		"model emits parseable <pi:suggest> tags when asked a two-option question",
+		"model emits parseable <pi:snippet> tags when asked a two-option question",
 		async () => {
 			const rpc = startRpc();
 			try {

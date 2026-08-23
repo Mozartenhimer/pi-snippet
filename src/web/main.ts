@@ -1,10 +1,10 @@
 /**
- * pi-clik web client.
+ * pi-snippet web client.
  *
- * Talks to the pi-clik server over a WebSocket that bridges pi's RPC mode
+ * Talks to the pi-snippet server over a WebSocket that bridges pi's RPC mode
  * (JSONL commands in, JSONL responses/events out). Renders the transcript,
  * streams assistant text with suggestion-safe buffering, and turns
- * <pi:suggest> spans into clickable chips that insert into the composer.
+ * <pi:snippet> spans into clickable chips that insert into the composer.
  */
 import { DigitChord } from "../shared/digit-chord.js";
 import { parseSuggestions } from "../shared/suggestions.js";
@@ -51,8 +51,8 @@ const state: AppState = {
 	liveSuggestions: [],
 	isStreaming: false,
 	streamingIndex: -1,
-	chipsEnabled: loadSetting("pi-clik.chips", true),
-	hotkeysEnabled: loadSetting("pi-clik.hotkeys", true),
+	chipsEnabled: loadSetting("pi-snippet.chips", true),
+	hotkeysEnabled: loadSetting("pi-snippet.hotkeys", true),
 };
 
 function loadSetting(key: string, fallback: boolean): boolean {
@@ -147,7 +147,7 @@ function handleServerMessage(msg: any): void {
 		case "tool_execution_update":
 		case "tool_execution_end":
 			break;
-		case "pi-clik":
+		case "pi-snippet":
 			if (msg.event === "proc-exit") {
 				setStatus("pi process exited");
 				addSystemNote("The pi process exited. Restart the server to continue.");
@@ -552,13 +552,13 @@ $("settings-btn").addEventListener("click", () => {
 });
 toggleChips.addEventListener("change", () => {
 	state.chipsEnabled = toggleChips.checked;
-	saveSetting("pi-clik.chips", state.chipsEnabled);
+	saveSetting("pi-snippet.chips", state.chipsEnabled);
 	recomputeLive();
 	renderAll();
 });
 toggleHotkeys.addEventListener("change", () => {
 	state.hotkeysEnabled = toggleHotkeys.checked;
-	saveSetting("pi-clik.hotkeys", state.hotkeysEnabled);
+	saveSetting("pi-snippet.hotkeys", state.hotkeysEnabled);
 });
 
 // ---------------------------------------------------------------------------

@@ -1,10 +1,10 @@
-import { SUGGEST_TAG, SUGGESTED_PER_MESSAGE } from "./suggestions.js";
+import { SNIPPET_TAG, SUGGESTED_PER_MESSAGE } from "./suggestions.js";
 
 /**
  * The model-side contract (PRD §6). Appended to the system prompt by the
- * pi-clik extension. Teaches the model the tag and when to use it.
+ * pi-snippet extension. Teaches the model the tag and when to use it.
  */
-export function buildPromptSnippet(tagName: string = SUGGEST_TAG): string {
+export function buildPromptSnippet(tagName: string = SNIPPET_TAG): string {
 	return `## Suggested replies
 
 The user's client renders spans wrapped in <${tagName}>...</${tagName}> as clickable chips that insert the wrapped text into the user's message composer. Use this to save the user typing. This allows the user to compose and edit snippets suggested by the agent.

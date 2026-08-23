@@ -10,7 +10,7 @@ import { buildPromptSnippet } from "../shared/prompt-snippet.js";
  *    pi-claude-bridge) that rebuild their own prompt and forward only the
  *    portable parts of systemPromptOptions.
  *
- * Both paths are guarded with includes() so loading more than one pi-clik
+ * Both paths are guarded with includes() so loading more than one pi-snippet
  * extension (web + TUI) injects the snippet exactly once.
  */
 export function registerPromptSnippet(pi: any, isEnabled: () => boolean = () => true): void {

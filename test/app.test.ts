@@ -49,7 +49,7 @@ beforeAll(async () => {
 	ws.onopen?.();
 });
 
-describe("pi-clik app integration", () => {
+describe("pi-snippet app integration", () => {
 	it("connects and hydrates on open", () => {
 		const types = ws.sent.map((s) => JSON.parse(s).type);
 		expect(types).toContain("get_state");
@@ -66,7 +66,7 @@ describe("pi-clik app integration", () => {
 					{ role: "user", content: [{ type: "text", text: "which one?" }] },
 					{
 						role: "assistant",
-						content: [{ type: "text", text: "Pick <pi:suggest>the first</pi:suggest>." }],
+						content: [{ type: "text", text: "Pick <pi:snippet>the first</pi:snippet>." }],
 					},
 				],
 			},
@@ -84,7 +84,7 @@ describe("pi-clik app integration", () => {
 			type: "message_start",
 			message: { role: "assistant", content: [] },
 		});
-		const chunks = ["Want me to <pi", ":suggest>rebuild</pi:sug", "gest> now?"];
+		const chunks = ["Want me to <pi", ":snippet>rebuild</pi:sni", "ppet> now?"];
 		let acc = "";
 		ws.deliver({
 			type: "message_update",
@@ -118,7 +118,7 @@ describe("pi-clik app integration", () => {
 		expect(chip.textContent).toBe("rebuild");
 		expect(messagesEl.textContent).toContain("Want me to");
 		expect(messagesEl.textContent).toContain("now?");
-		expect(messagesEl.textContent).not.toContain("<pi:suggest");
+		expect(messagesEl.textContent).not.toContain("<pi:snippet");
 	});
 
 	it("clicking the chip inserts into the composer and marks it visited", () => {

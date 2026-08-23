@@ -24,7 +24,7 @@ import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KEYS = os.path.join(HERE, ".build", "ghostty-keys")
-EXT = os.path.join(HERE, "..", "dist", "extension", "pi-clik-tui.js")
+EXT = os.path.join(HERE, "..", "dist", "extension", "pi-snippet-tui.js")
 
 PROMPT = ("I'm testing suggestion numbering. Give me exactly twelve different one-line "
           "next steps I could ask for, each wrapped as a suggestion. Keep each under six words.")

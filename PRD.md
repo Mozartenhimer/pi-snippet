@@ -75,10 +75,10 @@ The web client is the right surface because a rendered message is already a tree
 The model emits a namespaced tag inside its normal prose:
 
 ```
-Do you want me to <pi:suggest>rebuild the solution</pi:suggest> first?
+Do you want me to <pi:snippet>rebuild the solution</pi:snippet> first?
 ```
 
-**Why namespaced.** The obvious choice, `<option>`, is a real HTML element. A coding agent reads, writes, and discusses files full of `<option>` tags every day. `<pi:suggest>` will effectively never appear in source code by accident, and if it does, §5.3 covers it.
+**Why namespaced.** The obvious choice, `<option>`, is a real HTML element. A coding agent reads, writes, and discusses files full of `<option>` tags every day. `<pi:snippet>` will effectively never appear in source code by accident, and if it does, §5.3 covers it.
 
 The inserted text is always exactly the element's text content — what you see is what lands in the composer. Attributes on the tag are ignored.
 
@@ -100,8 +100,8 @@ Applied by the parser, in order:
 
 1. Content inside fenced code blocks (```) is never parsed for suggestion tags.
 2. Content inside inline code spans (`` ` ``) is never parsed.
-3. A `<pi:suggest>` with no matching close tag before end-of-message is **not** rendered as a chip; its inner text is emitted as ordinary text and the opening tag is dropped. The rest of the message renders normally.
-4. Nested `<pi:suggest>` is invalid. The outer tag wins; inner tags are stripped as text.
+3. A `<pi:snippet>` with no matching close tag before end-of-message is **not** rendered as a chip; its inner text is emitted as ordinary text and the opening tag is dropped. The rest of the message renders normally.
+4. Nested `<pi:snippet>` is invalid. The outer tag wins; inner tags are stripped as text.
 5. Suggestion text is capped at 120 characters. Over the cap, the tag is discarded and the text rendered plainly.
 6. Suggestion text is escaped as text content, never as HTML. A chip cannot inject markup.
 
@@ -113,7 +113,7 @@ Shipped as the extension's prompt snippet. Should include worked positive and ne
 
 **Instructions to the model:**
 
-- Wrap a span in `<pi:suggest>...</pi:suggest>` when the wrapped text would be a sensible, complete thing for the user to say back to you.
+- Wrap a span in `<pi:snippet>...</pi:snippet>` when the wrapped text would be a sensible, complete thing for the user to say back to you.
 - Use it most when you have just asked a question with a small number of likely answers.
 - Never emit the tag inside a code block, inline code span, file content, or diff.
 - Never wrap text that isn't a plausible user utterance — don't wrap nouns, filenames, or fragments that only make sense in your sentence.
@@ -124,22 +124,22 @@ Shipped as the extension's prompt snippet. Should include worked positive and ne
 **Positive example given to the model:**
 
 ```
-The build failed in three places. Want me to <pi:suggest>fix them one at a
-time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
+The build failed in three places. Want me to <pi:snippet>fix them one at a
+time</pi:snippet>, or <pi:snippet>show me all three errors first</pi:snippet>?
 ```
 
 **Negative examples given to the model:**
 
 ```
-❌ I'll edit <pi:suggest>src/main.rs</pi:suggest> next.
+❌ I'll edit <pi:snippet>src/main.rs</pi:snippet> next.
    (A filename is not a user reply.)
 
 ❌ ```html
-   <select><pi:suggest>option A</pi:suggest></select>
+   <select><pi:snippet>option A</pi:snippet></select>
    ```
    (Never inside code.)
 
-❌ Since you'll want to <pi:suggest>rebuild</pi:suggest>, I'll start now.
+❌ Since you'll want to <pi:snippet>rebuild</pi:snippet>, I'll start now.
    (Don't suggest and then act as if it was chosen.)
 ```
 
@@ -157,7 +157,7 @@ time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
 
 **Wrapping.** Chips must wrap across lines like normal text. A five-word suggestion at the end of a line breaks mid-chip; both fragments keep the background tint. No `white-space: nowrap`.
 
-**Streaming.** While a message streams, a partially-received tag must never flash raw markup. Buffer from the first `<` that could begin `<pi:suggest` until the token is resolved as either the tag or ordinary text. On resolution, render. Chips are inert (rendered, not clickable) until the message finalizes.
+**Streaming.** While a message streams, a partially-received tag must never flash raw markup. Buffer from the first `<` that could begin `<pi:snippet` until the token is resolved as either the tag or ordinary text. On resolution, render. Chips are inert (rendered, not clickable) until the message finalizes.
 
 ---
 
@@ -209,7 +209,7 @@ time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
 **B1.** As a user, I want to read the agent's message as normal prose, so that suggestions don't fragment the writing.
 *Accept:* A message with chips is legible read aloud with no awkwardness; chips are grammatical continuations of the sentence.
 
-**B2.** As a user, I never want to see `<pi:suggest>` or any raw markup.
+**B2.** As a user, I never want to see `<pi:snippet>` or any raw markup.
 *Accept:* No web surface renders the literal tag, including mid-stream, on error, and on session restore.
 
 **B3.** As a user, I want to be able to tell at a glance which parts of the message are clickable.
@@ -261,7 +261,7 @@ time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
 ### Epic E — Model behavior and content safety
 
 **E1.** As a user discussing HTML, I don't want my code mangled by the parser.
-*Accept:* A message containing a literal `<pi:suggest>` inside a fenced block renders it verbatim as code.
+*Accept:* A message containing a literal `<pi:snippet>` inside a fenced block renders it verbatim as code.
 
 **E2.** As a user, I don't want a chip that inserts something different from what it says.
 *Accept:* The inserted text is always exactly the chip's visible text content.
@@ -326,8 +326,8 @@ time</pi:suggest>, or <pi:suggest>show me all three errors first</pi:suggest>?
 **Model emits:**
 ```
 The refactor touched 14 files and everything compiles. Want me to
-<pi:suggest>rebuild the solution</pi:suggest> or
-<pi:suggest>run the test suite</pi:suggest> first?
+<pi:snippet>rebuild the solution</pi:snippet> or
+<pi:snippet>run the test suite</pi:snippet> first?
 ```
 
 **User sees:**
@@ -342,7 +342,7 @@ The refactor touched 14 files and everything compiles. Want me to
 **Model emits:**
 ```
 I can't reproduce it locally. If you can
-<pi:suggest>paste the full stack trace</pi:suggest> I'll take another look.
+<pi:snippet>paste the full stack trace</pi:snippet> I'll take another look.
 ```
 
 Reads naturally as prose. One chip. User pastes their trace after clicking, ending up with `paste the full stack trace` — then deletes it and pastes the actual trace, which is fine; the chip cost nothing.
@@ -357,10 +357,10 @@ Reads naturally as prose. One chip. User pastes their trace after clicking, endi
 ```
 Three tests fail for what look like three unrelated reasons. Pick a thread:
 
-- <pi:suggest>start with the auth test</pi:suggest> — most likely a real bug
-- <pi:suggest>start with the timezone test</pi:suggest> — probably environmental
-- <pi:suggest>start with the flaky socket test</pi:suggest> — may just be timing
-- <pi:suggest>show me all three failures in full</pi:suggest>
+- <pi:snippet>start with the auth test</pi:snippet> — most likely a real bug
+- <pi:snippet>start with the timezone test</pi:snippet> — probably environmental
+- <pi:snippet>start with the flaky socket test</pi:snippet> — may just be timing
+- <pi:snippet>show me all three failures in full</pi:snippet>
 ```
 
 Chips inside list items render normally. Alt+1 through Alt+4 map top to bottom (Alt+5..9 and Alt+0 address any further suggestions).
@@ -386,7 +386,7 @@ Here's the template you asked about:
 
 ```html
 <select>
-  <pi:suggest>this is not a real tag</pi:suggest>
+  <pi:snippet>this is not a real tag</pi:snippet>
 </select>
 ```
 ````
@@ -399,7 +399,7 @@ Here's the template you asked about:
 
 **Model emits (stream aborted):**
 ```
-Sure — want me to <pi:suggest>rebuild the sol
+Sure — want me to <pi:snippet>rebuild the sol
 ```
 
 **User sees:** > Sure — want me to rebuild the sol
@@ -420,8 +420,8 @@ No chip, no raw tag, no swallowed text.
 
 **Model emits:**
 ```
-I could <pi:suggest>rebuild the solution</pi:suggest> and then
-<pi:suggest>run the test suite</pi:suggest>, or just do one.
+I could <pi:snippet>rebuild the solution</pi:snippet> and then
+<pi:snippet>run the test suite</pi:snippet>, or just do one.
 ```
 
 **User clicks both.** Composer: `rebuild the solution run the test suite`. User edits to `rebuild the solution then run the test suite` and sends. Two clicks and three typed words replaced a full sentence.
@@ -432,7 +432,7 @@ I could <pi:suggest>rebuild the solution</pi:suggest> and then
 
 **Model emits:**
 ```
-Want me to <pi:suggest>revert the last commit</pi:suggest>?
+Want me to <pi:snippet>revert the last commit</pi:snippet>?
 ```
 
 **User types:** `no, keep it but drop the changes to config.toml`
@@ -457,7 +457,7 @@ At a narrow viewport, `show me all three failures in full` breaks after "three".
 
 **Model emits:**
 ```
-Next I'll edit <pi:suggest>src/main.rs</pi:suggest>.
+Next I'll edit <pi:snippet>src/main.rs</pi:snippet>.
 ```
 
 This is a prompt-compliance failure, not a parser failure. It renders as a chip that inserts `src/main.rs`. Harmless, but tracked — a rising rate of non-utterance suggestions signals prompt drift.
@@ -477,7 +477,7 @@ User reloads mid-conversation. All prior messages re-render from stored raw text
 | Unclosed tag | Inner text plain, no chip, rest of message intact |
 | Close tag with no open | Dropped silently |
 | Nested tags | Outer wins, inner stripped as text |
-| Empty content `<pi:suggest></pi:suggest>` | Dropped entirely |
+| Empty content `<pi:snippet></pi:snippet>` | Dropped entirely |
 | Whitespace-only content | Dropped entirely |
 | Content > 120 chars | Rendered as plain text, no chip |
 | More than 10 per message | First 10 chip, rest plain |

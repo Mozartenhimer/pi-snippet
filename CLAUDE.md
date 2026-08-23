@@ -26,7 +26,7 @@ npm run check:widths                   # our glyph-width table vs Ghostty's
 npm run gen:widths                     # regenerate src/extension/char-width.ts
 python3 scripts/chord-live.py          # Alt+digit gestures, keystrokes encoded by real Ghostty
 python3 scripts/click-offset-repro.py  # clicking, with pi launched mid-screen
-PI_CLIK_CLICK_DEBUG=/tmp/click.log pi -e dist/extension/pi-clik-tui.js  # log click mapping
+PI_SNIPPET_CLICK_DEBUG=/tmp/click.log pi -e dist/extension/pi-snippet-tui.js  # log click mapping
 ```
 
 The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a grid, answering cursor-position queries), and assert what lands in the editor. They are the only way to test terminal interaction end to end — there is no tmux on this machine, and `script` starts pi at screen row 0, which masks the whole class of offset bugs.
@@ -49,7 +49,7 @@ Two surfaces — a web client (server + browser) and a pi TUI extension — over
 
 **Prompt injection needs both mechanisms.** `src/extension/common.ts` sets the snippet via the chained `systemPrompt` return *and* by mutating `systemPromptOptions.appendSystemPrompt`. Provider bridges such as pi-claude-bridge rebuild their own prompt and discard the former, so the model never sees it otherwise. Both paths are guarded against double-injection.
 
-**The TUI transformer is display-only.** `registerMarkdownTransformer` changes what is painted; stored messages keep their raw `<pi:suggest>` tags, which is what keeps sessions readable by the web client. Never write a `message_end` handler that rewrites stored message text — a previously installed extension did exactly that and corrupted transcripts for every other consumer.
+**The TUI transformer is display-only.** `registerMarkdownTransformer` changes what is painted; stored messages keep their raw `<pi:snippet>` tags, which is what keeps sessions readable by the web client. Never write a `message_end` handler that rewrites stored message text — a previously installed extension did exactly that and corrupted transcripts for every other consumer.
 
 **Caps are guards, not style.** `MAX_SUGGESTIONS_PER_MESSAGE` (99) matches what two-digit `Alt` addressing reaches; `SUGGESTED_PER_MESSAGE` (10) is what the prompt tells the model. Keep those roles separate.
 

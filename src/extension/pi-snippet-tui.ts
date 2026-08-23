@@ -1,9 +1,9 @@
 /**
- * pi-clik TUI extension: the terminal counterpart of the web client
+ * pi-snippet TUI extension: the terminal counterpart of the web client
  * (PRD §12, surface parity F1).
  *
  * - Injects the same prompt snippet as the web variant (shared, guarded).
- * - Renders <pi:suggest> spans as bold accent-colored spans led by a small
+ * - Renders <pi:snippet> spans as bold accent-colored spans led by a small
  *   superscript number — `¹rebuild the solution` — via pi's markdown
  *   transformer hook. The hook is display-only: stored messages keep their raw
  *   tags, so sessions stay compatible with the web client and any other
@@ -34,7 +34,7 @@ interface TextBlock {
 	text?: string;
 }
 
-export default function piClikTui(pi: any): void {
+export default function piSnippetTui(pi: any): void {
 	const state = {
 		enabled: true,
 		hotkeysEnabled: true,
