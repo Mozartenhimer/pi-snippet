@@ -21,12 +21,9 @@ export const SNIPPET_TAG = "pi:snippet";
 export const MAX_SUGGESTION_LENGTH = 120;
 /**
  * Hard ceiling — a runaway-output guard, not a style rule. It matches what
- * two-digit `Alt` addressing can reach (see shared/digit-chord.ts); taste is
- * the prompt's job, via SUGGESTED_PER_MESSAGE.
+ * two-digit `Alt` addressing can reach (see shared/digit-chord.ts).
  */
 export const MAX_SUGGESTIONS_PER_MESSAGE = 99;
-/** What the model is told to stay under. */
-export const SUGGESTED_PER_MESSAGE = 10;
 
 export interface SuggestOptions {
 	/** Tag name, configurable for rebranded distributions (PRD H3). */

@@ -1,4 +1,4 @@
-import { SNIPPET_TAG, SUGGESTED_PER_MESSAGE } from "./suggestions.js";
+import { SNIPPET_TAG } from "./suggestions.js";
 
 /**
  * The model-side contract (PRD §6). Appended to the system prompt by the

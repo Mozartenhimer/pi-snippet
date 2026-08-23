@@ -49,7 +49,7 @@ A single pi TUI extension (`src/extension/pi-snippet-tui.ts`) over a shared, ter
 
 **The TUI transformer is display-only.** `registerMarkdownTransformer` changes what is painted; stored messages keep their raw `<pi:snippet>` tags, which is what keeps sessions readable by any other transcript consumer. Never write a `message_end` handler that rewrites stored message text — a previously installed extension did exactly that and corrupted transcripts for every other consumer.
 
-**Caps are guards, not style.** `MAX_SUGGESTIONS_PER_MESSAGE` (99) matches what two-digit `Alt` addressing reaches; `SUGGESTED_PER_MESSAGE` (10) is what the prompt tells the model. Keep those roles separate.
+**Caps are guards, not style.** `MAX_SUGGESTIONS_PER_MESSAGE` (99) is a runaway-output guard, not a style rule — it matches what two-digit `Alt` addressing reaches. The prompt itself gives no numeric guidance; `Zero suggestions is normal and correct for most messages` is the only steer the model gets.
 
 ## Terminal facts this code depends on
 
