@@ -3,11 +3,10 @@
  * (PRD §12, surface parity F1).
  *
  * - Injects the same prompt snippet as the web variant (shared, guarded).
- * - Renders <pi:snippet> spans as bold accent-colored spans led by a small
- *   superscript number — `¹rebuild the solution` — via pi's markdown
- *   transformer hook. The hook is display-only: stored messages keep their raw
- *   tags, so sessions stay compatible with the web client and any other
- *   consumer.
+ * - Renders <pi:snippet> spans as markdown links led by a small superscript
+ *   number — `¹rebuild the solution` — via pi's markdown transformer hook.
+ *   The hook is display-only: stored messages keep their raw tags, so
+ *   sessions stay compatible with the web client and any other consumer.
  * - Clicking a chip inserts it into the editor. Mouse reporting is
  *   terminal-wide (the wheel stops scrolling the terminal and text selection
  *   needs Shift), so it is engaged only while the latest finalized message
@@ -155,8 +154,55 @@ export default function piSnippetTui(pi: any): void {
 		},
 	);
 
-	pi.on("session_start", (_event: unknown, ctx: any) => {
+	const suggestionsFromMessage = (message?: { role?: string; content?: TextBlock[] }): string[] => {
+		if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return [];
+		const suggestions: string[] = [];
+		for (const block of message.content) {
+			if (block.type !== "text") continue;
+			const res = parseSuggestions(block.text ?? "", { acceptedSoFar: suggestions.length });
+			suggestions.push(...res.suggestions);
+		}
+		return suggestions;
+	};
+
+	/**
+	 * Recompute the addressable set from wherever the active leaf currently is.
+	 * Needed in two situations where `message_end` never fires for the message
+	 * now at the tip of the branch:
+	 *
+	 * - A fork/clone/resume rebinds the extension with a blank `state`, but the
+	 *   transcript it lands on may still end on a message with suggestion chips
+	 *   — the transformer renders them from stored markdown regardless.
+	 * - `/tree` navigation moves the active leaf to an earlier point in the
+	 *   *same* session without reloading the extension at all, so a stale
+	 *   `state.addressable` from whatever the leaf was before keeps hanging
+	 *   around — chips render (transformer is display-only) but Alt+N/click
+	 *   silently do nothing, or worse, address the wrong message's chips.
+	 */
+	const hydrateFromBranch = (ctx: any) => {
 		state.addressable = [];
+		if (!state.enabled) return;
+		const branch = ctx.sessionManager.getBranch();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry.type !== "message") continue;
+			if (entry.message.role === "assistant") state.addressable = suggestionsFromMessage(entry.message);
+			break;
+		}
+	};
+
+	pi.on("session_start", (event: { reason?: string }, ctx: any) => {
+		if (event.reason === "resume" || event.reason === "fork" || event.reason === "reload") {
+			hydrateFromBranch(ctx);
+		} else {
+			state.addressable = [];
+		}
+		syncMouse(ctx);
+	});
+
+	pi.on("session_tree", (_event: unknown, ctx: any) => {
+		hydrateFromBranch(ctx);
+		chord.reset();
 		syncMouse(ctx);
 	});
 
@@ -168,16 +214,8 @@ export default function piSnippetTui(pi: any): void {
 	});
 
 	pi.on("message_end", (event: { message?: { role?: string; content?: TextBlock[] } }, ctx: any) => {
-		const message = event.message;
-		if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return;
-		if (!state.enabled) return;
-		const suggestions: string[] = [];
-		for (const block of message.content) {
-			if (block.type !== "text") continue;
-			const res = parseSuggestions(block.text ?? "", { acceptedSoFar: suggestions.length });
-			suggestions.push(...res.suggestions);
-		}
-		state.addressable = suggestions;
+		if (!event.message || event.message.role !== "assistant" || !state.enabled) return;
+		state.addressable = suggestionsFromMessage(event.message);
 		chord.reset(); // digits typed against the previous message mean nothing now
 		syncMouse(ctx);
 	});

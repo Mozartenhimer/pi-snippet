@@ -1,14 +1,15 @@
 /**
  * TUI rendering of suggestion nodes (PRD §12).
  *
- * Chips become bold accent-colored spans led by a superscript number:
- * `` **`¹rebuild`** `` renders as bold text in the theme's inline-code accent
- * color — visually distinct from prose without brackets, and the superscript
- * keeps the number small. The markdown markers are consumed by pi's renderer;
- * the superscript and text are not, so `chipLabel()` is exactly what appears
- * on screen (which is what mouse hit-testing matches). Pure function: feeds
- * pi's markdown transformer hook, which is display-only (the stored message
- * keeps its raw tags).
+ * Chips render as markdown links led by a superscript number:
+ * `[¹rebuild](chip:1)` renders in the theme's link color — visually distinct
+ * from prose, and the superscript keeps the number small. The URL is inert
+ * (never navigated); it exists only because link syntax requires one. The
+ * markdown markers and URL are consumed by pi's renderer, the superscript and
+ * text are not, so `chipLabel()` is exactly what appears on screen (which is
+ * what mouse hit-testing matches). Pure function: feeds pi's markdown
+ * transformer hook, which is display-only (the stored message keeps its raw
+ * tags).
  */
 import { parseSuggestions, type SuggestOptions, visibleStreamingPrefix } from "./suggestions.js";
 
@@ -39,16 +40,9 @@ export function chipLabel(oneBasedNumber: number, text: string): string {
 	return `${superscript(oneBasedNumber)}${text}`;
 }
 
-/**
- * Wraps text in a markdown code span, using a backtick fence longer than any
- * run inside the text (code spans have no escapes).
- */
-function codeSpan(text: string): string {
-	const runs = text.match(/`+/g) ?? [];
-	const fence = "`".repeat(Math.max(0, ...runs.map((r) => r.length)) + 1);
-	// A code span cannot start or end with a backtick unless padded.
-	const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
-	return `${fence}${pad}${text}${pad}${fence}`;
+/** Escapes the characters that would otherwise terminate a markdown link's label. */
+function escapeLinkLabel(text: string): string {
+	return text.replace(/[\\[\]]/g, (c) => "\\" + c);
 }
 
 export function toTuiMarkdown(rawText: string, opts: TuiRenderOptions): string {
@@ -59,7 +53,8 @@ export function toTuiMarkdown(rawText: string, opts: TuiRenderOptions): string {
 		if (node.type === "text" || !opts.enabled) {
 			out += node.text;
 		} else {
-			out += `**${codeSpan(chipLabel(node.index + 1, node.text))}**`;
+			const oneBased = node.index + 1;
+			out += `[${escapeLinkLabel(chipLabel(oneBased, node.text))}](chip:${oneBased})`;
 		}
 	}
 	return out;

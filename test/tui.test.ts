@@ -3,12 +3,12 @@ import { MAX_SUGGESTIONS_PER_MESSAGE } from "../src/shared/suggestions.js";
 import { chipLabel, superscript, toTuiMarkdown } from "../src/shared/tui-markdown.js";
 
 describe("toTuiMarkdown (PRD §12)", () => {
-	it("renders suggestions as numbered bracketed spans", () => {
+	it("renders suggestions as numbered markdown links", () => {
 		const out = toTuiMarkdown(
 			"Want me to <pi:snippet>rebuild the solution</pi:snippet> or <pi:snippet>run the tests</pi:snippet>?",
 			{ isStreaming: false, enabled: true },
 		);
-		expect(out).toBe("Want me to **`¹rebuild the solution`** or **`²run the tests`**?");
+		expect(out).toBe("Want me to [¹rebuild the solution](chip:1) or [²run the tests](chip:2)?");
 	});
 
 	it("continues numbering across blocks via acceptedSoFar", () => {
@@ -17,7 +17,7 @@ describe("toTuiMarkdown (PRD §12)", () => {
 			enabled: true,
 			parse: { acceptedSoFar: 2 },
 		});
-		expect(out).toBe("Then **`³option c`**?");
+		expect(out).toBe("Then [³option c](chip:3)?");
 	});
 
 	it("leaves code fences untouched", () => {
@@ -42,7 +42,7 @@ describe("toTuiMarkdown (PRD §12)", () => {
 				isStreaming: true,
 				enabled: true,
 			}),
-		).toBe("Want me to **`¹rebuild`** or");
+		).toBe("Want me to [¹rebuild](chip:1) or");
 	});
 
 	it("finalized unclosed tag degrades to plain text (C4)", () => {
@@ -61,7 +61,7 @@ describe("toTuiMarkdown (PRD §12)", () => {
 		expect(toTuiMarkdown(input, { isStreaming: false, enabled: true })).toBe(
 			`${nums
 				.slice(0, cap)
-				.map((n) => `**\`${superscript(n)}o${n}\`**`)
+				.map((n) => `[${superscript(n)}o${n}](chip:${n})`)
 				.join(" ")} o${cap + 1}`,
 		);
 	});
@@ -69,8 +69,8 @@ describe("toTuiMarkdown (PRD §12)", () => {
 	it("numbers past nine keep both digits superscripted", () => {
 		const input = Array.from({ length: 12 }, (_, i) => `<pi:snippet>o${i + 1}</pi:snippet>`).join(" ");
 		const out = toTuiMarkdown(input, { isStreaming: false, enabled: true });
-		expect(out).toContain("`\u00b9\u2070o10`");
-		expect(out).toContain("`\u00b9\u00b2o12`");
+		expect(out).toContain("\u00b9\u2070o10");
+		expect(out).toContain("\u00b9\u00b2o12");
 	});
 
 	it("plain text passes through unchanged", () => {
@@ -78,12 +78,12 @@ describe("toTuiMarkdown (PRD §12)", () => {
 		expect(toTuiMarkdown(input, { isStreaming: false, enabled: true })).toBe(input);
 	});
 
-	it("suggestion text containing backticks still renders as one code span", () => {
-		const out = toTuiMarkdown("Try <pi:snippet>use `npm test`</pi:snippet> now", {
+	it("suggestion text containing brackets is escaped in the link label", () => {
+		const out = toTuiMarkdown("Try <pi:snippet>use [npm test]</pi:snippet> now", {
 			isStreaming: false,
 			enabled: true,
 		});
-		expect(out).toBe("Try **`` ¹use `npm test` ``** now");
+		expect(out).toBe("Try [¹use \\[npm test\\]](chip:1) now");
 	});
 });
 
