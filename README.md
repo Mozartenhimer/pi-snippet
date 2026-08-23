@@ -17,13 +17,13 @@ What the model writes:
 Want me to <snippet>rebuild the solution</snippet> or <snippet>run the tests</snippet>?
 ```
 
-What you see in the terminal — link-styled text led by a small superscript number. The transformer's actual output is a markdown link (`[¹rebuild the solution](chip:1)`), so it renders the same way right here:
+What you see in the terminal — link-styled text led by a small superscript number. The transformer's actual output is a markdown link (`[¹rebuild the solution](chip:1)`); GitHub's sanitizer strips the `href` from the inert `chip:` scheme, so the examples below use `#N` anchors instead, purely so this page actually renders them as links the way the terminal does:
 
-> Want me to [¹rebuild the solution](chip:1) or [²run the tests](chip:2)?
+Want me to [¹rebuild the solution](#1) or [²run the tests](#2)?
 
 More than ten in one message still each get their own number, and `Alt` addresses all of them (see below):
 
-> [¹do this](chip:1) [²or this](chip:2) [³or this](chip:3) [⁴or this](chip:4) [⁵or this](chip:5) [⁶or this](chip:6) [⁷or this](chip:7) [⁸or this](chip:8) [⁹or this](chip:9) [¹⁰or this](chip:10) [¹¹or this](chip:11)
+[¹rebuild the solution](#1) [²run the tests](#2) [³check the logs](#3) [⁴clear the cache](#4) [⁵restart the server](#5) [⁶roll back the deploy](#6) [⁷grep the error](#7) [⁸bump the version](#8) [⁹open a ticket](#9) [¹⁰ping the on-call](#10) [¹¹skip for now](#11)
 
 ## Build
 
