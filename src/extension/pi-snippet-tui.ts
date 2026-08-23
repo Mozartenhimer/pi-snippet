@@ -235,11 +235,28 @@ export default function piSnippetTui(pi: any): void {
 		});
 	}
 
+	/** Emission stats for the current branch: how often the model actually offers suggestions. */
+	const snippetStats = (ctx: any): string => {
+		let messages = 0;
+		let messagesWithSuggestions = 0;
+		let totalSuggestions = 0;
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			messages++;
+			const count = suggestionsFromMessage(entry.message).length;
+			if (count > 0) messagesWithSuggestions++;
+			totalSuggestions += count;
+		}
+		if (messages === 0) return "Inline suggestions (no assistant messages yet)";
+		const pct = Math.round((messagesWithSuggestions / messages) * 100);
+		return `Inline suggestions — ${messagesWithSuggestions}/${messages} messages had suggestions (${pct}%), ${totalSuggestions} total`;
+	};
+
 	pi.registerCommand("snippets", {
 		description: "Toggle inline suggestions, their shortcuts, or click-to-insert",
 		handler: async (_args: string, ctx: any) => {
 			if (!ctx.hasUI) return;
-			const choice = await ctx.ui.select("Inline suggestions", [
+			const choice = await ctx.ui.select(snippetStats(ctx), [
 				`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
 				`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
 				`Click to insert: ${state.clickEnabled ? "on" : "off"} — toggle (mouse mode costs wheel scrolling while suggestions are shown)`,
