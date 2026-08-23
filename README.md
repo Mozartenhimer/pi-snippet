@@ -1,3 +1,13 @@
+# Human generated content
+ The idea here is that the questionaire type things are too limited, and I found myself copy and pasting content into my answer. Why can the llm make that a bit easier by suggesting snippets that might be good replies?
+
+So that's what this does.
+
+The web ui was a false start, the best interface IMO is the TUI, since it doesn't change my workflow now.
+
+
+Below is what the machine created. Fable 5 did the initial design costing about 93 $ in credits, refinement with opus 5 and sonnet 5.
+
 # pi-snippet
 
 Inline suggestion snippets for [pi](https://github.com/badlogic/pi-mono). The model marks spans of its own prose as *suggested user replies* by wrapping them in `<pi:snippet>…</pi:snippet>`; the client renders those spans so you can insert them into the composer with a click or a keystroke. Inserting never sends — you can edit the text, add to it, or ignore it.
