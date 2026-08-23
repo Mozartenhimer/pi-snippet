@@ -1,10 +1,10 @@
 /**
  * Live end-to-end test against a real model (Claude Haiku 4.5).
  *
- * Spawns pi in RPC mode exactly the way the pi-snippet server does — with the
- * pi-snippet extension loaded and global extension discovery disabled — sends a
- * prompt engineered to elicit suggestions, and asserts that the model emits
- * well-formed <pi:snippet> tags that our parser accepts.
+ * Spawns pi in RPC mode with the pi-snippet-tui extension loaded and global
+ * extension discovery disabled, sends a prompt engineered to elicit
+ * suggestions, and asserts that the model emits well-formed <pi:snippet>
+ * tags that our parser accepts.
  *
  * Requires: `pi` on PATH with a working provider (default claude-bridge).
  * Run with `npm run test:e2e`. Skipped automatically when pi is missing.
@@ -42,7 +42,7 @@ interface RpcRun {
 
 function startRpc(): RpcRun {
 	const here = dirname(fileURLToPath(import.meta.url));
-	const extensionPath = join(here, "..", "dist", "extension", "pi-snippet.js");
+	const extensionPath = join(here, "..", "dist", "extension", "pi-snippet-tui.js");
 	const args = [
 		"--mode",
 		"rpc",

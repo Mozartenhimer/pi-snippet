@@ -1,21 +1,22 @@
 /**
- * pi-snippet TUI extension: the terminal counterpart of the web client
- * (PRD §12, surface parity F1).
+ * pi-snippet TUI extension: renders <pi:snippet> suggested-reply spans in
+ * pi's terminal UI.
  *
- * - Injects the same prompt snippet as the web variant (shared, guarded).
+ * - Injects the suggested-replies prompt contract (guarded against double
+ *   injection).
  * - Renders <pi:snippet> spans as markdown links led by a small superscript
  *   number — `¹rebuild the solution` — via pi's markdown transformer hook.
  *   The hook is display-only: stored messages keep their raw tags, so
- *   sessions stay compatible with the web client and any other consumer.
+ *   sessions stay readable by any other transcript consumer.
  * - Clicking a chip inserts it into the editor. Mouse reporting is
  *   terminal-wide (the wheel stops scrolling the terminal and text selection
  *   needs Shift), so it is engaged only while the latest finalized message
- *   actually has suggestions, and can be toggled off in `/suggestions`.
+ *   actually has suggestions, and can be toggled off in `/snippets`.
  * - Alt+N inserts the Nth suggestion of the most recent finalized assistant
  *   message into the editor. Holding Alt and typing two digits reaches 10 and
  *   above. Only the latest message is addressable, so a number never means two
  *   different things.
- * - `/suggestions` toggles the feature, the hotkeys, or click-to-insert; the
+ * - `/snippets` toggles the feature, the hotkeys, or click-to-insert; the
  *   `--no-suggestions` flag disables everything for a session.
  *
  * The transformer stays pure; the addressable set is derived once per
@@ -234,7 +235,7 @@ export default function piSnippetTui(pi: any): void {
 		});
 	}
 
-	pi.registerCommand("suggestions", {
+	pi.registerCommand("snippets", {
 		description: "Toggle inline suggestions, their shortcuts, or click-to-insert",
 		handler: async (_args: string, ctx: any) => {
 			if (!ctx.hasUI) return;

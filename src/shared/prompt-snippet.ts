@@ -27,7 +27,7 @@ The build failed in three places. Want me to <${tagName}>fix them one at a time<
 
 Would you like to:
 1. <${tagName}> Refactor the codebase</${tagName}>?
-2. <${tagName}> Run the tests?</${tagName}>?
+2. <${tagName}> Run the tests</${tagName}>?
 
 (Question marks are part of the question, but not part of the answer.)
 

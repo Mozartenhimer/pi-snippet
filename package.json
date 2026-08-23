@@ -1,30 +1,19 @@
 {
 	"name": "pi-snippet",
 	"version": "0.1.0",
-	"description": "Inline suggestion snippets for pi: the model's suggested replies become clickable chips in a web UI and in the terminal",
+	"description": "Inline suggestion snippets for pi: the model's suggested replies become clickable chips in the terminal",
 	"type": "module",
 	"license": "MIT",
-	"bin": {
-		"pi-snippet": "./bin/pi-snippet.js"
-	},
 	"scripts": {
-		"build": "npm run build:web && npm run build:server",
-		"build:web": "esbuild src/web/main.ts --bundle --format=esm --outfile=dist/web/main.js --sourcemap && node scripts/copy-static.js",
-		"build:server": "esbuild src/server/server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.js && esbuild src/extension/pi-snippet.ts --bundle --platform=node --format=esm --outfile=dist/extension/pi-snippet.js && esbuild src/extension/pi-snippet-tui.ts --bundle --platform=node --format=esm --outfile=dist/extension/pi-snippet-tui.js",
+		"build": "esbuild src/extension/pi-snippet-tui.ts --bundle --platform=node --format=esm --outfile=dist/extension/pi-snippet-tui.js",
 		"check": "tsc --noEmit",
 		"test": "vitest run --exclude '**/e2e-*.test.ts' --exclude '**/node_modules/**'",
 		"test:e2e": "vitest run test/e2e-haiku.test.ts",
-		"start": "node bin/pi-snippet.js",
 		"gen:widths": "vite-node scripts/gen-char-width.mjs",
 		"check:widths": "vite-node scripts/check-widths.mjs"
 	},
-	"dependencies": {
-		"marked": "^15.0.0",
-		"ws": "^8.18.0"
-	},
 	"devDependencies": {
 		"@types/node": "^22.0.0",
-		"@types/ws": "^8.5.0",
 		"esbuild": "^0.24.0",
 		"happy-dom": "^15.11.0",
 		"typescript": "^5.7.0",

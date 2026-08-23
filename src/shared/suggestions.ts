@@ -1,7 +1,7 @@
 /**
  * Pure parser for inline suggestion tags (`<pi:snippet>...</pi:snippet>`).
  *
- * Shared between surfaces (web renderer, tests, potential TUI transformer).
+ * Shared between the TUI transformer and tests.
  * No state, no DOM — takes raw assistant markdown, returns a token stream.
  *
  * Sanitization rules (PRD §5.3, §11):
