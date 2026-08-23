@@ -281,7 +281,7 @@ time</snippet>, or <snippet>show me all three errors first</snippet>?
 ### Epic F — Surface parity
 
 **F1.** As a TUI user, I want the same extension to work in the terminal, even without clicking.
-*Accept:* Chips become bold accent-colored spans led by a superscript number; `Alt+N` inserts. (§12)
+*Accept:* Chips become link-colored spans led by a superscript number; `Alt+N` inserts. (§12)
 
 **F2.** As a user of print mode (`-p`), I don't want tags in my piped output.
 *Accept:* Tags stripped to plain text before write.
@@ -500,7 +500,7 @@ The parser is shared. The terminal path uses pi's markdown transformer hook, whi
 
 Consequences of that hook returning *markdown* rather than components:
 
-- Chips become bold spans in the theme's inline-code accent color, led by a small superscript number: `Want me to ¹rebuild the solution or ²run the tests?` (rendered via bold + code-span markdown; no brackets).
+- Chips render as markdown links in the theme's link color, led by a small superscript number: `Want me to [¹rebuild the solution](chip:1) or [²run the tests](chip:2)?` The URL is inert (never navigated) — it exists only because link syntax requires one.
 - There is no hover. Click (§12.1) and `Alt+N` (§12.2) are the affordances.
 - The transformer must stay pure — the addressable set is derived on message finalize and held in extension state, never built during transformation.
 - Scrolled-away suggestions remain hotkey-addressable but invisible. Only the most recent finalized message is addressable, to avoid `2` meaning two different things.
