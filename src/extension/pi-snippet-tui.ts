@@ -10,21 +10,24 @@
  *   sessions stay readable by any other transcript consumer.
  * - Clicking a chip inserts it into the editor. Mouse reporting is
  *   terminal-wide (the wheel stops scrolling the terminal and text selection
- *   needs Shift), so it is engaged only while the latest finalized message
- *   actually has suggestions, and can be toggled off in `/snippets`.
- * - Alt+N inserts the Nth suggestion of the most recent finalized assistant
- *   message into the editor. Holding Alt and typing two digits reaches 10 and
- *   above. Only the latest message is addressable, so a number never means two
- *   different things.
+ *   needs Shift), so it is engaged only while the latest message actually has
+ *   suggestions, and can be toggled off in `/snippets`.
+ * - Alt+N inserts the Nth suggestion of the most recent assistant message into
+ *   the editor. A suggestion becomes addressable the moment its closing tag
+ *   arrives, so a chip can be triggered while the model is still writing —
+ *   no waiting out the rest of the answer. Holding Alt and typing two digits
+ *   reaches 10 and above. Only the latest message is addressable, so a number
+ *   never means two different things.
  * - `/snippets` toggles the feature, the hotkeys, or click-to-insert; the
  *   `--no-suggestions` flag disables everything for a session.
  *
- * The transformer stays pure; the addressable set is derived once per
- * finalized message in the message_end handler and held in extension state,
- * never built during transformation (PRD §5.2 hard rule).
+ * The transformer stays pure; the addressable set is derived in the message
+ * lifecycle handlers (`message_update` while the model writes, `message_end`
+ * when it stops) and held in extension state, never built during
+ * transformation (PRD §5.2 hard rule).
  */
 import { DigitChord } from "../shared/digit-chord.js";
-import { parseSuggestions } from "../shared/suggestions.js";
+import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix } from "../shared/suggestions.js";
 import { chipLabel, toTuiMarkdown } from "../shared/tui-markdown.js";
 import { registerPromptSnippet } from "./common.js";
 import { ClickableText, type TuiLike } from "./tui-mouse.js";
@@ -34,16 +37,29 @@ interface TextBlock {
 	text?: string;
 }
 
+/** What a closing tag starts with; `</snippet   >` is legal, so match the head. */
+const CLOSE_TAG_PREFIX = `</${SNIPPET_TAG}`;
+
 export default function piSnippetTui(pi: any): void {
 	const state = {
 		enabled: true,
 		hotkeysEnabled: true,
 		clickEnabled: false,
-		/** Suggestions of the most recent finalized assistant message. */
+		/**
+		 * Suggestions of the most recent assistant message — the one streaming,
+		 * once it has produced a complete suggestion of its own, otherwise the
+		 * last one that finished.
+		 */
 		addressable: [] as string[],
 	};
 
 	let tui: TuiLike | null = null;
+
+	/**
+	 * Closing tags seen so far in the message now streaming — the gate described
+	 * on `countCloseTags`. Reset per assistant message.
+	 */
+	let streamCloseTags = 0;
 
 	const insertText = (ctx: any, text: string) => {
 		const current: string = ctx.ui.getEditorText();
@@ -79,6 +95,19 @@ export default function piSnippetTui(pi: any): void {
 			tui?.requestRender?.();
 		},
 	});
+
+	/**
+	 * Adopt a new addressable set, dropping a pending chord only when the
+	 * numbers it was aimed at have actually changed. A message that streams its
+	 * chips and then finalizes with the same ones must not cancel a two-digit
+	 * gesture the user is mid-way through typing.
+	 */
+	const setAddressable = (next: string[]): void => {
+		const changed =
+			next.length !== state.addressable.length || next.some((t, i) => t !== state.addressable[i]);
+		state.addressable = next;
+		if (changed) chord.reset(); // digits typed against the old numbering mean nothing now
+	};
 
 	/**
 	 * Watch for the Alt key being released so a two-digit chord settles the
@@ -155,15 +184,53 @@ export default function piSnippetTui(pi: any): void {
 		},
 	);
 
-	const suggestionsFromMessage = (message?: { role?: string; content?: TextBlock[] }): string[] => {
+	/**
+	 * The suggestions of a message, in document order.
+	 *
+	 * `streaming` cuts each text block down to the prefix the transformer is
+	 * actually painting (`visibleStreamingPrefix`) before parsing, so the
+	 * addressable set is exactly the chips on screen. A `<snippet>` whose
+	 * closing tag has not arrived yet is neither painted nor counted, which is
+	 * what keeps Alt+N from ever inserting half a sentence.
+	 */
+	const suggestionsFromMessage = (
+		message?: { role?: string; content?: TextBlock[] },
+		opts?: { streaming?: boolean },
+	): string[] => {
 		if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return [];
 		const suggestions: string[] = [];
 		for (const block of message.content) {
 			if (block.type !== "text") continue;
-			const res = parseSuggestions(block.text ?? "", { acceptedSoFar: suggestions.length });
+			const raw = block.text ?? "";
+			const text = opts?.streaming ? visibleStreamingPrefix(raw) : raw;
+			const res = parseSuggestions(text, { acceptedSoFar: suggestions.length });
 			suggestions.push(...res.suggestions);
 		}
 		return suggestions;
+	};
+
+	/**
+	 * Cheap gate for the streaming path: `message_update` fires per token, and
+	 * a suggestion can only become addressable when a closing tag lands, so the
+	 * parser runs only on the ticks that actually carry one. Deliberately
+	 * sloppier than the parser (it counts tags in code fences too) — it decides
+	 * whether to re-parse, never what is addressable.
+	 */
+	const countCloseTags = (message: { content?: TextBlock[] }): number => {
+		if (!Array.isArray(message.content)) return 0;
+		let count = 0;
+		for (const block of message.content) {
+			if (block.type !== "text") continue;
+			const text = block.text ?? "";
+			for (
+				let i = text.indexOf(CLOSE_TAG_PREFIX);
+				i !== -1;
+				i = text.indexOf(CLOSE_TAG_PREFIX, i + 1)
+			) {
+				count++;
+			}
+		}
+		return count;
 	};
 
 	/**
@@ -203,6 +270,7 @@ export default function piSnippetTui(pi: any): void {
 
 	pi.on("session_tree", (_event: unknown, ctx: any) => {
 		hydrateFromBranch(ctx);
+		streamCloseTags = 0;
 		chord.reset();
 		syncMouse(ctx);
 	});
@@ -214,10 +282,42 @@ export default function piSnippetTui(pi: any): void {
 		if (clickable.enabled) clickable.detach();
 	});
 
+	pi.on("message_start", (event: { message?: { role?: string } }) => {
+		if (event.message?.role !== "assistant") return;
+		streamCloseTags = 0;
+	});
+
+	/**
+	 * Make a suggestion addressable as soon as it is complete, without waiting
+	 * for the message to finish. The model often asks its question and then
+	 * keeps writing (or calls a tool) for a while; making the user wait out
+	 * that tail before Alt+N or a click does anything is the whole point of
+	 * this handler.
+	 *
+	 * The set only ever grows within a message — a chip is accepted once its
+	 * closing tag has arrived, and later text cannot un-accept it — so numbering
+	 * never shifts under the user's fingers.
+	 *
+	 * The previous message's chips stay addressable until this one produces a
+	 * chip of its own: the handover happens on the first complete suggestion,
+	 * not at `message_start`, so a long tool-calling turn doesn't strip the
+	 * chips still on screen above it.
+	 */
+	pi.on("message_update", (event: { message?: { role?: string; content?: TextBlock[] } }, ctx: any) => {
+		if (!event.message || event.message.role !== "assistant" || !state.enabled) return;
+		const closeTags = countCloseTags(event.message);
+		if (closeTags === streamCloseTags) return; // nothing newly closed
+		streamCloseTags = closeTags;
+		const suggestions = suggestionsFromMessage(event.message, { streaming: true });
+		if (suggestions.length === 0) return; // a close tag that resolved to plain text
+		setAddressable(suggestions);
+		syncMouse(ctx);
+	});
+
 	pi.on("message_end", (event: { message?: { role?: string; content?: TextBlock[] } }, ctx: any) => {
 		if (!event.message || event.message.role !== "assistant" || !state.enabled) return;
-		state.addressable = suggestionsFromMessage(event.message);
-		chord.reset(); // digits typed against the previous message mean nothing now
+		setAddressable(suggestionsFromMessage(event.message));
+		streamCloseTags = 0;
 		syncMouse(ctx);
 	});
 

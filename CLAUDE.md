@@ -43,7 +43,7 @@ A single pi TUI extension (`src/extension/pi-snippet-tui.ts`) over a shared, ter
 
 **`src/shared/` must stay free of terminal concerns.** It holds the parser, the prompt snippet, digit-addressing rules, and TUI markdown generation.
 
-**The parser is pure and renderers are stateless (PRD §5.2, a hard rule).** Rendering runs on every stream tick and resize, so anything stateful built during render drifts from what the user sees. The set of addressable suggestions is derived exactly once, in the `message_end` handler, and held in extension state.
+**The parser is pure and renderers are stateless (PRD §5.2, a hard rule).** Rendering runs on every stream tick and resize, so anything stateful built during render drifts from what the user sees. The set of addressable suggestions is derived in the message lifecycle handlers — `message_update` while the model writes (that is what makes a chip triggerable mid-stream), `message_end` when it stops — and held in extension state, never in the transformer.
 
 **Prompt injection needs both mechanisms.** `src/extension/common.ts` sets the snippet via the chained `systemPrompt` return *and* by mutating `systemPromptOptions.appendSystemPrompt`. Provider bridges such as pi-claude-bridge rebuild their own prompt and discard the former, so the model never sees it otherwise. Both paths are guarded against double-injection.
 

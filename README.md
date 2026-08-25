@@ -53,7 +53,8 @@ Install it permanently with `pi install /path/to/pi-snippet/dist/extension/pi-sn
 Suggestions render through pi's markdown transformer hook, which is **display-only**: stored messages keep their raw `<snippet>` tags, so a session stays readable by anything else that consumes the transcript.
 
 - **Click a chip** to insert it. Mouse reporting is a terminal-wide mode, so it is engaged only while the latest message actually has suggestions; during that window the scroll wheel belongs to pi and text selection needs Shift held.
-- **`Alt+N`** inserts the Nth suggestion of the most recent finalized message — only that message is addressable, so a number never means two things. Ten digit keys address ten suggestions; **beyond ten**, hold Alt and type two digits (Alt held across `1` then `2` inserts the twelfth). A single digit commits immediately unless a longer number is still reachable, so the brief wait only exists on a message with ten or more suggestions. `Alt+0` still means the tenth. The cap is 99 — see below.
+- **`Alt+N`** inserts the Nth suggestion of the most recent message — only that message is addressable, so a number never means two things. Ten digit keys address ten suggestions; **beyond ten**, hold Alt and type two digits (Alt held across `1` then `2` inserts the twelfth). A single digit commits immediately unless a longer number is still reachable, so the brief wait only exists on a message with ten or more suggestions. `Alt+0` still means the tenth. The cap is 99 — see below.
+- **Trigger it while the model is still writing.** A chip goes live the moment its closing tag arrives, which is the moment it is painted: answer the question as it is asked, without waiting out the rest of the reply or the tool calls that follow it. A half-received suggestion is neither painted nor addressable, so `Alt+N` can never insert a partial sentence, and numbering never shifts as more suggestions stream in.
 - **`/snippets`** toggles three things independently: the feature, the `Alt` shortcuts, and click-to-insert. `--no-suggestions` disables everything for a session.
 
 ## How it works
@@ -68,7 +69,7 @@ Suggestions render through pi's markdown transformer hook, which is **display-on
 | Terminal clicking | `src/extension/tui-mouse.ts` | SGR mouse reporting plus hit-testing against the rendered text. Screen rows are mapped to buffer lines using a cursor-position report, because pi never clears the screen and its first line is wherever your shell prompt was. |
 | Glyph widths | `src/extension/char-width.ts` | Generated, not hand-written — see below. |
 
-The parser is pure and the transformer is stateless: the set of addressable suggestions is derived once, when a message finalizes, and kept outside the render path. Rendering runs on every stream tick and resize, so anything stateful built there would drift from what you see.
+The parser is pure and the transformer is stateless: the set of addressable suggestions is derived in the message lifecycle handlers — `message_update` as the model writes, `message_end` when it stops — and kept outside the render path. Rendering runs on every stream tick and resize, so anything stateful built there would drift from what you see. The streaming path parses only on the ticks that actually carry a closing tag, and parses the same prefix the transformer paints, so what is addressable is exactly what is on screen.
 
 ### Caps
 

@@ -90,9 +90,9 @@ The inserted text is always exactly the element's text content — what you see 
 | **Parser** | Turns raw assistant markdown into a token stream of `text` and `suggestion` nodes. Shared between web and TUI. Pure function, no state. |
 | **Web renderer** | Renders suggestion nodes as `<button>` chips inside the message body. |
 | **Composer integration** | Insert-at-cursor, focus management, undo. |
-| **Suggestion state store** | Tracks which message is "live" for keyboard addressing. Derived from finalized messages only. |
+| **Suggestion state store** | Tracks which message is "live" for keyboard addressing. Fed by the message lifecycle — updated as suggestions complete mid-stream, and again when the message finalizes. |
 
-**Hard rule: the parser is pure and the renderer is stateless.** Rendering may run many times per message — on stream ticks, on resize, on theme change, on scroll virtualization. Any state built during render will drift out of sync with what the user sees. The set of addressable suggestions is derived once, when a message finalizes, and stored outside the render path.
+**Hard rule: the parser is pure and the renderer is stateless.** Rendering may run many times per message — on stream ticks, on resize, on theme change, on scroll virtualization. Any state built during render will drift out of sync with what the user sees. The set of addressable suggestions is derived in the message lifecycle handlers (`message_update` while the model writes, `message_end` when it stops) and stored outside the render path — never built during rendering.
 
 ### 5.3 Sanitization rules
 
@@ -157,7 +157,9 @@ time</snippet>, or <snippet>show me all three errors first</snippet>?
 
 **Wrapping.** Chips must wrap across lines like normal text. A five-word suggestion at the end of a line breaks mid-chip; both fragments keep the background tint. No `white-space: nowrap`.
 
-**Streaming.** While a message streams, a partially-received tag must never flash raw markup. Buffer from the first `<` that could begin `<snippet` until the token is resolved as either the tag or ordinary text. On resolution, render. Chips are inert (rendered, not clickable) until the message finalizes.
+**Streaming.** While a message streams, a partially-received tag must never flash raw markup. Buffer from the first `<` that could begin `<snippet` until the token is resolved as either the tag or ordinary text. On resolution, render — and make it live. A chip goes live at exactly the moment it is painted, which is the moment its closing tag arrives; the rest of the message can keep streaming (or call tools) for a long time afterwards, and there is no reason to make the user wait it out. What is never live is a half-received suggestion: an unresolved `<snippet>` is neither painted nor addressable, so a chip can never insert a partial sentence.
+
+A suggestion, once accepted, keeps its number for the life of the message — later text cannot un-accept it — so numbering never shifts under the user's fingers mid-stream. While a new assistant message is streaming, the previous message's chips stay addressable until the new one paints a chip of its own; the handover happens on that first chip, not when the message starts, so a long tool-calling turn does not strip the chips still on screen above it.
 
 ---
 
@@ -170,7 +172,7 @@ time</snippet>, or <snippet>show me all three errors first</snippet>?
 | Click chip, text is selected in composer | Selection is replaced (standard insertion semantics). |
 | Cmd/Ctrl+click chip | Insert **and** send. (Phase 3.) |
 | Tab to chip, Enter | Same as click. |
-| `Alt+1..9`, `Alt+0` | Insert the Nth suggestion (0 = tenth) of the most recent finalized assistant message. |
+| `Alt+1..9`, `Alt+0` | Insert the Nth suggestion (0 = tenth) of the most recent assistant message, streaming or finished. |
 | `Alt` held, two digits | Insert suggestion 10 and above: hold Alt, type `1` then `2` for the twelfth. |
 | Ctrl+Z after insertion | Undoes the insertion as a single unit, not character-by-character. |
 | Click chip in a scrolled-away older message | Works. Inserts, focuses composer, scrolls composer into view. |
@@ -216,7 +218,7 @@ time</snippet>, or <snippet>show me all three errors first</snippet>?
 *Accept:* Chip styling is distinguishable from links, inline code, and bold at a normal reading distance.
 
 **B4.** As a user, I don't want the layout to shift when a message finishes streaming.
-*Accept:* Chip dimensions are identical in inert (streaming) and live (finalized) states.
+*Accept:* A chip is drawn identically while the message streams and after it finalizes — nothing about finalization changes its dimensions.
 
 **B5.** As a user, I want suggestions to feel optional, not like an unanswered form.
 *Accept:* No badge, count, pulse, or persistent highlight that implies pending action.
@@ -226,11 +228,11 @@ time</snippet>, or <snippet>show me all three errors first</snippet>?
 **C1.** As a user, I never want to see a half-written tag flicker on screen while the message streams.
 *Accept:* Raw `<sni` is never painted. Buffering is invisible.
 
-**C2.** As a user, I want chips to become clickable as soon as the message is done, without a manual refresh.
-*Accept:* Finalization activates chips within one frame.
+**C2.** As a user, I want to take a suggestion the moment I see it, without waiting for the model to stop writing.
+*Accept:* A chip is addressable (`Alt+N` and click) in the same frame it is first painted, mid-stream, and stays addressable after the message finalizes.
 
-**C3.** As a user, I don't want to click a suggestion that's still streaming and get partial text.
-*Accept:* Chips are inert until finalize; clicks are no-ops with no visual feedback.
+**C3.** As a user, I don't want to trigger a suggestion that's still streaming and get partial text.
+*Accept:* A `<snippet>` whose closing tag has not arrived is neither painted nor addressable — there is nothing to click and no number that reaches it. Only complete suggestions are insertable.
 
 **C4.** As a user, if the agent's response is cancelled mid-sentence inside a tag, I want the message to still be readable.
 *Accept:* Unclosed tag → inner text renders plainly, remaining message unaffected, no chip.
@@ -241,7 +243,7 @@ time</snippet>, or <snippet>show me all three errors first</snippet>?
 ### Epic D — Keyboard and accessibility
 
 **D1.** As a keyboard user, I want to insert a suggestion without reaching for the mouse.
-*Accept:* `Alt+1..9` and `Alt+0` (tenth) address the latest message's suggestions; holding Alt across two digits addresses 10 and above.
+*Accept:* `Alt+1..9` and `Alt+0` (tenth) address the latest message's suggestions, whether it is still streaming or finished; holding Alt across two digits addresses 10 and above.
 
 **D2.** As a keyboard user, I want to Tab through chips in reading order.
 *Accept:* Chips are `<button>` elements in document order.
@@ -488,7 +490,8 @@ User reloads mid-conversation. All prior messages re-render from stored raw text
 | Inside a table cell | Chip renders normally |
 | HTML entities in content | Escaped, rendered literally |
 | Markdown inside content (`**bold**`) | Rendered as literal text, not formatted |
-| Tag split across stream chunks | Buffered, resolved, then painted |
+| Tag split across stream chunks | Buffered, resolved, then painted — and addressable from that frame on |
+| Suggestion completed mid-stream | Addressable immediately; the rest of the message keeps streaming |
 | Parser throws | Fallback regex strip, message renders, error counted |
 | Feature disabled | Tags stripped, plain text, no chips |
 
@@ -502,15 +505,16 @@ Consequences of that hook returning *markdown* rather than components:
 
 - Chips render as markdown links in the theme's link color, led by a small superscript number: `Want me to [¹rebuild the solution](chip:1) or [²run the tests](chip:2)?` The URL is inert (never navigated) — it exists only because link syntax requires one.
 - There is no hover. Click (§12.1) and `Alt+N` (§12.2) are the affordances.
-- The transformer must stay pure — the addressable set is derived on message finalize and held in extension state, never built during transformation.
-- Scrolled-away suggestions remain hotkey-addressable but invisible. Only the most recent finalized message is addressable, to avoid `2` meaning two different things.
+- The transformer must stay pure — the addressable set is derived in the `message_update` and `message_end` handlers and held in extension state, never built during transformation.
+- Scrolled-away suggestions remain hotkey-addressable but invisible. Only the most recent message is addressable, to avoid `2` meaning two different things.
 
 ### 12.1 Click to insert
 
 The TUI also supports real clicking, via terminal mouse reporting (DECSET 1000 + SGR 1006):
 
 - Hit testing matches the *rendered text* of each `ⁿlabel` span on the visible screen — no position markers are embedded in the message, so the session file and the model's context stay clean. Both halves of a span wrapped across lines are clickable.
-- Mouse reporting is terminal-wide: while on, the wheel is delivered to the application (terminal scrollback stops responding) and click-drag selection needs Shift. To keep that cost small, reporting is engaged only while the latest finalized message actually has suggestions, and can be toggled off entirely in `/suggestions`.
+- Mouse reporting is terminal-wide: while on, the wheel is delivered to the application (terminal scrollback stops responding) and click-drag selection needs Shift. To keep that cost small, reporting is engaged only while the latest message actually has suggestions — which now includes one still streaming, from the frame its first chip is painted — and can be toggled off entirely in `/suggestions`.
+- Clicking mid-stream is hit-tested against the lines drawn at click time, and the screen is moving underneath it. A click resolves through a DSR round trip (well under a frame in practice); if the message scrolls in that window the click misses rather than inserting something else, because hit testing matches the chip's rendered text and not a stored coordinate.
 - Wheel, right-button, motion, and release events are swallowed while reporting is on, so no escape sequences leak into the editor as typed garbage.
 - Screen-to-buffer mapping is anchored with a cursor-position report (DSR, `ESC[6n`) issued at click time: pi never clears the screen and draws with relative cursor moves only, so when pi is launched below an existing shell prompt its first buffer line is not screen row 0. The DSR answer, correlated with pi-tui's buffer-relative cursor bookkeeping, gives the exact offset; a terminal that never answers falls back to a bottom-aligned mapping. After an insertion the TUI is asked to repaint — consumed input bypasses pi's own render pass.
 
@@ -564,7 +568,7 @@ Click hit-testing turns a character index into a screen column, so our width tab
 - **OQ2.** Should visited state persist across reload? Leaning no — the session store shouldn't carry UI ephemera.
 - **OQ3.** What separator joins two consecutively-clicked suggestions? A space is the simplest; ", " reads better for lists; " and " is presumptuous. Leaning space, revisit with usage data.
 - **OQ4.** Does the model see its own tags in context on subsequent turns? Currently yes (raw text is what's stored). This probably reinforces the pattern usefully, but should be measured — it may also cause over-emission.
-- **OQ5.** Should suggestions be suppressed while the agent is mid-task (tool calls in flight) rather than at a natural stopping point? As things stand there's no signal to suppress *with*: `message_end` fires once per finalized assistant message, including ones that also carry `tool_use` blocks, and the extension listens for nothing else (`turn_start`, `tool_call`, `agent_end`). So a message that tags a suggestion *and* calls a tool in the same turn makes that chip addressable (Alt+N and click both) while the tool is still running in the background, and the system prompt gives the model no guidance against that pattern. Believed rare in practice — a model asking the user something while also invoking a tool is an odd shape — so left unaddressed rather than adding a listener for a case with no observed occurrence yet.
+- **OQ5.** Should suggestions be suppressed while the agent is mid-task (tool calls in flight) rather than at a natural stopping point? Mid-stream addressing (§7) makes this concrete rather than incidental: a chip goes live as soon as it is written, so a message that tags a suggestion *and* then calls a tool offers that chip while the tool is still running — deliberately, since the alternative is making the user wait out work they were just asked about. The extension now listens to `message_start` and `message_update` as well as `message_end`, so a suppression signal (`tool_call`, `turn_start`) would be cheap to add if this ever reads wrong. The system prompt still gives the model no guidance against the pattern, and no bad case has been observed.
 - **OQ6.** Should there be a "none of these, just typing" affordance, or is the composer itself sufficient? Strong prior: sufficient. Adding one reintroduces the picker.
 
 ---
