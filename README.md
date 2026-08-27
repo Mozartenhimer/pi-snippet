@@ -55,7 +55,39 @@ Suggestions render through pi's markdown transformer hook, which is **display-on
 - **Click a chip** to insert it. Mouse reporting is a terminal-wide mode, so it is engaged only while the latest message actually has suggestions; during that window the scroll wheel belongs to pi and text selection needs Shift held.
 - **`Alt+N`** inserts the Nth suggestion of the most recent message — only that message is addressable, so a number never means two things. Ten digit keys address ten suggestions; **beyond ten**, hold Alt and type two digits (Alt held across `1` then `2` inserts the twelfth). A single digit commits immediately unless a longer number is still reachable, so the brief wait only exists on a message with ten or more suggestions. `Alt+0` still means the tenth. The cap is 99 — see below.
 - **Trigger it while the model is still writing.** A chip goes live the moment its closing tag arrives, which is the moment it is painted: answer the question as it is asked, without waiting out the rest of the reply or the tool calls that follow it. A half-received suggestion is neither painted nor addressable, so `Alt+N` can never insert a partial sentence, and numbering never shifts as more suggestions stream in.
-- **`/snippets`** toggles three things independently: the feature, the `Alt` shortcuts, and click-to-insert. `--no-suggestions` disables everything for a session.
+- **`/snippets`** toggles four things independently: the feature, the `Alt` shortcuts, click-to-insert, and inference (below) — and lets you pick the model inference uses. `--no-suggestions` disables everything for a session.
+
+## Questions the model didn't tag
+
+Everything above depends on the model wrapping its own suggestions as it writes. It often doesn't, and a provider bridge that rebuilds the system prompt may never have shown it the contract at all.
+
+So there is a second layer. When a message ends, asks something, and carries no tags, a small fast model reads it and works out what you'd say back:
+
+```
+I'm done the model, do you want to see it?
+                   ~~~~~~~~~~~~~~~~~~~~~~~
+```
+
+The question is underlined — link-styled, no number. Click it and `Show me the model.` lands in the composer. As always, inserting doesn't send.
+
+The two layers are meant to look different:
+
+| | Tagged (`<snippet>`) | Inferred |
+|---|---|---|
+| Written by | the model, mid-sentence, as it types | a small model, once the message is done |
+| Looks like | superscript number, link-styled | link-styled, no number |
+| Reachable by | click **and** `Alt+N` | click only |
+| Costs | nothing extra | one small-model call per untagged question |
+
+There is no number because nothing addresses these by number — a digit that sometimes meant a tagged chip and sometimes an inferred one would make `Alt+N` ambiguous, and the numbering is worth more than the second affordance.
+
+**What it will not do.** It never runs on a message that already has tags, never on a message that asks nothing, and never while click-to-insert is off (nothing could reach the result, so nothing is spent). It never uses a provider other than the one your session is already talking to. An anchor that isn't literally in the message is dropped rather than repaired, so a small model that paraphrases costs you a chip, never gives you a wrong one. Every failure — no auth, a timeout, prose instead of JSON — shows up as a message with no underlines, and after three consecutive failures the layer stands down for the session.
+
+**Choosing the model.** Most specific wins: the picker in `/snippets`, then `--snippet-model <provider/id>`, then `PI_SNIPPET_MODEL`, then auto-selection. Auto-selection takes a small model from your session's own provider, preferring families known to hold up at copying a span verbatim and returning bare JSON before falling back to price — the cheapest small model in a big catalogue is often a 3B that paraphrases, and a paraphrased anchor is a dropped chip. `/snippets` always names what it picked, and reports what the layer has spent.
+
+```bash
+pi -e dist/extension/pi-snippet-tui.js --snippet-model anthropic/claude-haiku-4-5
+```
 
 ## How it works
 
@@ -102,7 +134,7 @@ npm run check     # tsc --noEmit
 npm run test:e2e  # live, against a real model through pi RPC
 ```
 
-The unit suite covers the parser edge-case matrix, the TUI transformer, digit addressing, and terminal hit-testing against a stand-in TUI.
+The unit suite covers the parser edge-case matrix, the TUI transformer, digit addressing, and terminal hit-testing against a stand-in TUI. For the inference layer it covers what is believed of a small model's answer, model selection and pinning, the stand-down breaker, and the layering itself — driven through the real handler wiring against a stand-in pi: when a call is spent, when it is not, what gets underlined, and what a click on an underline actually inserts.
 
 The e2e test spawns pi in RPC mode with the extension loaded, asks a question with two obvious answers, and asserts the model emits well-formed tags the parser accepts — and that a plain informational question draws none. Configure with `PI_SNIPPET_TEST_PROVIDER` and `PI_SNIPPET_TEST_MODEL` (defaults `claude-bridge` and `claude-haiku-4-5`).
 
@@ -110,3 +142,4 @@ The e2e test spawns pi in RPC mode with the extension loaded, asks a question wi
 
 - `pi -p` (print mode) with the claude-bridge provider hangs on this machine and has to be killed. RPC mode, which the e2e test uses, is unaffected.
 - Not implemented from PRD Phase 3: surfacing suggestions in export/JSON modes.
+- The inference layer has no live test. Its transport is verified against real pi — `ctx.modelRegistry.complete` is called and its failure path returns no anchors — but the quality of what a given small model returns for a given message is unmeasured. PRD §17.5 (OQ10) notes constrained sampling as the way to make malformed output structurally impossible where a provider supports it.

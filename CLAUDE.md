@@ -33,7 +33,7 @@ The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a g
 
 ## Environment constraints
 
-- pi is the **snap** build (`/snap/pi-coding-agent`, 0.84.2). npm's pi is far older. Docs live at `/snap/pi-coding-agent/current/bin/docs/`.
+- pi is the **snap** build (`/snap/pi-coding-agent`, 0.84.2). Docs live at `/snap/pi-coding-agent/current/bin/docs/`. npm's `@earendil-works/pi-coding-agent` used to lag badly; it no longer does (0.84.3 at last check), and installing it is the way to read the real extension API types — `node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` for `ExtensionContext`/`ExtensionAPI`, `core/model-registry.d.ts` for `ModelRegistry`. Prefer those over guessing from docs.
 - **`pi -p` (print mode) hangs** with the claude-bridge provider and must be killed. Use `--mode rpc` for anything automated; that is what the e2e test does.
 - claude-bridge is the only provider with working auth here; `claude-haiku-4-5` is the test model.
 
@@ -48,6 +48,12 @@ A single pi TUI extension (`src/extension/pi-snippet-tui.ts`) over a shared, ter
 **Prompt injection needs both mechanisms.** `src/extension/common.ts` sets the snippet via the chained `systemPrompt` return *and* by mutating `systemPromptOptions.appendSystemPrompt`. Provider bridges such as pi-claude-bridge rebuild their own prompt and discard the former, so the model never sees it otherwise. Both paths are guarded against double-injection.
 
 **The TUI transformer is display-only.** `registerMarkdownTransformer` changes what is painted; stored messages keep their raw `<snippet>` tags, which is what keeps sessions readable by any other transcript consumer. Never write a `message_end` handler that rewrites stored message text — a previously installed extension did exactly that and corrupted transcripts for every other consumer.
+
+**Suggestions come from two layers, and layer 1 wins.** `<snippet>` tags parsed from the message are layer 1. When a finished message asks something and carries no tags, `extension/magic.ts` sends it to a small model, which returns anchor/reply pairs (`shared/inferred.ts` decides what to believe of them). A message with even one tag is never sent — the layers must never compete for the same sentence. Anchors are dropped unless they appear verbatim in the message's non-code text: a paraphrasing model costs a chip, it never produces a wrong one.
+
+**The inference layer is gated on click-to-insert.** Inferred anchors carry no number, so only the mouse can activate them; with clicking off there is nothing to activate and no call is made. That is the cost control, not an accident of wiring.
+
+**`ctx.modelRegistry.complete(model, context, options)` is real** and is how an extension makes its own model call — no HTTP, no pi-ai import. `hasConfiguredAuth()` says credentials are *configured*, not that they work, which is why `MagicInferrer` stands down after three consecutive failures.
 
 **Caps are guards, not style.** `MAX_SUGGESTIONS_PER_MESSAGE` (99) is a runaway-output guard, not a style rule — it matches what two-digit `Alt` addressing reaches. The prompt itself gives no numeric guidance; `Zero suggestions is normal and correct for most messages` is the only steer the model gets.
 
