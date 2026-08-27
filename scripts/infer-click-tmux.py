@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -113,7 +114,13 @@ def main():
 
     tmux("kill-session", "-t", SESSION)
 
+    # The extension persists the /snippets toggles now, so point it at a
+    # throwaway file: the harness must not read — or rewrite — whatever the
+    # person running it has chosen.
+    settings = os.path.join(tempfile.mkdtemp(prefix="pi-snippet-tmux-"), "settings.json")
+
     env = [
+        "PI_SNIPPET_SETTINGS=%s" % json_arg(settings),
         "MOCK_LLM_INFER_MARKER=%s" % json_arg(INFER_MARKER),
         "MOCK_LLM_SCRIPT=%s" % json_arg(json.dumps([QUESTION])),
         "MOCK_LLM_INFER=%s" % json_arg(ANCHORS_JSON),

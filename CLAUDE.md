@@ -42,6 +42,45 @@ The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a g
 - **`pi -p` (print mode) hangs** with the claude-bridge provider and must be killed. Use `--mode rpc` for anything automated; that is what the e2e test does.
 - claude-bridge is the only provider with working auth here; `claude-haiku-4-5` is the test model.
 
+### Installing pi somewhere else (a sandbox, CI, a fresh machine)
+
+**Do not install pi from npm.** `@mariozechner/pi-coding-agent` stopped at 0.73.1 (May 2026) and predates `registerMarkdownTransformer` — pi refuses to load this extension at all, with `Failed to load extension: pi.registerMarkdownTransformer is not a function`. It is still worth installing as an *API reference* (`docs/`, `dist/core/extensions/types.d.ts` with the full `ExtensionAPI`, and `examples/extensions/preset.ts`, the model for an extension that keeps its own config file), just never as the thing you run.
+
+The live source is `github.com/earendil-works/pi-mono` — `packages/coding-agent`, 0.84.3 as of 2026-08-26, versus 0.84.2 in the snap:
+
+```bash
+git clone --depth 1 https://github.com/earendil-works/pi-mono
+cd pi-mono && npm install
+npm run build:offline           # after the model-data step below
+node packages/coding-agent/dist/cli.js --version
+```
+
+**The model catalog is what breaks the build.** `npm run build` fetches it from models.dev, which fails behind any egress policy; `build:offline` skips the fetch but still needs `packages/ai/src/providers/data/*.json`, which is gitignored and hydrated from that same host. The catalog is inert for extension work, so stub it — one JSON file per `packages/ai/src/providers/*.models.ts` shard:
+
+```jsonc
+// src/providers/data/<provider>.json — one group per api, one model per group
+{ "<api>": { "<model-id>": {
+  "id": "<model-id>", "provider": "<provider>", "api": "<api>",
+  "name": "…", "baseUrl": "https://example.invalid", "reasoning": false,
+  "input": ["text"], "contextWindow": 200000, "maxTokens": 8192,
+  "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+} } }
+```
+
+Two things that cost a build each if you get them wrong:
+
+- A provider needs a group for **every** api its `src/providers/<id>.ts` wires up, not just the first. Several type-check their api map against `typeof values` from the JSON, so a missing group is a `TS2353` on the provider, not on the data (`opencode.ts` names four).
+- The data directory needs `.manifest.json` too — schema version, timestamp, structure hash, per-file hashes. Generate it with `createModelDataManifest()` from `packages/ai/scripts/model-data.ts` rather than by hand, then `node packages/ai/scripts/check-model-data.ts` should print `Generated model data is valid.`
+
+**Smoke-test an extension against the build** — loads clean if it prints nothing and exits 0:
+
+```bash
+node /path/to/pi-mono/packages/coding-agent/dist/cli.js \
+  --mode rpc --no-session --no-extensions -e dist/extension/pi-snippet-tui.js </dev/null
+```
+
+`PI_CODING_AGENT_DIR` points that pi at a scratch agent directory, which is also how to exercise `pi-snippet.json` without touching the real one. `/snippets` is drivable from there: send `{"type":"prompt","message":"/snippets"}` on stdin and answer the `extension_ui_request` for `select` with an `extension_ui_response` carrying the option string (see `docs/rpc.md`).
+
 ## Architecture
 
 A single pi TUI extension (`src/extension/pi-snippet-tui.ts`) over a shared, terminal-agnostic core.
@@ -59,6 +98,8 @@ A single pi TUI extension (`src/extension/pi-snippet-tui.ts`) over a shared, ter
 **The inference layer is gated on click-to-insert.** Inferred anchors carry no number, so only the mouse can activate them; with clicking off there is nothing to activate and no call is made. That is the cost control, not an accident of wiring.
 
 **`ctx.modelRegistry.complete(model, context, options)` is real** and is how an extension makes its own model call — no HTTP, no pi-ai import. `hasConfiguredAuth()` says credentials are *configured*, not that they work, which is why `MagicInferrer` stands down after three consecutive failures.
+
+**The `/snippets` toggles are persisted, the session state is not.** pi has no settings or key-value API for extensions — `ExtensionAPI` offers only `appendEntry()`, which is session-scoped and branch-aware — so `src/extension/settings.ts` keeps a JSON file beside pi's own, at `~/.pi/agent/pi-snippet.json`, the way pi's shipped `preset.ts` example does. The agent dir is resolved as pi resolves it (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`), re-derived in three lines rather than imported so the bundle keeps no runtime dependency on pi; `PI_SNIPPET_SETTINGS` overrides the path, and `test/setup.ts` points it at a temp file so a test run never touches the real one. `--no-suggestions` is latched in a separate `flagDisabled`, never in `state.enabled`, so a flagged session cannot write `off` over what the user chose; `--snippet-click` is latched the same way in `flagClick`, pointing the other direction, and `clickOn()` is the effective value everything else reads. The inference toggle and its model pin ride the same file — `model` is the one non-boolean, so `merge()` type-checks it separately.
 
 **Caps are guards, not style.** `MAX_SUGGESTIONS_PER_MESSAGE` (99) is a runaway-output guard, not a style rule — it matches what two-digit `Alt` addressing reaches. The prompt itself gives no numeric guidance; `Zero suggestions is normal and correct for most messages` is the only steer the model gets.
 

@@ -18,8 +18,10 @@
  *   no waiting out the rest of the answer. Holding Alt and typing two digits
  *   reaches 10 and above. Only the latest message is addressable, so a number
  *   never means two different things.
- * - `/snippets` toggles the feature, the hotkeys, or click-to-insert; the
- *   `--no-suggestions` flag disables everything for a session.
+ * - `/snippets` toggles the feature, the hotkeys, or click-to-insert, and each
+ *   choice is written to disk so it holds for the next session too; the
+ *   `--no-suggestions` flag disables everything for one session without
+ *   touching the stored preference.
  *
  * The transformer stays pure; the addressable set is derived in the message
  * lifecycle handlers (`message_update` while the model writes, `message_end`
@@ -32,6 +34,7 @@ import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix } from "../shared
 import { chipLabel, toTuiMarkdown } from "../shared/tui-markdown.js";
 import { registerPromptSnippet } from "./common.js";
 import { inferenceCandidates, MagicInferrer, MODEL_ENV_VAR, type ModelPin, pickInferenceModel } from "./magic.js";
+import { loadSettings, saveSettings, settingsPath } from "./settings.js";
 import { ClickableText, type TuiLike } from "./tui-mouse.js";
 
 interface TextBlock {
@@ -43,16 +46,24 @@ interface TextBlock {
 const CLOSE_TAG_PREFIX = `</${SNIPPET_TAG}`;
 
 export default function piSnippetTui(pi: any): void {
+	/**
+	 * The stored preferences, read once at load. `state` starts from them and is
+	 * written back on every `/snippets` toggle, so the three switches mean the
+	 * same thing in the next session as in this one.
+	 */
+	const settingsFile = settingsPath();
+	const stored = loadSettings(settingsFile);
+
 	const state = {
-		enabled: true,
-		hotkeysEnabled: true,
-		clickEnabled: false,
+		enabled: stored.enabled,
+		hotkeysEnabled: stored.hotkeysEnabled,
+		clickEnabled: stored.clickEnabled,
 		/**
 		 * Layer 2 (PRD §17): infer suggestions for questions the model left
 		 * untagged. Click-only, so it stays inert until clicking is on — no
 		 * message is ever sent to the small model for chips nobody could press.
 		 */
-		magicEnabled: true,
+		magicEnabled: stored.magicEnabled,
 		/**
 		 * Suggestions of the most recent assistant message — the one streaming,
 		 * once it has produced a complete suggestion of its own, otherwise the
@@ -71,7 +82,7 @@ export default function piSnippetTui(pi: any): void {
 		 * `--snippet-model` flag and `PI_SNIPPET_MODEL`, both of which override
 		 * auto-selection.
 		 */
-		modelOverride: undefined as ModelPin,
+		modelOverride: (stored.model ?? undefined) as ModelPin,
 	};
 
 	const magic = new MagicInferrer();
@@ -109,6 +120,29 @@ export default function piSnippetTui(pi: any): void {
 			anchorsByText.delete(oldest.value);
 		}
 	};
+
+	/**
+	 * `--no-suggestions` is a session override, deliberately kept out of
+	 * `state.enabled`: the stored preference is what the user chose in
+	 * `/snippets`, and a session started with the flag must not overwrite it
+	 * with `off` the next time any toggle is saved.
+	 */
+	let flagDisabled = false;
+	const isEnabled = () => state.enabled && !flagDisabled;
+
+	/**
+	 * `--snippet-click` is the same shape of override, pointing the other way:
+	 * it turns clicking on for one session without writing that choice to disk.
+	 * Kept out of `state.clickEnabled` for exactly the reason `flagDisabled` is
+	 * kept out of `state.enabled` — the stored value must stay what the user
+	 * chose in `/snippets`, or the next toggle of any switch would persist the
+	 * flag's answer as if it had been chosen.
+	 *
+	 * An explicit toggle in `/snippets` supersedes it: having asked for clicking
+	 * in this session and then turned it off, the user means off.
+	 */
+	let flagClick = false;
+	const clickOn = () => state.clickEnabled || flagClick;
 
 	let tui: TuiLike | null = null;
 
@@ -222,9 +256,7 @@ export default function piSnippetTui(pi: any): void {
 		const captured = captureTui(ctx);
 		if (captured) watchAltRelease(captured);
 		const want =
-			state.enabled &&
-			state.clickEnabled &&
-			(state.addressable.length > 0 || state.inferred.length > 0);
+			isEnabled() && clickOn() && (state.addressable.length > 0 || state.inferred.length > 0);
 		if (want) {
 			const instance = captured;
 			if (!instance) return;
@@ -256,8 +288,8 @@ export default function piSnippetTui(pi: any): void {
 	});
 
 	registerPromptSnippet(pi, () => {
-		if (pi.getFlag("no-suggestions") === true) state.enabled = false;
-		return state.enabled;
+		if (pi.getFlag("no-suggestions") === true) flagDisabled = true;
+		return isEnabled();
 	});
 
 	pi.registerMarkdownTransformer(
@@ -265,7 +297,7 @@ export default function piSnippetTui(pi: any): void {
 			if (ctx.messageType !== "assistant") return markdown;
 			return toTuiMarkdown(markdown, {
 				isStreaming: ctx.isStreaming,
-				enabled: state.enabled,
+				enabled: isEnabled(),
 				// A streaming message has no anchors yet — it hasn't been read.
 				anchors: ctx.isStreaming ? [] : anchorsByText.get(markdown),
 			});
@@ -343,7 +375,7 @@ export default function piSnippetTui(pi: any): void {
 	 * text that is no longer the question.
 	 */
 	const maybeInfer = (message: { content?: TextBlock[] }, ctx: any): void => {
-		if (!state.enabled || !state.magicEnabled || !state.clickEnabled) return;
+		if (!isEnabled() || !state.magicEnabled || !clickOn()) return;
 		if (state.addressable.length > 0) return; // the model tagged it; layer 1 wins
 		const joined = messageText(message);
 		if (joined.trim().length === 0 || !asksSomething(joined)) return;
@@ -412,7 +444,7 @@ export default function piSnippetTui(pi: any): void {
 	const hydrateFromBranch = (ctx: any) => {
 		state.addressable = [];
 		state.inferred = [];
-		if (!state.enabled) return;
+		if (!isEnabled()) return;
 		const branch = ctx.sessionManager.getBranch();
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const entry = branch[i];
@@ -433,7 +465,7 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	pi.on("session_start", (event: { reason?: string }, ctx: any) => {
-		if (pi.getFlag("snippet-click") === true) state.clickEnabled = true;
+		if (pi.getFlag("snippet-click") === true) flagClick = true;
 		if (event.reason === "resume" || event.reason === "fork" || event.reason === "reload") {
 			hydrateFromBranch(ctx);
 		} else {
@@ -481,7 +513,7 @@ export default function piSnippetTui(pi: any): void {
 	 * chips still on screen above it.
 	 */
 	pi.on("message_update", (event: { message?: { role?: string; content?: TextBlock[] } }, ctx: any) => {
-		if (!event.message || event.message.role !== "assistant" || !state.enabled) return;
+		if (!event.message || event.message.role !== "assistant" || !isEnabled()) return;
 		const closeTags = countCloseTags(event.message);
 		if (closeTags === streamCloseTags) return; // nothing newly closed
 		streamCloseTags = closeTags;
@@ -492,7 +524,7 @@ export default function piSnippetTui(pi: any): void {
 	});
 
 	pi.on("message_end", (event: { message?: { role?: string; content?: TextBlock[] } }, ctx: any) => {
-		if (!event.message || event.message.role !== "assistant" || !state.enabled) return;
+		if (!event.message || event.message.role !== "assistant" || !isEnabled()) return;
 		setAddressable(suggestionsFromMessage(event.message));
 		streamCloseTags = 0;
 		syncMouse(ctx);
@@ -506,7 +538,7 @@ export default function piSnippetTui(pi: any): void {
 					? "Insert suggestion 10 (or extend a two-digit number)"
 					: `Insert suggestion ${n} (hold Alt and type two digits for 10+)`,
 			handler: (ctx: any) => {
-				if (!state.enabled || !state.hotkeysEnabled || !ctx.hasUI) return;
+				if (!isEnabled() || !state.hotkeysEnabled || !ctx.hasUI) return;
 				lastCtx = ctx;
 				chord.press(n, state.addressable.length);
 			},
@@ -533,6 +565,26 @@ export default function piSnippetTui(pi: any): void {
 		return `${tagged}; inferred ${calls} message${calls === 1 ? "" : "s"} (${input + output} tokens)`;
 	};
 
+	/**
+	 * Write the preferences back to disk. A failure — read-only home, a full
+	 * disk — is not worth interrupting anyone over, but it does change what the
+	 * toggle means, so the notification says so instead of promising a
+	 * persistence that did not happen.
+	 */
+	const persist = (): string => {
+		const ok = saveSettings(
+			{
+				enabled: state.enabled,
+				hotkeysEnabled: state.hotkeysEnabled,
+				clickEnabled: state.clickEnabled,
+				magicEnabled: state.magicEnabled,
+				model: state.modelOverride ?? null,
+			},
+			settingsFile,
+		);
+		return ok ? "" : " (this session only — could not write the settings file)";
+	};
+
 	/** How the inference layer describes itself in `/snippets`. */
 	const magicLabel = (ctx: any): string => {
 		if (!state.magicEnabled) return "off — toggle";
@@ -544,7 +596,7 @@ export default function piSnippetTui(pi: any): void {
 				: "on, but no usable model — toggle";
 		}
 		if (magic.stoodDown) return `stood down — ${model.id} kept failing — toggle to retry`;
-		if (!state.clickEnabled) return `on via ${model.id}, idle until click-to-insert is on — toggle`;
+		if (!clickOn()) return `on via ${model.id}, idle until click-to-insert is on — toggle`;
 		return `on via ${model.id} — toggle`;
 	};
 
@@ -561,9 +613,10 @@ export default function piSnippetTui(pi: any): void {
 		if (!choice) return;
 		state.modelOverride = choice === AUTO ? undefined : choice;
 		magic.rearm(); // a new model deserves a fresh chance
+		const saved = persist();
 		const resolved = pickInferenceModel(ctx, modelPin());
 		ctx.ui.notify(
-			resolved ? `Inferring with ${resolved.id}` : "No usable inference model",
+			(resolved ? `Inferring with ${resolved.id}` : "No usable inference model") + saved,
 			resolved ? "info" : "warning",
 		);
 	};
@@ -572,10 +625,14 @@ export default function piSnippetTui(pi: any): void {
 		description: "Toggle inline suggestions, their shortcuts, or click-to-insert",
 		handler: async (_args: string, ctx: any) => {
 			if (!ctx.hasUI) return;
+			if (flagDisabled) {
+				ctx.ui.notify("Inline suggestions are off for this session (--no-suggestions)");
+				return;
+			}
 			const choice = await ctx.ui.select(snippetStats(ctx), [
 				`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
 				`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
-				`Click to insert: ${state.clickEnabled ? "on" : "off"} — toggle (mouse mode costs wheel scrolling while suggestions are shown)`,
+				`Click to insert: ${clickOn() ? "on" : "off"} — toggle (mouse mode costs wheel scrolling while suggestions are shown)`,
 				`Infer untagged questions: ${magicLabel(ctx)}`,
 				"Inference model — choose",
 			]);
@@ -583,14 +640,15 @@ export default function piSnippetTui(pi: any): void {
 			if (choice.startsWith("Suggestions:")) {
 				state.enabled = !state.enabled;
 				if (!state.enabled) state.addressable = [];
-				ctx.ui.notify(`Inline suggestions ${state.enabled ? "enabled" : "disabled"}`);
+				ctx.ui.notify(`Inline suggestions ${state.enabled ? "enabled" : "disabled"}${persist()}`);
 			} else if (choice.startsWith("Click to insert:")) {
-				state.clickEnabled = !state.clickEnabled;
+				state.clickEnabled = !clickOn();
+				flagClick = false; // an explicit choice supersedes --snippet-click
 				if (!state.clickEnabled) state.inferred = [];
 				ctx.ui.notify(
-					state.clickEnabled
+					(state.clickEnabled
 						? "Click to insert enabled — while suggestions are on screen, the wheel belongs to pi and selection needs Shift"
-						: "Click to insert disabled — scrolling and selection back to normal",
+						: "Click to insert disabled — scrolling and selection back to normal") + persist(),
 				);
 			} else if (choice.startsWith("Inference model")) {
 				await chooseModel(ctx);
@@ -598,19 +656,22 @@ export default function piSnippetTui(pi: any): void {
 				state.magicEnabled = !state.magicEnabled;
 				if (!state.magicEnabled) state.inferred = [];
 				else magic.rearm();
+				const saved = persist();
 				const model = state.magicEnabled ? pickInferenceModel(ctx) : undefined;
 				ctx.ui.notify(
-					!state.magicEnabled
+					(!state.magicEnabled
 						? "Inference off — only the suggestions the model tags itself"
 						: !model
 							? "Inference on, but no model with configured auth was found — nothing will be inferred"
-							: !state.clickEnabled
+							: !clickOn()
 								? `Inference on via ${model.id} — inferred replies are click-only, so turn on click to insert to reach them`
-								: `Inference on via ${model.id} — untagged questions get underlined replies`,
+								: `Inference on via ${model.id} — untagged questions get underlined replies`) + saved,
 				);
 			} else {
 				state.hotkeysEnabled = !state.hotkeysEnabled;
-				ctx.ui.notify(`Suggestion shortcuts ${state.hotkeysEnabled ? "enabled" : "disabled"}`);
+				ctx.ui.notify(
+					`Suggestion shortcuts ${state.hotkeysEnabled ? "enabled" : "disabled"}${persist()}`,
+				);
 			}
 			syncMouse(ctx);
 		},

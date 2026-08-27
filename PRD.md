@@ -323,6 +323,9 @@ A suggestion, once accepted, keeps its number for the life of the message — la
 **H3.** As an operator, I want to swap the tag name for a rebranded distribution.
 *Accept:* Tag name is configurable; parser and prompt snippet read from the same constant.
 
+**H4.** As a user, I want the choices I make in `/snippets` to still hold the next time I start pi, so I am not turning click-to-insert back on every session.
+*Accept:* All three toggles are written to `~/.pi/agent/pi-snippet.json` — pi's agent directory, resolved as pi resolves it (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`), overridable outright with `PI_SNIPPET_SETTINGS` — as they are changed, and read back at load. pi exposes no settings or key-value API to extensions (`ExtensionAPI` has only `appendEntry()`, which is session-scoped and branch-aware, so it is the wrong shape for a preference); a JSON file beside pi's own `settings.json` is the convention its shipped `preset.ts` example follows. The file lives outside the session store — these are preferences about the tool, not state of one conversation, so a fork or a resume finds the same answer as a fresh start. A missing, malformed, or unreadable file falls back to defaults rather than failing to load; a write that fails leaves the toggle in force for the session and says so in the notification. `--no-suggestions` is a session override and never rewrites the stored preference. Global only, deliberately: a project-local override would have to decide which file a toggle writes back to, and picking wrong reproduces exactly the bug this story fixes.
+
 ---
 
 ## 10. Worked examples
@@ -517,7 +520,7 @@ Consequences of that hook returning *markdown* rather than components:
 The TUI also supports real clicking, via terminal mouse reporting (DECSET 1000 + SGR 1006):
 
 - Hit testing matches the *rendered text* of each `ⁿlabel` span on the visible screen — no position markers are embedded in the message, so the session file and the model's context stay clean. Both halves of a span wrapped across lines are clickable.
-- Mouse reporting is terminal-wide: while on, the wheel is delivered to the application (terminal scrollback stops responding) and click-drag selection needs Shift. To keep that cost small, reporting is engaged only while the latest message actually has suggestions — which now includes one still streaming, from the frame its first chip is painted — and can be toggled off entirely in `/suggestions`.
+- Mouse reporting is terminal-wide: while on, the wheel is delivered to the application (terminal scrollback stops responding) and click-drag selection needs Shift. To keep that cost small, reporting is engaged only while the latest message actually has suggestions — which now includes one still streaming, from the frame its first chip is painted — and can be toggled off entirely in `/snippets`. The toggle is persisted (H4): click-to-insert is off by default, so anyone who wants it wants it every session.
 - Clicking mid-stream is hit-tested against the lines drawn at click time, and the screen is moving underneath it. A click resolves through a DSR round trip (well under a frame in practice); if the message scrolls in that window the click misses rather than inserting something else, because hit testing matches the chip's rendered text and not a stored coordinate.
 - Wheel, right-button, motion, and release events are swallowed while reporting is on, so no escape sequences leak into the editor as typed garbage.
 - Screen-to-buffer mapping is anchored with a cursor-position report (DSR, `ESC[6n`) issued at click time: pi never clears the screen and draws with relative cursor moves only, so when pi is launched below an existing shell prompt its first buffer line is not screen row 0. The DSR answer, correlated with pi-tui's buffer-relative cursor bookkeeping, gives the exact offset; a terminal that never answers falls back to a bottom-aligned mapping. After an insertion the TUI is asked to repaint — consumed input bypasses pi's own render pass.
@@ -620,7 +623,7 @@ Layer 2 carries no number because nothing addresses it by number: a digit that s
 
 1. **Layer 1 wins outright.** A message with even one tag is never sent for inference. The layers never compete for the same sentence.
 2. **No question, no call.** A message with no question mark outside code is never sent. This is the cost control.
-3. **Click-only means click-gated.** With click-to-insert off, nothing could activate an inferred anchor, so nothing is inferred and nothing is spent.
+3. **Click-only means click-gated.** With click-to-insert off, nothing could activate an inferred anchor, so nothing is inferred and nothing is spent. `--snippet-click` turns clicking on for one session without changing the stored preference, the mirror of what `--no-suggestions` does.
 4. **Never off-provider.** Inference uses the session's own provider. An assistant message can contain file contents; this layer must not become a route for them to reach somewhere the session wasn't already talking to.
 5. **Anchors are verbatim or dropped.** An anchor that is not literally present in the message's non-code text is discarded, never repaired. A small model that paraphrases produces a missing chip, never a wrong one.
 6. **Failures are silent.** No auth, no small model, a timeout, a refusal, malformed JSON: the message simply has no anchors, exactly as if the layer were off.
@@ -631,7 +634,7 @@ Layer 2 carries no number because nothing addresses it by number: a digit that s
 
 Most specific source wins:
 
-1. the model picked in `/snippets`
+1. the model picked in `/snippets` — persisted with the toggles, so it is chosen once, not once per session
 2. `--snippet-model <provider/id>`
 3. `PI_SNIPPET_MODEL`
 4. auto-selection
