@@ -23,7 +23,7 @@
  * mode is a missing chip, never a wrong one.
  */
 
-import { fencedRegions, MAX_SUGGESTION_LENGTH } from "./suggestions.js";
+import { fencedRegions, MAX_SUGGESTION_LENGTH, MAX_SUGGESTIONS_PER_MESSAGE } from "./suggestions.js";
 
 /**
  * A span of the assistant's own prose, and what the user would say if they
@@ -37,12 +37,19 @@ export interface InferredSuggestion {
 }
 
 /**
- * Ceiling on inferred suggestions per message. Far below the tagged cap of
- * 99: these carry no number, so they are reachable only by clicking, and a
- * message lit up with underlines everywhere reads as noise rather than as an
- * offer.
+ * Runaway guard on inferred suggestions per message — a guard, not a style
+ * rule, exactly as `MAX_SUGGESTIONS_PER_MESSAGE` is for tagged chips.
+ *
+ * It was 4, and the prompt asked for at most 4. That cost real chips: a
+ * message asking five questions got four of them underlined and the fifth
+ * silently dropped, with nothing to tell the user which one was missing.
+ * Digit addressing is what bounds the tagged layer at 99; an inferred anchor
+ * carries no number and is reached only by clicking, so addressing bounds it
+ * not at all. How many spans are worth underlining is a judgement about the
+ * message, which is why the prompt asks for all of them and this number only
+ * stops a broken model from returning a thousand.
  */
-export const MAX_INFERRED_PER_MESSAGE = 4;
+export const MAX_INFERRED_PER_MESSAGE = MAX_SUGGESTIONS_PER_MESSAGE;
 
 /** An anchor longer than this is a paragraph, not a span worth pointing at. */
 export const MAX_ANCHOR_LENGTH = 200;
@@ -90,7 +97,8 @@ Reply with JSON only: an array of {"anchor": string, "reply": string}. No prose,
 - Anchor the shortest span that carries the question or the option — usually the question clause itself, or the name of one option.
 - "reply" is what the USER types, in the user's voice: an instruction or an answer, not a restatement of the question. Resolve pronouns using the message ("it" -> what it refers to).
 - One entry per distinct thing the user could say. An either/or question gets one entry per branch, each anchored on its own branch.
-- At most ${MAX_INFERRED_PER_MESSAGE} entries. Keep each reply under ${MAX_SUGGESTION_LENGTH} characters, one line.
+- Cover every span that invites a reply. Do not stop at a fixed number, and do not drop a question because the message asks several.
+- Keep each reply under ${MAX_SUGGESTION_LENGTH} characters, one line.
 - If the message invites nothing — it is a status update, a finished answer, or it asks nothing of the user — reply with exactly [].
 
 Example message:

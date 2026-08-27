@@ -629,6 +629,7 @@ Layer 2 carries no number because nothing addresses it by number: a digit that s
 6. **Failures are silent.** No auth, no small model, a timeout, a refusal, malformed JSON: the message simply has no anchors, exactly as if the layer were off.
 7. **Answers are cached by message text.** A resize, a repaint, a `/tree` walk back to a message, or a fork never pays twice. An empty answer is cached too.
 8. **A dead provider stands the layer down.** `hasConfiguredAuth()` answers whether credentials are *configured*, not whether they work — an expired key passes it and then 403s on every call. Three consecutive failures stop the layer for the session; `/snippets` re-arms it.
+9. **Every question invites a chip.** The prompt asks the model to cover each span that invites a reply, and the parser holds only a runaway guard — the same `MAX_SUGGESTIONS_PER_MESSAGE` the tagged layer uses. An earlier cap of four was a style rule in disguise: a message asking five questions got four underlined and the fifth silently dropped, with nothing on screen to say which one was missing. Digit addressing is what bounds layer 1 at 99; layer 2 carries no number, so nothing bounds it but the model's own judgement about the message — which is where that judgement belongs.
 
 ### 17.3 Choosing the model
 
@@ -653,7 +654,8 @@ A pinned model is obeyed even when it is neither small nor cheap — it was aske
 | Anchor occurs only inside code | Dropped. |
 | Two anchors overlap | The first is kept, the second dropped — a span is never underlined twice. |
 | Reply empty, multi-line, or over the length cap | That entry dropped. |
-| More than four entries | The first four are kept. |
+| Two entries share one anchor | The first is kept, the rest dropped — one span, one chip. |
+| Runaway number of entries | Kept up to `MAX_SUGGESTIONS_PER_MESSAGE`. The cap is a guard against a broken answer, not a style rule. |
 | Answer arrives after the branch moved on | Discarded — anchors belong to the message they were read from. |
 | Call exceeds its deadline | Abandoned, no anchors; not cached, so a later visit may retry. |
 | User aborts the turn | Abandoned; not counted against the provider. |

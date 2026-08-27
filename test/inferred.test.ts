@@ -102,8 +102,17 @@ describe("parseInferred (believing a small model only so far)", () => {
 		}
 	});
 
-	it("caps the number of anchors", () => {
+	it("keeps every anchor of a message that asks many things", () => {
+		// The cap is a runaway guard, not a style rule: a message asking eight
+		// questions gets eight chips, not four.
 		const words = Array.from({ length: 8 }, (_, i) => `opt${i}`);
+		const text = `Pick one: ${words.join(", ")}?`;
+		const raw = JSON.stringify(words.map((w) => ({ anchor: w, reply: `Use ${w}.` })));
+		expect(parseInferred(raw, text)).toHaveLength(8);
+	});
+
+	it("stops a runaway answer at the cap", () => {
+		const words = Array.from({ length: MAX_INFERRED_PER_MESSAGE + 20 }, (_, i) => `opt${i}`);
 		const text = `Pick one: ${words.join(", ")}?`;
 		const raw = JSON.stringify(words.map((w) => ({ anchor: w, reply: `Use ${w}.` })));
 		expect(parseInferred(raw, text)).toHaveLength(MAX_INFERRED_PER_MESSAGE);
