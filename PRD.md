@@ -40,9 +40,10 @@ We want the affordance to be *ambient*: visible where the suggestion was made, i
 - G1. Model can mark suggested replies inline, mid-sentence, in its own prose.
 - G2. User can insert a suggestion into the composer with one click.
 - G3. Typing freely is always the default state. No mode, no focus steal, no forced choice.
-- G4. Suggestions never block the agent turn or add a round-trip.
+- G4. Suggestions never block the agent turn or add a round-trip *to it*. The inference layer of §17 is a separate call that no one waits on: it starts after the turn ends and never delays a keystroke, a click, or the agent.
 - G5. Raw markup is never visible to the user in any web surface.
 - G6. Degrades cleanly when the model misbehaves (unclosed tags, tags in code, no tags at all).
+- G7. A question the model never tagged still gets suggested replies (§17). The primary model's cooperation is an optimization, not a requirement.
 
 ### Non-Goals
 
@@ -91,8 +92,11 @@ The inserted text is always exactly the element's text content — what you see 
 | **Web renderer** | Renders suggestion nodes as `<button>` chips inside the message body. |
 | **Composer integration** | Insert-at-cursor, focus management, undo. |
 | **Suggestion state store** | Tracks which message is "live" for keyboard addressing. Fed by the message lifecycle — updated as suggestions complete mid-stream, and again when the message finalizes. |
+| **Inference layer** (§17) | Reads a finished, untagged message with a small model and returns anchor/reply pairs. Runs only when the primary model tagged nothing. Its answers feed the same state store. |
 
 **Hard rule: the parser is pure and the renderer is stateless.** Rendering may run many times per message — on stream ticks, on resize, on theme change, on scroll virtualization. Any state built during render will drift out of sync with what the user sees. The set of addressable suggestions is derived in the message lifecycle handlers (`message_update` while the model writes, `message_end` when it stops) and stored outside the render path — never built during rendering.
+
+The inference layer (§17) does not weaken this. Its anchors are not marked up in the message text, so the renderer cannot find them by parsing — but it is handed them as an *input*, keyed by the exact text being rendered. Rendering stays a pure function of `(markdown, anchors)`: same inputs, same output, on every tick and every resize, with nothing accumulated during the pass.
 
 ### 5.3 Sanitization rules
 
@@ -584,5 +588,79 @@ Click hit-testing turns a character index into a screen column, so our width tab
 | Non-blocking tool + widget tray | Extra model round-trip; suggestions detached from their sentence |
 | `<option>` as the tag name | Collides with real HTML that a coding agent handles constantly |
 | Auto-send on click | Removes the edit step, which is where most of the value is; one misclick sends a wrong instruction to an agent with write access |
-| Client-side suggestion generation (second model call) | Latency and cost for something the primary model already knows |
+| Client-side suggestion generation (second model call), *as a replacement for inline tags* | Latency and cost for something the primary model already knows. **Reversed in part** — see §17: rejected as the primary mechanism, adopted as the fallback for messages the primary model did not tag, where the premise "the primary model already knows" is exactly what does not hold. |
 | Structured JSON sidecar instead of inline tags | Loses inline position, which is the whole point |
+
+---
+
+## 17. Inferred suggestions (layer 2)
+
+Layer 1 — `<snippet>` tags — needs the primary model to cooperate: to notice it has asked something, and to wrap the answer as it writes. It often doesn't. A provider bridge that rebuilds the system prompt may never have shown it the contract at all, and no prompt makes a model tag reliably enough to depend on. Measured emission is what `/snippets` reports, and it is not 100%.
+
+Layer 2 covers the gap. When a message finishes, asks something, and carries no tags, a small fast model reads it and returns the spans that invite a reply together with what the user would say back.
+
+### 17.1 What the user sees
+
+The assistant writes, untagged:
+
+> I'm done the model, do you want to see it?
+
+The question clause is underlined — link-styled, no number. Clicking it puts **`Show me the model.`** in the composer. Insertion never sends (NG1), so it can be edited or cleared like any other suggestion.
+
+The two layers are deliberately distinguishable:
+
+| | Layer 1 — tagged | Layer 2 — inferred |
+|---|---|---|
+| Source | the primary model, inline, as it writes | a small model, after the message ends |
+| Marker | superscript number, link-styled | link-styled, no number |
+| Addressing | click **and** `Alt+N` | click only |
+| Live | the moment the closing tag arrives, mid-stream | once the message is finished and read |
+| Cost | none — already in the turn | one small-model call per untagged question |
+
+Layer 2 carries no number because nothing addresses it by number: a digit that sometimes means a tagged chip and sometimes an inferred one would make `Alt+N` ambiguous, and the numbering is worth more than the second affordance.
+
+### 17.2 Rules
+
+1. **Layer 1 wins outright.** A message with even one tag is never sent for inference. The layers never compete for the same sentence.
+2. **No question, no call.** A message with no question mark outside code is never sent. This is the cost control.
+3. **Click-only means click-gated.** With click-to-insert off, nothing could activate an inferred anchor, so nothing is inferred and nothing is spent. `--snippet-click` turns clicking on for one session without changing the stored preference, the mirror of what `--no-suggestions` does.
+4. **Never off-provider.** Inference uses the session's own provider. An assistant message can contain file contents; this layer must not become a route for them to reach somewhere the session wasn't already talking to.
+5. **Anchors are verbatim or dropped.** An anchor that is not literally present in the message's non-code text is discarded, never repaired. A small model that paraphrases produces a missing chip, never a wrong one.
+6. **Failures are silent.** No auth, no small model, a timeout, a refusal, malformed JSON: the message simply has no anchors, exactly as if the layer were off.
+7. **Answers are cached by message text.** A resize, a repaint, a `/tree` walk back to a message, or a fork never pays twice. An empty answer is cached too.
+8. **A dead provider stands the layer down.** `hasConfiguredAuth()` answers whether credentials are *configured*, not whether they work — an expired key passes it and then 403s on every call. Three consecutive failures stop the layer for the session; `/snippets` re-arms it.
+
+### 17.3 Choosing the model
+
+Most specific source wins:
+
+1. the model picked in `/snippets` — persisted with the toggles, so it is chosen once, not once per session
+2. `--snippet-model <provider/id>`
+3. `PI_SNIPPET_MODEL`
+4. auto-selection
+
+Auto-selection takes the session provider's own small models — matched on id (`haiku`, `mini`, `flash`, `lite`, `micro`, `nano`, `8b` …) — and prefers a known-good family before falling back to price. The cheapest small model in a large catalogue is frequently a 3B that paraphrases the anchor, and a paraphrased anchor is a dropped chip (rule 5), so quality is ranked ahead of cost. With nothing small available it falls back to the active model rather than doing nothing, which is why `/snippets` always names whatever it picked: an expensive fallback should never be a surprise.
+
+A pinned model is obeyed even when it is neither small nor cheap — it was asked for by name. It is not obeyed when it has no configured auth, which would spend every message on a call that cannot succeed.
+
+### 17.4 Failure matrix
+
+| Situation | Behaviour |
+|---|---|
+| No provider auth | No anchors. After three tries, layer stands down for the session. |
+| Model returns prose, not JSON | No anchors. |
+| Model invents or paraphrases an anchor | That entry dropped; the others kept. |
+| Anchor occurs only inside code | Dropped. |
+| Two anchors overlap | The first is kept, the second dropped — a span is never underlined twice. |
+| Reply empty, multi-line, or over the length cap | That entry dropped. |
+| More than four entries | The first four are kept. |
+| Answer arrives after the branch moved on | Discarded — anchors belong to the message they were read from. |
+| Call exceeds its deadline | Abandoned, no anchors; not cached, so a later visit may retry. |
+| User aborts the turn | Abandoned; not counted against the provider. |
+
+### 17.5 Open questions
+
+- **OQ7.** Should layer 2 also run on a message that *did* tag, to catch a question the model tagged only partially? Leaning no: it doubles cost for a case that is already served, and two sources on one sentence is exactly what rule 1 exists to prevent.
+- **OQ8.** Should an inferred anchor be addressable by keyboard at all — say a separate chord that never collides with `Alt+N`? Deferred until clicking proves the interaction is worth keeping.
+- **OQ9.** Should inferred replies be cached to disk across sessions? The answers are a pure function of the message text, so the cache is safe to persist — but a session store carrying UI ephemera is what OQ2 already leaned against.
+- **OQ10.** The prompt asks for JSON in prose. Constrained sampling (`constrainedSampling: { type: "json_schema" }`, supported by pi-ai) would make malformed output structurally impossible on providers that offer it. Worth measuring once there is a take-rate to measure against.

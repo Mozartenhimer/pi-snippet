@@ -23,8 +23,14 @@ afterEach(() => {
 });
 
 describe("settings file", () => {
-	it("round-trips the three toggles", () => {
-		const settings: SnippetSettings = { enabled: false, hotkeysEnabled: false, clickEnabled: true };
+	it("round-trips every preference", () => {
+		const settings: SnippetSettings = {
+			enabled: false,
+			hotkeysEnabled: false,
+			clickEnabled: true,
+			magicEnabled: false,
+			model: "anthropic/claude-haiku-4-5",
+		};
 		expect(saveSettings(settings, file)).toBe(true);
 		expect(loadSettings(file)).toEqual(settings);
 	});
@@ -47,10 +53,29 @@ describe("settings file", () => {
 	it("keeps known booleans and defaults the rest", () => {
 		writeFileSync(file, JSON.stringify({ clickEnabled: true, hotkeysEnabled: "yes", junk: 1 }), "utf8");
 		expect(loadSettings(file)).toEqual({
-			enabled: true, // absent
+			...DEFAULT_SETTINGS,
 			hotkeysEnabled: true, // present but not a boolean
 			clickEnabled: true,
 		});
+	});
+
+	it("keeps a stored model pin, and defaults one of the wrong type", () => {
+		writeFileSync(file, JSON.stringify({ model: "openai/gpt-5-mini" }), "utf8");
+		expect(loadSettings(file).model).toBe("openai/gpt-5-mini");
+		writeFileSync(file, JSON.stringify({ model: 42 }), "utf8");
+		expect(loadSettings(file).model).toBe(null);
+	});
+
+	it("treats an empty or blank model pin as no pin", () => {
+		for (const model of ["", "   "]) {
+			writeFileSync(file, JSON.stringify({ model }), "utf8");
+			expect(loadSettings(file).model).toBe(null);
+		}
+	});
+
+	it("round-trips an explicit null model", () => {
+		saveSettings({ ...DEFAULT_SETTINGS, model: null }, file);
+		expect(loadSettings(file).model).toBe(null);
 	});
 
 	it("writes only the keys it owns", () => {
@@ -59,6 +84,8 @@ describe("settings file", () => {
 			"clickEnabled",
 			"enabled",
 			"hotkeysEnabled",
+			"magicEnabled",
+			"model",
 		]);
 	});
 

@@ -5,7 +5,9 @@
  * (mouse reporting costs wheel scrolling, see tui-mouse.ts), so anyone who
  * wants it wants it every session — turning it back on after each restart is
  * the whole friction. Suggestions and the Alt shortcuts ride along, so all
- * three switches behave the same way.
+ * three switches behave the same way. The inference layer (PRD §17) rides
+ * along too, together with the model it was told to use: picking a small model
+ * once and re-picking it every session would be the same friction again.
  *
  * The file lives outside the session store on purpose: these are preferences
  * about the tool, not state of one conversation, so a fork or a resume must
@@ -30,13 +32,31 @@ export interface SnippetSettings {
 	enabled: boolean;
 	hotkeysEnabled: boolean;
 	clickEnabled: boolean;
+	/** Layer 2 — infer replies for questions the model left untagged (PRD §17). */
+	magicEnabled: boolean;
+	/**
+	 * Model pinned for inference, as `provider/id`, or null to auto-select.
+	 *
+	 * The one non-boolean here, and worth persisting for the same reason as the
+	 * toggles: someone who picked a model in `/snippets` picked it about the
+	 * tool, not about one conversation. `--snippet-model` and
+	 * `PI_SNIPPET_MODEL` still override it, so a pin stored here is the
+	 * least-specific source rather than a sticky trap.
+	 */
+	model: string | null;
 }
 
-/** Click starts off: mouse mode is a real cost, so it is opt-in. */
+/**
+ * Click starts off: mouse mode is a real cost, so it is opt-in. Inference is
+ * on but inert until it — its anchors are click-only, so it spends nothing
+ * until there is something that could activate them.
+ */
 export const DEFAULT_SETTINGS: SnippetSettings = {
 	enabled: true,
 	hotkeysEnabled: true,
 	clickEnabled: false,
+	magicEnabled: true,
+	model: null,
 };
 
 /**
@@ -71,12 +91,26 @@ export function settingsPath(env: NodeJS.ProcessEnv = process.env): string {
 	return join(agentDir(env), "pi-snippet.json");
 }
 
-/** Take only the keys we know, and only when they are actually booleans. */
+/**
+ * Take only the keys we know, and only when they hold the type we expect.
+ *
+ * A key whose stored value is the wrong type falls back to its default rather
+ * than failing the whole read: one hand-edited field costs that field, not the
+ * rest of the preferences.
+ */
 function merge(raw: unknown): SnippetSettings {
 	const settings = { ...DEFAULT_SETTINGS };
 	if (typeof raw !== "object" || raw === null) return settings;
+	const source = raw as Record<string, unknown>;
 	for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof SnippetSettings)[]) {
-		const value = (raw as Record<string, unknown>)[key];
+		const value = source[key];
+		if (key === "model") {
+			// Empty string means "no pin", same as absent — it would resolve to
+			// nothing anyway, and storing it would look like a broken model id.
+			if (typeof value === "string" && value.trim() !== "") settings.model = value;
+			else if (value === null) settings.model = null;
+			continue;
+		}
 		if (typeof value === "boolean") settings[key] = value;
 	}
 	return settings;
@@ -111,6 +145,8 @@ export function saveSettings(settings: SnippetSettings, path: string = settingsP
 			enabled: settings.enabled,
 			hotkeysEnabled: settings.hotkeysEnabled,
 			clickEnabled: settings.clickEnabled,
+			magicEnabled: settings.magicEnabled,
+			model: settings.model,
 		};
 		writeFileSync(temp, `${JSON.stringify(body, null, "\t")}\n`, "utf8");
 		renameSync(temp, path);

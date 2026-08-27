@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import piSnippetTui from "../src/extension/pi-snippet-tui.js";
-import { loadSettings } from "../src/extension/settings.js";
+import { DEFAULT_SETTINGS, loadSettings } from "../src/extension/settings.js";
 
 /**
  * The `/snippets` toggles are preferences, not session state: a choice made in
@@ -15,12 +15,12 @@ import { loadSettings } from "../src/extension/settings.js";
  * second instance against the same settings file — a restart, in effect — and
  * reads the toggle back out of the menu it renders.
  */
-function makeFakePi(flagged = false) {
+function makeFakePi(flag?: string) {
 	const handlers = new Map<string, (event: any, ctx: any) => any>();
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
 	const pi = {
 		registerFlag: () => {},
-		getFlag: () => (flagged ? true : undefined),
+		getFlag: (name: string) => (name === flag ? true : undefined),
 		on: (name: string, handler: any) => handlers.set(name, handler),
 		registerMarkdownTransformer: () => {},
 		registerShortcut: () => {},
@@ -110,9 +110,9 @@ describe("pi-snippet-tui: /snippets choices persist", () => {
 		await shortcuts.commands.get("snippets")!("", makeCtx("Alt+digit").ctx);
 
 		expect(loadSettings(file)).toEqual({
+			...DEFAULT_SETTINGS,
 			enabled: false,
 			hotkeysEnabled: false,
-			clickEnabled: false,
 		});
 		const menu = await readMenu(file);
 		expect(menu).toContainEqual(expect.stringContaining("Suggestions: off"));
@@ -135,7 +135,7 @@ describe("pi-snippet-tui: /snippets choices persist", () => {
 		await on.commands.get("snippets")!("", makeCtx("Click to insert:").ctx);
 
 		// Restart with the flag: the extension latches it on `before_agent_start`.
-		const flagged = makeFakePi(true);
+		const flagged = makeFakePi("no-suggestions");
 		piSnippetTui(flagged.pi);
 		flagged.handlers.get("before_agent_start")!(
 			{ systemPrompt: "", systemPromptOptions: {} },
@@ -147,5 +147,124 @@ describe("pi-snippet-tui: /snippets choices persist", () => {
 
 		expect(loadSettings(file).clickEnabled).toBe(true);
 		expect(await readMenu(file)).toContainEqual(expect.stringContaining("Click to insert: on"));
+	});
+});
+
+/**
+ * The inference layer's two preferences ride the same file (PRD §17.3): the
+ * toggle, and the model it was told to use. Picking a small model once and
+ * re-picking it every session would be the same friction the toggles fixed.
+ */
+describe("persisting the inference preferences", () => {
+	it("carries the inference toggle across a restart", async () => {
+		const first = makeFakePi();
+		piSnippetTui(first.pi);
+		await first.commands.get("snippets")!("", makeCtx("Infer untagged questions:").ctx);
+
+		expect(loadSettings(file).magicEnabled).toBe(false);
+		expect(await readMenu(file)).toContainEqual(
+			expect.stringContaining("Infer untagged questions: off"),
+		);
+	});
+
+	it("carries a model pin across a restart", async () => {
+		/** A ctx that can answer model questions, choosing `picks` in order. */
+		const modelCtx = (picks: string[]) => {
+			const menus: string[][] = [];
+			return {
+				menus,
+				ctx: {
+					mode: "cli",
+					hasUI: true,
+					model: { id: "claude-opus-5", provider: "anthropic" },
+					modelRegistry: {
+						getAvailable: () => [
+							{ id: "claude-haiku-4-5", provider: "anthropic", cost: { input: 1 } },
+							{ id: "claude-opus-5", provider: "anthropic", cost: { input: 15 } },
+						],
+						hasConfiguredAuth: () => true,
+						complete: async () => ({ content: [], stopReason: "stop" }),
+					},
+					sessionManager: { getBranch: () => [] },
+					ui: {
+						getEditorText: () => "",
+						setEditorText: () => {},
+						notify: () => {},
+						setStatus: () => {},
+						setFooter: () => {},
+						select: async (_title: string, options: string[]) => {
+							menus.push(options);
+							const want = picks.shift();
+							return want === undefined ? undefined : options.find((o) => o.startsWith(want));
+						},
+					},
+				},
+			};
+		};
+
+		const first = makeFakePi();
+		piSnippetTui(first.pi);
+		// Two selects: the menu, then the model picker it opens.
+		await first.commands.get("snippets")!(
+			"",
+			modelCtx(["Inference model", "anthropic/claude-haiku-4-5"]).ctx,
+		);
+		expect(loadSettings(file).model).toBe("anthropic/claude-haiku-4-5");
+
+		// A restart reads the pin back and names it in the menu.
+		const second = makeFakePi();
+		piSnippetTui(second.pi);
+		const seen = modelCtx([]); // no pick: render the menu and dismiss it
+		await second.commands.get("snippets")!("", seen.ctx);
+		expect(seen.menus[0]).toContainEqual(
+			expect.stringContaining("Infer untagged questions: on via claude-haiku-4-5"),
+		);
+	});
+});
+
+/**
+ * `--snippet-click` turns clicking on for one session. It must not reach the
+ * settings file: the stored value is what the user chose in `/snippets`, and a
+ * flag-started session that toggles anything else would otherwise persist the
+ * flag's answer as if it had been chosen.
+ */
+describe("--snippet-click stays a session override", () => {
+	it("turns clicking on without storing it", async () => {
+		const { pi, handlers, commands } = makeFakePi("snippet-click");
+		piSnippetTui(pi);
+		const started = makeCtx();
+		handlers.get("session_start")!({ reason: "new" }, started.ctx);
+
+		// On for this session …
+		const seen = makeCtx();
+		await commands.get("snippets")!("", seen.ctx);
+		expect(seen.options()).toContainEqual(expect.stringContaining("Click to insert: on"));
+
+		// … and nothing was written, so a plain restart is still off.
+		expect(loadSettings(file).clickEnabled).toBe(false);
+		expect(await readMenu(file)).toContainEqual(expect.stringContaining("Click to insert: off"));
+	});
+
+	it("does not leak into the file when another toggle is saved", async () => {
+		const { pi, handlers, commands } = makeFakePi("snippet-click");
+		piSnippetTui(pi);
+		handlers.get("session_start")!({ reason: "new" }, makeCtx().ctx);
+		await commands.get("snippets")!("", makeCtx("Alt+digit").ctx);
+
+		const saved = loadSettings(file);
+		expect(saved.hotkeysEnabled).toBe(false); // the toggle we actually made
+		expect(saved.clickEnabled).toBe(false); // the flag, not a choice
+	});
+
+	it("an explicit toggle supersedes the flag", async () => {
+		const { pi, handlers, commands } = makeFakePi("snippet-click");
+		piSnippetTui(pi);
+		handlers.get("session_start")!({ reason: "new" }, makeCtx().ctx);
+		await commands.get("snippets")!("", makeCtx("Click to insert:").ctx);
+
+		expect(loadSettings(file).clickEnabled).toBe(false);
+		const after = makeCtx();
+		await commands.get("snippets")!("", after.ctx);
+		expect(after.options()).toContainEqual(expect.stringContaining("Click to insert: off"));
 	});
 });

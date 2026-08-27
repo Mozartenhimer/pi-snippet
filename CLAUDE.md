@@ -26,14 +26,19 @@ npm run check:widths                   # our glyph-width table vs Ghostty's
 npm run gen:widths                     # regenerate src/extension/char-width.ts
 python3 scripts/chord-live.py          # Alt+digit gestures, keystrokes encoded by real Ghostty
 python3 scripts/click-offset-repro.py  # clicking, with pi launched mid-screen
+python3 scripts/infer-click-tmux.py    # inferred-anchor click, real TUI via tmux, no provider needed
 PI_SNIPPET_CLICK_DEBUG=/tmp/click.log pi -e dist/extension/pi-snippet-tui.js  # log click mapping
 ```
 
-The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a grid, answering cursor-position queries), and assert what lands in the editor. They are the only way to test terminal interaction end to end — there is no tmux on this machine, and `script` starts pi at screen row 0, which masks the whole class of offset bugs.
+The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a grid, answering cursor-position queries), and assert what lands in the editor. They are the only way to test terminal interaction end to end — `script` starts pi at screen row 0, which masks the whole class of offset bugs.
+
+`infer-click-tmux.py` is the exception: where tmux exists it uses tmux as the terminal instead of a hand-rolled emulator (`send-keys -H` injects the mouse report, `capture-pane` reads the screen, tmux answers DSR). It needs no provider at all, because `test/fixtures/mock-llm.js` registers a mock LLM as a real pi provider via `ProviderConfig.streamSimple` — the same fixture `test/pi-mock-llm.test.ts` drives over RPC. That fixture is the way to test anything model-shaped without credentials; reach for it before reaching for a live model.
+
+**pi-tui prints a link's URL in parentheses when the terminal has no OSC 8.** Under tmux a chip renders `¹rebuild the solution (chip:1)`; in Ghostty the URL is hidden. Cosmetic, affects both layers, and clicking is unaffected — hit-testing matches the label. Don't "fix" it by chasing the parenthesised text.
 
 ## Environment constraints
 
-- pi is the **snap** build (`/snap/pi-coding-agent`, 0.84.2). npm's pi is far older. Docs live at `/snap/pi-coding-agent/current/bin/docs/`.
+- pi is the **snap** build (`/snap/pi-coding-agent`, 0.84.2). Docs live at `/snap/pi-coding-agent/current/bin/docs/`. npm's `@earendil-works/pi-coding-agent` used to lag badly; it no longer does (0.84.3 at last check), and installing it is the way to read the real extension API types — `node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` for `ExtensionContext`/`ExtensionAPI`, `core/model-registry.d.ts` for `ModelRegistry`. Prefer those over guessing from docs.
 - **`pi -p` (print mode) hangs** with the claude-bridge provider and must be killed. Use `--mode rpc` for anything automated; that is what the e2e test does.
 - claude-bridge is the only provider with working auth here; `claude-haiku-4-5` is the test model.
 
@@ -88,7 +93,13 @@ A single pi TUI extension (`src/extension/pi-snippet-tui.ts`) over a shared, ter
 
 **The TUI transformer is display-only.** `registerMarkdownTransformer` changes what is painted; stored messages keep their raw `<snippet>` tags, which is what keeps sessions readable by any other transcript consumer. Never write a `message_end` handler that rewrites stored message text — a previously installed extension did exactly that and corrupted transcripts for every other consumer.
 
-**The `/snippets` toggles are persisted, the session state is not.** pi has no settings or key-value API for extensions — `ExtensionAPI` offers only `appendEntry()`, which is session-scoped and branch-aware — so `src/extension/settings.ts` keeps a JSON file beside pi's own, at `~/.pi/agent/pi-snippet.json`, the way pi's shipped `preset.ts` example does. The agent dir is resolved as pi resolves it (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`), re-derived in three lines rather than imported so the bundle keeps no runtime dependency on pi; `PI_SNIPPET_SETTINGS` overrides the path, and `test/setup.ts` points it at a temp file so a test run never touches the real one. `--no-suggestions` is latched in a separate `flagDisabled`, never in `state.enabled`, so a flagged session cannot write `off` over what the user chose.
+**Suggestions come from two layers, and layer 1 wins.** `<snippet>` tags parsed from the message are layer 1. When a finished message asks something and carries no tags, `extension/magic.ts` sends it to a small model, which returns anchor/reply pairs (`shared/inferred.ts` decides what to believe of them). A message with even one tag is never sent — the layers must never compete for the same sentence. Anchors are dropped unless they appear verbatim in the message's non-code text: a paraphrasing model costs a chip, it never produces a wrong one.
+
+**The inference layer is gated on click-to-insert.** Inferred anchors carry no number, so only the mouse can activate them; with clicking off there is nothing to activate and no call is made. That is the cost control, not an accident of wiring.
+
+**`ctx.modelRegistry.complete(model, context, options)` is real** and is how an extension makes its own model call — no HTTP, no pi-ai import. `hasConfiguredAuth()` says credentials are *configured*, not that they work, which is why `MagicInferrer` stands down after three consecutive failures.
+
+**The `/snippets` toggles are persisted, the session state is not.** pi has no settings or key-value API for extensions — `ExtensionAPI` offers only `appendEntry()`, which is session-scoped and branch-aware — so `src/extension/settings.ts` keeps a JSON file beside pi's own, at `~/.pi/agent/pi-snippet.json`, the way pi's shipped `preset.ts` example does. The agent dir is resolved as pi resolves it (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`), re-derived in three lines rather than imported so the bundle keeps no runtime dependency on pi; `PI_SNIPPET_SETTINGS` overrides the path, and `test/setup.ts` points it at a temp file so a test run never touches the real one. `--no-suggestions` is latched in a separate `flagDisabled`, never in `state.enabled`, so a flagged session cannot write `off` over what the user chose; `--snippet-click` is latched the same way in `flagClick`, pointing the other direction, and `clickOn()` is the effective value everything else reads. The inference toggle and its model pin ride the same file — `model` is the one non-boolean, so `merge()` type-checks it separately.
 
 **Caps are guards, not style.** `MAX_SUGGESTIONS_PER_MESSAGE` (99) is a runaway-output guard, not a style rule — it matches what two-digit `Alt` addressing reaches. The prompt itself gives no numeric guidance; `Zero suggestions is normal and correct for most messages` is the only steer the model gets.
 

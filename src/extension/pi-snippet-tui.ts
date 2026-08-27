@@ -28,10 +28,12 @@
  * when it stops) and held in extension state, never built during
  * transformation (PRD §5.2 hard rule).
  */
+import { asksSomething, type InferredSuggestion } from "../shared/inferred.js";
 import { DigitChord } from "../shared/digit-chord.js";
 import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix } from "../shared/suggestions.js";
 import { chipLabel, toTuiMarkdown } from "../shared/tui-markdown.js";
 import { registerPromptSnippet } from "./common.js";
+import { inferenceCandidates, MagicInferrer, MODEL_ENV_VAR, type ModelPin, pickInferenceModel } from "./magic.js";
 import { loadSettings, saveSettings, settingsPath } from "./settings.js";
 import { ClickableText, type TuiLike } from "./tui-mouse.js";
 
@@ -57,11 +59,66 @@ export default function piSnippetTui(pi: any): void {
 		hotkeysEnabled: stored.hotkeysEnabled,
 		clickEnabled: stored.clickEnabled,
 		/**
+		 * Layer 2 (PRD §17): infer suggestions for questions the model left
+		 * untagged. Click-only, so it stays inert until clicking is on — no
+		 * message is ever sent to the small model for chips nobody could press.
+		 */
+		magicEnabled: stored.magicEnabled,
+		/**
 		 * Suggestions of the most recent assistant message — the one streaming,
 		 * once it has produced a complete suggestion of its own, otherwise the
 		 * last one that finished.
 		 */
 		addressable: [] as string[],
+		/**
+		 * Inferred anchors for the message at the tip of the branch. Only ever
+		 * populated for a message that carried no tags at all: layer 1 wins
+		 * outright, so a numbered chip and an underline never compete for the
+		 * same sentence.
+		 */
+		inferred: [] as InferredSuggestion[],
+		/**
+		 * Inference model chosen in `/snippets` for this session. Overrides the
+		 * `--snippet-model` flag and `PI_SNIPPET_MODEL`, both of which override
+		 * auto-selection.
+		 */
+		modelOverride: (stored.model ?? undefined) as ModelPin,
+	};
+
+	const magic = new MagicInferrer();
+
+	/**
+	 * Which model reads untagged messages, most specific source first: what was
+	 * picked in `/snippets`, then `--snippet-model`, then `PI_SNIPPET_MODEL`,
+	 * then whatever auto-selection finds. Resolved per call rather than cached,
+	 * so switching models mid-session takes effect on the next message.
+	 */
+	const modelPin = (): ModelPin => {
+		if (state.modelOverride) return state.modelOverride;
+		const flag = pi.getFlag("snippet-model");
+		if (typeof flag === "string" && flag.trim().length > 0) return flag;
+		const env = process.env[MODEL_ENV_VAR];
+		return env && env.trim().length > 0 ? env : undefined;
+	};
+
+	/**
+	 * Anchors to underline, keyed by the exact text they were inferred from.
+	 *
+	 * This is what lets the transformer stay a pure function of its input while
+	 * rendering spans that are not marked up in the text itself (PRD §5.2): it
+	 * looks anchors up by the markdown it was handed, so a message renders its
+	 * own anchors and no others, at any point in the transcript, on every
+	 * repaint and resize, with nothing built during the render pass.
+	 */
+	const anchorsByText = new Map<string, string[]>();
+	const ANCHOR_INDEX_LIMIT = 64;
+	const rememberAnchors = (text: string, anchors: string[]): void => {
+		anchorsByText.set(text, anchors);
+		while (anchorsByText.size > ANCHOR_INDEX_LIMIT) {
+			const oldest = anchorsByText.keys().next();
+			if (oldest.done) break;
+			anchorsByText.delete(oldest.value);
+		}
 	};
 
 	/**
@@ -72,6 +129,20 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	let flagDisabled = false;
 	const isEnabled = () => state.enabled && !flagDisabled;
+
+	/**
+	 * `--snippet-click` is the same shape of override, pointing the other way:
+	 * it turns clicking on for one session without writing that choice to disk.
+	 * Kept out of `state.clickEnabled` for exactly the reason `flagDisabled` is
+	 * kept out of `state.enabled` — the stored value must stay what the user
+	 * chose in `/snippets`, or the next toggle of any switch would persist the
+	 * flag's answer as if it had been chosen.
+	 *
+	 * An explicit toggle in `/snippets` supersedes it: having asked for clicking
+	 * in this session and then turned it off, the user means off.
+	 */
+	let flagClick = false;
+	const clickOn = () => state.clickEnabled || flagClick;
 
 	let tui: TuiLike | null = null;
 
@@ -88,9 +159,19 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	let lastCtx: any = null;
+	/**
+	 * Target ids carry their layer: `c3` is the third tagged chip, `a2` the
+	 * second inferred anchor. Clicking a chip inserts the chip; clicking an
+	 * anchor inserts the reply that was inferred for it, not the assistant's
+	 * own words that are underlined on screen.
+	 */
 	const clickable = new ClickableText({
 		onActivate: (target) => {
-			if (lastCtx) insertText(lastCtx, state.addressable[Number(target.id) - 1] ?? "");
+			if (!lastCtx) return;
+			const index = Number(target.id.slice(1)) - 1;
+			const text =
+				target.id.startsWith("a") ? state.inferred[index]?.reply : state.addressable[index];
+			if (text) insertText(lastCtx, text);
 		},
 	});
 
@@ -174,14 +255,16 @@ export default function piSnippetTui(pi: any): void {
 		lastCtx = ctx;
 		const captured = captureTui(ctx);
 		if (captured) watchAltRelease(captured);
-		const want = isEnabled() && state.clickEnabled && state.addressable.length > 0;
+		const want =
+			isEnabled() && clickOn() && (state.addressable.length > 0 || state.inferred.length > 0);
 		if (want) {
 			const instance = captured;
 			if (!instance) return;
 			clickable.attach(instance);
-			clickable.setTargets(
-				state.addressable.map((text, i) => ({ id: String(i + 1), text: chipLabel(i + 1, text) })),
-			);
+			clickable.setTargets([
+				...state.addressable.map((text, i) => ({ id: `c${i + 1}`, text: chipLabel(i + 1, text) })),
+				...state.inferred.map((s, i) => ({ id: `a${i + 1}`, text: s.anchor })),
+			]);
 		} else if (clickable.enabled) {
 			clickable.detach();
 		}
@@ -192,6 +275,18 @@ export default function piSnippetTui(pi: any): void {
 		type: "boolean",
 	});
 
+	pi.registerFlag("snippet-click", {
+		description:
+			"Turn on click-to-insert at startup (otherwise it starts off and is toggled in /snippets)",
+		type: "boolean",
+	});
+
+	pi.registerFlag("snippet-model", {
+		description:
+			"Model that infers replies for untagged questions, as provider/id (default: the cheapest small model of the session's provider)",
+		type: "string",
+	});
+
 	registerPromptSnippet(pi, () => {
 		if (pi.getFlag("no-suggestions") === true) flagDisabled = true;
 		return isEnabled();
@@ -200,7 +295,12 @@ export default function piSnippetTui(pi: any): void {
 	pi.registerMarkdownTransformer(
 		(markdown: string, ctx: { messageType: string; isStreaming: boolean }) => {
 			if (ctx.messageType !== "assistant") return markdown;
-			return toTuiMarkdown(markdown, { isStreaming: ctx.isStreaming, enabled: isEnabled() });
+			return toTuiMarkdown(markdown, {
+				isStreaming: ctx.isStreaming,
+				enabled: isEnabled(),
+				// A streaming message has no anchors yet — it hasn't been read.
+				anchors: ctx.isStreaming ? [] : anchorsByText.get(markdown),
+			});
 		},
 	);
 
@@ -227,6 +327,80 @@ export default function piSnippetTui(pi: any): void {
 			suggestions.push(...res.suggestions);
 		}
 		return suggestions;
+	};
+
+	/** The message as the small model should read it: its text, in order. */
+	const messageText = (message?: { content?: TextBlock[] }): string => {
+		if (!message || !Array.isArray(message.content)) return "";
+		return message.content
+			.filter((block) => block.type === "text")
+			.map((block) => block.text ?? "")
+			.join("\n");
+	};
+
+	/**
+	 * Publish inferred anchors for a message and light them up.
+	 *
+	 * Anchors are indexed under the joined message text *and* under each text
+	 * block that contains one, because pi may hand the transformer either a
+	 * whole message or a single block depending on how the message was built.
+	 */
+	const applyAnchors = (
+		message: { content?: TextBlock[] },
+		joined: string,
+		anchors: InferredSuggestion[],
+		ctx: any,
+	): void => {
+		state.inferred = anchors;
+		const labels = anchors.map((a) => a.anchor);
+		rememberAnchors(joined, labels);
+		for (const block of message.content ?? []) {
+			if (block.type !== "text") continue;
+			const text = block.text ?? "";
+			const here = labels.filter((label) => text.includes(label));
+			if (here.length > 0) rememberAnchors(text, here);
+		}
+		syncMouse(ctx);
+		tui?.requestRender?.();
+	};
+
+	/**
+	 * Ask the small model to fill in the chips this message didn't get.
+	 *
+	 * Four gates before a single token is spent: the feature is on, clicking is
+	 * on (nothing else can activate an anchor), layer 1 produced nothing, and
+	 * the message actually asks something. The answer lands asynchronously, so
+	 * it is dropped unless the branch is still sitting on the same message —
+	 * anchors from a message the user has already moved past would underline
+	 * text that is no longer the question.
+	 */
+	const maybeInfer = (message: { content?: TextBlock[] }, ctx: any): void => {
+		if (!isEnabled() || !state.magicEnabled || !clickOn()) return;
+		if (state.addressable.length > 0) return; // the model tagged it; layer 1 wins
+		const joined = messageText(message);
+		if (joined.trim().length === 0 || !asksSomething(joined)) return;
+
+		const cached = magic.peek(joined);
+		if (cached) {
+			if (cached.length > 0) applyAnchors(message, joined, cached, ctx);
+			return;
+		}
+		void magic.infer(joined, ctx, modelPin()).then((anchors) => {
+			if (anchors.length === 0) return;
+			if (messageText(tipMessage(ctx)) !== joined) return; // the branch moved on
+			applyAnchors(message, joined, anchors, ctx);
+		});
+	};
+
+	/** The assistant message at the tip of the active branch, if any. */
+	const tipMessage = (ctx: any): { role?: string; content?: TextBlock[] } | undefined => {
+		const branch = ctx.sessionManager.getBranch();
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i];
+			if (entry.type !== "message") continue;
+			return entry.message.role === "assistant" ? entry.message : undefined;
+		}
+		return undefined;
 	};
 
 	/**
@@ -269,17 +443,29 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const hydrateFromBranch = (ctx: any) => {
 		state.addressable = [];
+		state.inferred = [];
 		if (!isEnabled()) return;
 		const branch = ctx.sessionManager.getBranch();
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const entry = branch[i];
 			if (entry.type !== "message") continue;
-			if (entry.message.role === "assistant") state.addressable = suggestionsFromMessage(entry.message);
+			if (entry.message.role === "assistant") {
+				state.addressable = suggestionsFromMessage(entry.message);
+				// A message read once keeps its anchors: walking back to it with
+				// /tree costs nothing, and re-asking would be the same question.
+				const joined = messageText(entry.message);
+				const cached = state.addressable.length === 0 ? magic.peek(joined) : undefined;
+				if (cached && cached.length > 0) {
+					state.inferred = cached;
+					rememberAnchors(joined, cached.map((a) => a.anchor));
+				}
+			}
 			break;
 		}
 	};
 
 	pi.on("session_start", (event: { reason?: string }, ctx: any) => {
+		if (pi.getFlag("snippet-click") === true) flagClick = true;
 		if (event.reason === "resume" || event.reason === "fork" || event.reason === "reload") {
 			hydrateFromBranch(ctx);
 		} else {
@@ -305,6 +491,9 @@ export default function piSnippetTui(pi: any): void {
 	pi.on("message_start", (event: { message?: { role?: string } }) => {
 		if (event.message?.role !== "assistant") return;
 		streamCloseTags = 0;
+		// Anchors belong to the message they were read from; the new one has
+		// not been read yet.
+		state.inferred = [];
 	});
 
 	/**
@@ -339,6 +528,7 @@ export default function piSnippetTui(pi: any): void {
 		setAddressable(suggestionsFromMessage(event.message));
 		streamCloseTags = 0;
 		syncMouse(ctx);
+		maybeInfer(event.message, ctx);
 	});
 
 	for (let n = 0; n <= 9; n++) {
@@ -369,11 +559,14 @@ export default function piSnippetTui(pi: any): void {
 		}
 		if (messages === 0) return "Inline suggestions (no assistant messages yet)";
 		const pct = Math.round((messagesWithSuggestions / messages) * 100);
-		return `Inline suggestions — ${messagesWithSuggestions}/${messages} messages had suggestions (${pct}%), ${totalSuggestions} total`;
+		const tagged = `Inline suggestions — ${messagesWithSuggestions}/${messages} messages had suggestions (${pct}%), ${totalSuggestions} total`;
+		const { calls, input, output } = magic.usage;
+		if (calls === 0) return tagged;
+		return `${tagged}; inferred ${calls} message${calls === 1 ? "" : "s"} (${input + output} tokens)`;
 	};
 
 	/**
-	 * Write the three toggles back to disk. A failure — read-only home, a full
+	 * Write the preferences back to disk. A failure — read-only home, a full
 	 * disk — is not worth interrupting anyone over, but it does change what the
 	 * toggle means, so the notification says so instead of promising a
 	 * persistence that did not happen.
@@ -384,10 +577,48 @@ export default function piSnippetTui(pi: any): void {
 				enabled: state.enabled,
 				hotkeysEnabled: state.hotkeysEnabled,
 				clickEnabled: state.clickEnabled,
+				magicEnabled: state.magicEnabled,
+				model: state.modelOverride ?? null,
 			},
 			settingsFile,
 		);
 		return ok ? "" : " (this session only — could not write the settings file)";
+	};
+
+	/** How the inference layer describes itself in `/snippets`. */
+	const magicLabel = (ctx: any): string => {
+		if (!state.magicEnabled) return "off — toggle";
+		const model = pickInferenceModel(ctx, modelPin());
+		const pin = modelPin();
+		if (!model) {
+			return pin
+				? `on, but ${pin} is unusable here — toggle`
+				: "on, but no usable model — toggle";
+		}
+		if (magic.stoodDown) return `stood down — ${model.id} kept failing — toggle to retry`;
+		if (!clickOn()) return `on via ${model.id}, idle until click-to-insert is on — toggle`;
+		return `on via ${model.id} — toggle`;
+	};
+
+	/** Let the user name the inference model rather than trusting the guess. */
+	const chooseModel = async (ctx: any): Promise<void> => {
+		const candidates = inferenceCandidates(ctx);
+		if (candidates.length === 0) {
+			ctx.ui.notify("No models with configured auth to infer with", "warning");
+			return;
+		}
+		const AUTO = "Auto — cheapest small model of this provider";
+		const labels = candidates.map((m) => `${m.provider ?? "?"}/${m.id}`);
+		const choice = await ctx.ui.select("Model for inferring untagged questions", [AUTO, ...labels]);
+		if (!choice) return;
+		state.modelOverride = choice === AUTO ? undefined : choice;
+		magic.rearm(); // a new model deserves a fresh chance
+		const saved = persist();
+		const resolved = pickInferenceModel(ctx, modelPin());
+		ctx.ui.notify(
+			(resolved ? `Inferring with ${resolved.id}` : "No usable inference model") + saved,
+			resolved ? "info" : "warning",
+		);
 	};
 
 	pi.registerCommand("snippets", {
@@ -401,7 +632,9 @@ export default function piSnippetTui(pi: any): void {
 			const choice = await ctx.ui.select(snippetStats(ctx), [
 				`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
 				`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
-				`Click to insert: ${state.clickEnabled ? "on" : "off"} — toggle (mouse mode costs wheel scrolling while suggestions are shown)`,
+				`Click to insert: ${clickOn() ? "on" : "off"} — toggle (mouse mode costs wheel scrolling while suggestions are shown)`,
+				`Infer untagged questions: ${magicLabel(ctx)}`,
+				"Inference model — choose",
 			]);
 			if (!choice) return;
 			if (choice.startsWith("Suggestions:")) {
@@ -409,11 +642,30 @@ export default function piSnippetTui(pi: any): void {
 				if (!state.enabled) state.addressable = [];
 				ctx.ui.notify(`Inline suggestions ${state.enabled ? "enabled" : "disabled"}${persist()}`);
 			} else if (choice.startsWith("Click to insert:")) {
-				state.clickEnabled = !state.clickEnabled;
+				state.clickEnabled = !clickOn();
+				flagClick = false; // an explicit choice supersedes --snippet-click
+				if (!state.clickEnabled) state.inferred = [];
 				ctx.ui.notify(
 					(state.clickEnabled
 						? "Click to insert enabled — while suggestions are on screen, the wheel belongs to pi and selection needs Shift"
 						: "Click to insert disabled — scrolling and selection back to normal") + persist(),
+				);
+			} else if (choice.startsWith("Inference model")) {
+				await chooseModel(ctx);
+			} else if (choice.startsWith("Infer untagged questions:")) {
+				state.magicEnabled = !state.magicEnabled;
+				if (!state.magicEnabled) state.inferred = [];
+				else magic.rearm();
+				const saved = persist();
+				const model = state.magicEnabled ? pickInferenceModel(ctx) : undefined;
+				ctx.ui.notify(
+					(!state.magicEnabled
+						? "Inference off — only the suggestions the model tags itself"
+						: !model
+							? "Inference on, but no model with configured auth was found — nothing will be inferred"
+							: !clickOn()
+								? `Inference on via ${model.id} — inferred replies are click-only, so turn on click to insert to reach them`
+								: `Inference on via ${model.id} — untagged questions get underlined replies`) + saved,
 				);
 			} else {
 				state.hotkeysEnabled = !state.hotkeysEnabled;
