@@ -13,9 +13,12 @@
  * digit, because nothing addresses them but the mouse.
  *
  * The URL in both cases is inert (never navigated); it exists only because
- * link syntax requires one. The markdown markers and URL are consumed by pi's
- * renderer, the label is not, so the label is exactly what appears on screen —
- * which is what mouse hit-testing matches.
+ * link syntax requires one. pi's renderer consumes the markdown markers, and
+ * consumes the URL too wherever the terminal supports OSC 8 hyperlinks; where
+ * it does not (tmux and screen, unless the client advertises `hyperlinks`)
+ * pi-tui falls back to printing the URL in parentheses after the label. Either
+ * way the *label* is what appears on screen, which is what mouse hit-testing
+ * matches — so the fallback is cosmetic and clicking is unaffected.
  *
  * Pure function: feeds pi's markdown transformer hook, which is display-only
  * (the stored message keeps its raw tags, and never gains markup for an

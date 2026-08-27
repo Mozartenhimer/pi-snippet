@@ -243,6 +243,12 @@ export default function piSnippetTui(pi: any): void {
 		type: "boolean",
 	});
 
+	pi.registerFlag("snippet-click", {
+		description:
+			"Turn on click-to-insert at startup (otherwise it starts off and is toggled in /snippets)",
+		type: "boolean",
+	});
+
 	pi.registerFlag("snippet-model", {
 		description:
 			"Model that infers replies for untagged questions, as provider/id (default: the cheapest small model of the session's provider)",
@@ -427,6 +433,7 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	pi.on("session_start", (event: { reason?: string }, ctx: any) => {
+		if (pi.getFlag("snippet-click") === true) state.clickEnabled = true;
 		if (event.reason === "resume" || event.reason === "fork" || event.reason === "reload") {
 			hydrateFromBranch(ctx);
 		} else {

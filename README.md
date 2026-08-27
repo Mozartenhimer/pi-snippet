@@ -17,7 +17,9 @@ What the model writes:
 Want me to <snippet>rebuild the solution</snippet> or <snippet>run the tests</snippet>?
 ```
 
-What you see in the terminal — link-styled text led by a small superscript number. The transformer's actual output is a markdown link (`[¹rebuild the solution](chip:1)`) whose URL is inert and never navigated; GitHub's sanitizer strips the `href` from that `chip:` scheme entirely, so the examples below use plain `#N` anchors instead, purely so this page renders them link-styled the way the terminal does:
+What you see in the terminal — link-styled text led by a small superscript number. The transformer's actual output is a markdown link (`[¹rebuild the solution](chip:1)`) whose URL is inert and never navigated. Whether the URL is *visible* is the terminal's call, not ours: pi-tui emits an OSC 8 hyperlink when the terminal supports one (Ghostty does) and the URL stays hidden, but where OSC 8 is unavailable — under tmux or screen, unless the client advertises `hyperlinks` — pi-tui falls back to printing `(chip:1)` after the label. That fallback is cosmetic and hits tagged chips and inferred anchors alike; clicking is unaffected, since hit-testing matches the label text.
+
+GitHub's sanitizer strips the `href` from that `chip:` scheme entirely, so the examples below use plain `#N` anchors instead, purely so this page renders them link-styled the way the terminal does:
 
 Want me to [¹rebuild the solution](#1) or [²run the tests](#2)?
 
@@ -134,7 +136,15 @@ npm run check     # tsc --noEmit
 npm run test:e2e  # live, against a real model through pi RPC
 ```
 
-The unit suite covers the parser edge-case matrix, the TUI transformer, digit addressing, and terminal hit-testing against a stand-in TUI. For the inference layer it covers what is believed of a small model's answer, model selection and pinning, the stand-down breaker, and the layering itself — driven through the real handler wiring against a stand-in pi: when a call is spent, when it is not, what gets underlined, and what a click on an underline actually inserts.
+The unit suite covers the parser edge-case matrix, the TUI transformer, digit addressing, and terminal hit-testing against a stand-in TUI. For the inference layer it covers what is believed of a small model's answer, model selection and pinning, the stand-down breaker, and the layering itself.
+
+`test/fixtures/mock-llm.js` is a **mock LLM registered as a real pi provider** — `ProviderConfig.streamSimple` serves completions from a function, so a real pi process runs a real session against a scripted model with no network and no credentials. It plays both parts: the primary model answering the user, and the small model answering the inference layer. `test/pi-mock-llm.test.ts` drives it over RPC and asserts which requests pi actually made — mostly the ones that must *not* happen, since three of the four cost gates are "spend nothing when …".
+
+```bash
+python3 scripts/infer-click-tmux.py   # real terminal, real TUI, real click
+```
+
+That harness closes the last gap: tmux is the terminal, `send-keys -H` injects a genuine SGR mouse report into the pane, `capture-pane` reads the screen back, and tmux answers the DSR query the click mapping depends on. pi is started ten rows down so buffer row 0 is not screen row 0. The assertion is one an inferred anchor makes unusually clean — the reply it inserts appears nowhere in the assistant's message, so finding `Show me the model.` on screen can only mean the click landed. Needs tmux, which the original `click-offset-repro.py` machine did not have. For the inference layer it covers what is believed of a small model's answer, model selection and pinning, the stand-down breaker, and the layering itself — driven through the real handler wiring against a stand-in pi: when a call is spent, when it is not, what gets underlined, and what a click on an underline actually inserts.
 
 The e2e test spawns pi in RPC mode with the extension loaded, asks a question with two obvious answers, and asserts the model emits well-formed tags the parser accepts — and that a plain informational question draws none. Configure with `PI_SNIPPET_TEST_PROVIDER` and `PI_SNIPPET_TEST_MODEL` (defaults `claude-bridge` and `claude-haiku-4-5`).
 

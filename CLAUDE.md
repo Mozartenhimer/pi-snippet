@@ -26,10 +26,15 @@ npm run check:widths                   # our glyph-width table vs Ghostty's
 npm run gen:widths                     # regenerate src/extension/char-width.ts
 python3 scripts/chord-live.py          # Alt+digit gestures, keystrokes encoded by real Ghostty
 python3 scripts/click-offset-repro.py  # clicking, with pi launched mid-screen
+python3 scripts/infer-click-tmux.py    # inferred-anchor click, real TUI via tmux, no provider needed
 PI_SNIPPET_CLICK_DEBUG=/tmp/click.log pi -e dist/extension/pi-snippet-tui.js  # log click mapping
 ```
 
-The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a grid, answering cursor-position queries), and assert what lands in the editor. They are the only way to test terminal interaction end to end — there is no tmux on this machine, and `script` starts pi at screen row 0, which masks the whole class of offset bugs.
+The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a grid, answering cursor-position queries), and assert what lands in the editor. They are the only way to test terminal interaction end to end — `script` starts pi at screen row 0, which masks the whole class of offset bugs.
+
+`infer-click-tmux.py` is the exception: where tmux exists it uses tmux as the terminal instead of a hand-rolled emulator (`send-keys -H` injects the mouse report, `capture-pane` reads the screen, tmux answers DSR). It needs no provider at all, because `test/fixtures/mock-llm.js` registers a mock LLM as a real pi provider via `ProviderConfig.streamSimple` — the same fixture `test/pi-mock-llm.test.ts` drives over RPC. That fixture is the way to test anything model-shaped without credentials; reach for it before reaching for a live model.
+
+**pi-tui prints a link's URL in parentheses when the terminal has no OSC 8.** Under tmux a chip renders `¹rebuild the solution (chip:1)`; in Ghostty the URL is hidden. Cosmetic, affects both layers, and clicking is unaffected — hit-testing matches the label. Don't "fix" it by chasing the parenthesised text.
 
 ## Environment constraints
 
