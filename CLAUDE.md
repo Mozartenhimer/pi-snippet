@@ -34,10 +34,47 @@ The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a g
 ## Environment constraints
 
 - pi is the **snap** build (`/snap/pi-coding-agent`, 0.84.2). npm's pi is far older. Docs live at `/snap/pi-coding-agent/current/bin/docs/`.
-- **Off this machine, get pi from git, not npm.** npm's `@mariozechner/pi-coding-agent` stopped at 0.73.1 (May 2026) and predates `registerMarkdownTransformer`, so it refuses to load this extension at all; its `docs/` and `dist/core/extensions/types.d.ts` are still a usable API reference, and `examples/extensions/preset.ts` is the reference for an extension keeping its own config file. The live source is `github.com/earendil-works/pi-mono` (`packages/coding-agent`, 0.84.3 as of 2026-08-26).
-- **Building pi from source without network:** `npm install && npm run build:offline` at the monorepo root. `build` (not `build:offline`) fetches the model catalog from models.dev and fails behind a proxy; `build:offline` still needs `packages/ai/src/providers/data/*.json`, which is gitignored and hydrated from the same blocked host. Stub it: one file per `src/providers/*.models.ts` shard, shaped `{"<api>": {"<model-id>": {id, provider, api, name, baseUrl, reasoning, input, contextWindow, maxTokens, cost}}}` with a group for **every** api the matching `src/providers/<id>.ts` wires up (several providers type-check their api groups against the JSON), then write `data/.manifest.json` with `createModelDataManifest()` from `packages/ai/scripts/model-data.ts`. The catalog is inert for extension work.
 - **`pi -p` (print mode) hangs** with the claude-bridge provider and must be killed. Use `--mode rpc` for anything automated; that is what the e2e test does.
 - claude-bridge is the only provider with working auth here; `claude-haiku-4-5` is the test model.
+
+### Installing pi somewhere else (a sandbox, CI, a fresh machine)
+
+**Do not install pi from npm.** `@mariozechner/pi-coding-agent` stopped at 0.73.1 (May 2026) and predates `registerMarkdownTransformer` — pi refuses to load this extension at all, with `Failed to load extension: pi.registerMarkdownTransformer is not a function`. It is still worth installing as an *API reference* (`docs/`, `dist/core/extensions/types.d.ts` with the full `ExtensionAPI`, and `examples/extensions/preset.ts`, the model for an extension that keeps its own config file), just never as the thing you run.
+
+The live source is `github.com/earendil-works/pi-mono` — `packages/coding-agent`, 0.84.3 as of 2026-08-26, versus 0.84.2 in the snap:
+
+```bash
+git clone --depth 1 https://github.com/earendil-works/pi-mono
+cd pi-mono && npm install
+npm run build:offline           # after the model-data step below
+node packages/coding-agent/dist/cli.js --version
+```
+
+**The model catalog is what breaks the build.** `npm run build` fetches it from models.dev, which fails behind any egress policy; `build:offline` skips the fetch but still needs `packages/ai/src/providers/data/*.json`, which is gitignored and hydrated from that same host. The catalog is inert for extension work, so stub it — one JSON file per `packages/ai/src/providers/*.models.ts` shard:
+
+```jsonc
+// src/providers/data/<provider>.json — one group per api, one model per group
+{ "<api>": { "<model-id>": {
+  "id": "<model-id>", "provider": "<provider>", "api": "<api>",
+  "name": "…", "baseUrl": "https://example.invalid", "reasoning": false,
+  "input": ["text"], "contextWindow": 200000, "maxTokens": 8192,
+  "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+} } }
+```
+
+Two things that cost a build each if you get them wrong:
+
+- A provider needs a group for **every** api its `src/providers/<id>.ts` wires up, not just the first. Several type-check their api map against `typeof values` from the JSON, so a missing group is a `TS2353` on the provider, not on the data (`opencode.ts` names four).
+- The data directory needs `.manifest.json` too — schema version, timestamp, structure hash, per-file hashes. Generate it with `createModelDataManifest()` from `packages/ai/scripts/model-data.ts` rather than by hand, then `node packages/ai/scripts/check-model-data.ts` should print `Generated model data is valid.`
+
+**Smoke-test an extension against the build** — loads clean if it prints nothing and exits 0:
+
+```bash
+node /path/to/pi-mono/packages/coding-agent/dist/cli.js \
+  --mode rpc --no-session --no-extensions -e dist/extension/pi-snippet-tui.js </dev/null
+```
+
+`PI_CODING_AGENT_DIR` points that pi at a scratch agent directory, which is also how to exercise `pi-snippet.json` without touching the real one. `/snippets` is drivable from there: send `{"type":"prompt","message":"/snippets"}` on stdin and answer the `extension_ui_request` for `select` with an `extension_ui_response` carrying the option string (see `docs/rpc.md`).
 
 ## Architecture
 
