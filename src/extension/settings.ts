@@ -11,6 +11,13 @@
  * about the tool, not state of one conversation, so a fork or a resume must
  * not carry a different answer than a fresh start.
  *
+ * pi has no settings or key-value API for extensions — `ExtensionAPI` offers
+ * only `appendEntry()`, which is session-scoped and branch-aware, so it is the
+ * wrong shape for a preference. Its own shipped extensions (`preset.ts`) keep
+ * their config in a JSON file of their own next to pi's, and that is what this
+ * does: `~/.pi/agent/pi-snippet.json`, beside `settings.json` and
+ * `presets.json`.
+ *
  * Nothing here is allowed to be fatal. A missing file, an unreadable one, a
  * half-written one, a read-only home directory — each degrades to "defaults,
  * this session only" rather than taking the extension down with it.
@@ -33,16 +40,35 @@ export const DEFAULT_SETTINGS: SnippetSettings = {
 };
 
 /**
- * Where the toggles live. `PI_SNIPPET_SETTINGS` names the file outright —
- * tests point it at a temp directory, and it is an escape hatch for anyone
- * whose home directory is not writable.
+ * pi's agent directory, resolved the way pi resolves it (`getAgentDir()` in
+ * its `config.ts`): `PI_CODING_AGENT_DIR` if set, `~/.pi/agent` otherwise.
+ *
+ * Deliberately re-derived in three lines rather than imported from
+ * `@mariozechner/pi-coding-agent`: this extension bundles standalone and has
+ * no runtime dependency on pi, and one import for one path is not worth
+ * pinning ourselves to a pi version. The cost is a rebranded distribution
+ * (PRD H3), where pi renames both the directory and this variable — such a
+ * build should set `PI_SNIPPET_SETTINGS`.
+ */
+function agentDir(env: NodeJS.ProcessEnv): string {
+	const configured = env.PI_CODING_AGENT_DIR;
+	if (configured === undefined || configured === "") return join(homedir(), ".pi", "agent");
+	if (configured === "~") return homedir();
+	return configured.startsWith("~/") ? homedir() + configured.slice(1) : configured;
+}
+
+/**
+ * Where the toggles live: beside pi's own `settings.json` and the
+ * `presets.json` its example extension writes.
+ *
+ * `PI_SNIPPET_SETTINGS` names the file outright — tests point it at a temp
+ * directory, and it is the escape hatch for a rebranded pi or an unwritable
+ * agent directory.
  */
 export function settingsPath(env: NodeJS.ProcessEnv = process.env): string {
 	const override = env.PI_SNIPPET_SETTINGS;
 	if (override !== undefined && override !== "") return override;
-	const xdg = env.XDG_CONFIG_HOME;
-	const base = xdg !== undefined && xdg !== "" ? xdg : join(homedir(), ".config");
-	return join(base, "pi-snippet", "settings.json");
+	return join(agentDir(env), "pi-snippet.json");
 }
 
 /** Take only the keys we know, and only when they are actually booleans. */

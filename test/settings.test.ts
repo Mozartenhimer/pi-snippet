@@ -1,5 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -75,6 +75,12 @@ describe("settings file", () => {
 	});
 });
 
+/**
+ * The file sits in pi's agent directory, next to pi's own `settings.json` and
+ * the `presets.json` its shipped example extension writes — pi offers
+ * extensions no settings API, so this is the convention to follow. Resolution
+ * mirrors pi's `getAgentDir()`.
+ */
 describe("settings path", () => {
 	it("honours an explicit override", () => {
 		expect(settingsPath({ PI_SNIPPET_SETTINGS: "/tmp/x.json" } as NodeJS.ProcessEnv)).toBe(
@@ -82,14 +88,30 @@ describe("settings path", () => {
 		);
 	});
 
-	it("falls back to XDG_CONFIG_HOME", () => {
-		expect(settingsPath({ XDG_CONFIG_HOME: "/cfg" } as NodeJS.ProcessEnv)).toBe(
-			"/cfg/pi-snippet/settings.json",
+	it("defaults to pi's agent directory", () => {
+		expect(settingsPath({} as NodeJS.ProcessEnv)).toBe(join(homedir(), ".pi", "agent", "pi-snippet.json"));
+	});
+
+	it("follows PI_CODING_AGENT_DIR, as pi does", () => {
+		expect(settingsPath({ PI_CODING_AGENT_DIR: "/agents/pi" } as NodeJS.ProcessEnv)).toBe(
+			"/agents/pi/pi-snippet.json",
+		);
+	});
+
+	it("expands a leading tilde in PI_CODING_AGENT_DIR, as pi does", () => {
+		expect(settingsPath({ PI_CODING_AGENT_DIR: "~/alt-pi" } as NodeJS.ProcessEnv)).toBe(
+			join(homedir(), "alt-pi", "pi-snippet.json"),
+		);
+		expect(settingsPath({ PI_CODING_AGENT_DIR: "~" } as NodeJS.ProcessEnv)).toBe(
+			join(homedir(), "pi-snippet.json"),
 		);
 	});
 
 	it("ignores empty environment values", () => {
-		const path = settingsPath({ PI_SNIPPET_SETTINGS: "", XDG_CONFIG_HOME: "" } as NodeJS.ProcessEnv);
-		expect(path.endsWith("/.config/pi-snippet/settings.json")).toBe(true);
+		const path = settingsPath({
+			PI_SNIPPET_SETTINGS: "",
+			PI_CODING_AGENT_DIR: "",
+		} as NodeJS.ProcessEnv);
+		expect(path).toBe(join(homedir(), ".pi", "agent", "pi-snippet.json"));
 	});
 });
