@@ -104,12 +104,12 @@ describe("inferenceCandidates", () => {
 
 describe("MagicInferrer", () => {
 	const message = "I'm done the model, do you want to see it?";
-	const answer = '[{"anchor":"do you want to see it?","reply":"Show me the model."}]';
+	const answer = '[{"anchor":"do you want to see it?","reply":"see it"}]';
 
 	it("infers, validates and returns anchors", async () => {
 		const magic = new MagicInferrer();
 		const result = await magic.infer(message, host({ complete: reply(answer) }));
-		expect(result).toEqual([{ anchor: "do you want to see it?", reply: "Show me the model." }]);
+		expect(result).toEqual([{ anchor: "do you want to see it?", reply: "see it" }]);
 	});
 
 	it("asks the model once and serves the rest from cache", async () => {
@@ -216,7 +216,7 @@ describe("MagicInferrer: standing down on a dead provider", () => {
 	});
 
 	it("counts consecutively — one success clears the tally", async () => {
-		const answers = [failing, failing, reply('[{"anchor":"push?","reply":"Push it."}]'), failing];
+		const answers = [failing, failing, reply('[{"anchor":"push?","reply":"push"}]'), failing];
 		let call = 0;
 		const complete = vi.fn(() => answers[call++]!());
 		const magic = new MagicInferrer();

@@ -597,15 +597,17 @@ Click hit-testing turns a character index into a screen column, so our width tab
 
 Layer 1 — `<snippet>` tags — needs the primary model to cooperate: to notice it has asked something, and to wrap the answer as it writes. It often doesn't. A provider bridge that rebuilds the system prompt may never have shown it the contract at all, and no prompt makes a model tag reliably enough to depend on. Measured emission is what `/snippets` reports, and it is not 100%.
 
-Layer 2 covers the gap. When a message finishes, asks something, and carries no tags, a small fast model reads it and returns the spans that invite a reply together with what the user would say back.
+Layer 2 covers the gap. When a message finishes, asks something, and carries no tags, a small fast model reads it and points at the spans that invite a reply. It does not write the reply — it quotes one (rule 5).
 
 ### 17.1 What the user sees
 
 The assistant writes, untagged:
 
-> I'm done the model, do you want to see it?
+> The model is built. Want me to **show you the model**, or **leave it for now**?
 
-The question clause is underlined — link-styled, no number. Clicking it puts **`Show me the model.`** in the composer. Insertion never sends (NG1), so it can be edited or cleared like any other suggestion.
+Both branches are underlined — link-styled, no number. Clicking one puts its own words in the composer, so `show you the model` lands there ready to edit. Insertion never sends (NG1), so it can be edited or cleared like any other suggestion.
+
+An earlier draft had the small model compose the reply instead, turning *"do you want to see it?"* into `Show me the model.` It read better and it could not be trusted: see rule 5.
 
 The two layers are deliberately distinguishable:
 
@@ -625,7 +627,7 @@ Layer 2 carries no number because nothing addresses it by number: a digit that s
 2. **No question, no call.** A message with no question mark outside code is never sent. This is the cost control.
 3. **Click-only means click-gated.** With click-to-insert off, nothing could activate an inferred anchor, so nothing is inferred and nothing is spent. `--snippet-click` turns clicking on for one session without changing the stored preference, the mirror of what `--no-suggestions` does.
 4. **Never off-provider.** Inference uses the session's own provider. An assistant message can contain file contents; this layer must not become a route for them to reach somewhere the session wasn't already talking to.
-5. **Anchors are verbatim or dropped.** An anchor that is not literally present in the message's non-code text is discarded, never repaired. A small model that paraphrases produces a missing chip, never a wrong one.
+5. **Both fields are verbatim or dropped.** Neither the anchor nor the reply may be anything but an exact substring of the message's non-code text; a field that isn't is discarded, never repaired. The anchor rule is mechanical — a chip whose anchor is not in the message is unclickable, since hit testing matches rendered text. The reply rule is about trust. While the reply was free text the model wrote it, and a model asked to write the user's answer answers for them: measured live, `Should it stream or buffer?` came back anchored on the whole question with the reply `Stream the input.` Clicking that composes a decision the user never made, with the alternative nowhere on screen — and the anchor was verbatim, so the anchor rule never saw it. Requiring the reply to be a quote removes the ability to invent rather than asking the model not to use it, and reduces its job to selection, which is a far smaller ask of a small model.
 6. **Failures are silent.** No auth, no small model, a timeout, a refusal, malformed JSON: the message simply has no anchors, exactly as if the layer were off.
 7. **Answers are cached by message text.** A resize, a repaint, a `/tree` walk back to a message, or a fork never pays twice. An empty answer is cached too.
 8. **A dead provider stands the layer down.** `hasConfiguredAuth()` answers whether credentials are *configured*, not whether they work — an expired key passes it and then 403s on every call. Three consecutive failures stop the layer for the session; `/snippets` re-arms it.
@@ -651,10 +653,11 @@ A pinned model is obeyed even when it is neither small nor cheap — it was aske
 | No provider auth | No anchors. After three tries, layer stands down for the session. |
 | Model returns prose, not JSON | No anchors. |
 | Model invents or paraphrases an anchor | That entry dropped; the others kept. |
+| Model composes a reply instead of quoting one | That entry dropped — this is what stops a chip answering for the user. |
 | Anchor occurs only inside code | Dropped. |
 | Two anchors overlap | The first is kept, the second dropped — a span is never underlined twice. |
 | Reply empty, multi-line, or over the length cap | That entry dropped. |
-| Two entries share one anchor | The first is kept, the rest dropped — one span, one chip. |
+| Two entries share one anchor | Each is moved onto its own reply span, which is a verbatim span too. A repeated anchor means the model pointed at the question rather than the options, and dropping the duplicate would silently discard a branch. |
 | Runaway number of entries | Kept up to `MAX_SUGGESTIONS_PER_MESSAGE`. The cap is a guard against a broken answer, not a style rule. |
 | Answer arrives after the branch moved on | Discarded — anchors belong to the message they were read from. |
 | Call exceeds its deadline | Abandoned, no anchors; not cached, so a later visit may retry. |

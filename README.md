@@ -66,11 +66,13 @@ Everything above depends on the model wrapping its own suggestions as it writes.
 So there is a second layer. When a message ends, asks something, and carries no tags, a small fast model reads it and works out what you'd say back:
 
 ```
-I'm done the model, do you want to see it?
-                   ~~~~~~~~~~~~~~~~~~~~~~~
+The model is built. Want me to show you the model, or leave it for now?
+                               ~~~~~~~~~~~~~~~~~~     ~~~~~~~~~~~~~~~~
 ```
 
-The question is underlined — link-styled, no number. Click it and `Show me the model.` lands in the composer. As always, inserting doesn't send.
+Each branch is underlined — link-styled, no number. Click one and its own words land in the composer. As always, inserting doesn't send.
+
+The small model never writes those words, it only points at them: both the underline and the inserted text have to be exact substrings of the message. That is the rule that stops a chip answering on your behalf — asked to compose a reply for *"Should it stream or buffer?"*, a small model will hand you `Stream the input.` and drop the other branch on the floor. Quoting is also a much easier job than writing, which is what makes a small model good enough for it.
 
 The two layers are meant to look different:
 
@@ -153,7 +155,7 @@ GEMINI_API_KEY=... PI_SNIPPET_MODEL=google/gemini-2.5-flash-lite \
 python3 scripts/infer-click-tmux.py   # real terminal, real TUI, real click
 ```
 
-That harness closes the last gap: tmux is the terminal, `send-keys -H` injects a genuine SGR mouse report into the pane, `capture-pane` reads the screen back, and tmux answers the DSR query the click mapping depends on. pi is started ten rows down so buffer row 0 is not screen row 0. The assertion is one an inferred anchor makes unusually clean — the reply it inserts appears nowhere in the assistant's message, so finding `Show me the model.` on screen can only mean the click landed. Needs tmux, which the original `click-offset-repro.py` machine did not have. For the inference layer it covers what is believed of a small model's answer, model selection and pinning, the stand-down breaker, and the layering itself — driven through the real handler wiring against a stand-in pi: when a call is spent, when it is not, what gets underlined, and what a click on an underline actually inserts.
+That harness closes the last gap: tmux is the terminal, `send-keys -H` injects a genuine SGR mouse report into the pane, `capture-pane` reads the screen back, and tmux answers the DSR query the click mapping depends on. pi is started ten rows down so buffer row 0 is not screen row 0. The reply is a quote of the message, so it cannot be identified by being absent from the transcript; the assertion is positional instead — the reply occurs exactly once in the message, so a second occurrence below the anchor's row can only be the composer. Needs tmux, which the original `click-offset-repro.py` machine did not have. For the inference layer it covers what is believed of a small model's answer, model selection and pinning, the stand-down breaker, and the layering itself — driven through the real handler wiring against a stand-in pi: when a call is spent, when it is not, what gets underlined, and what a click on an underline actually inserts.
 
 The e2e test spawns pi in RPC mode with the extension loaded, asks a question with two obvious answers, and asserts the model emits well-formed tags the parser accepts — and that a plain informational question draws none. Configure with `PI_SNIPPET_TEST_PROVIDER` and `PI_SNIPPET_TEST_MODEL` (defaults `claude-bridge` and `claude-haiku-4-5`).
 

@@ -4,6 +4,7 @@ import {
 	MAX_INFERRED_PER_MESSAGE,
 	parseInferred,
 } from "../src/shared/inferred.js";
+import { MAX_SUGGESTION_LENGTH } from "../src/shared/suggestions.js";
 import { linkifyAnchors, toTuiMarkdown } from "../src/shared/tui-markdown.js";
 
 describe("asksSomething (the gate on spending a call)", () => {
@@ -31,11 +32,29 @@ describe("asksSomething (the gate on spending a call)", () => {
 describe("parseInferred (believing a small model only so far)", () => {
 	const message = "I'm done the model, do you want to see it?";
 
-	it("accepts an anchor that is verbatim in the message", () => {
-		const raw = '[{"anchor":"do you want to see it?","reply":"Show me the model."}]';
+	it("accepts an anchor and reply that are both verbatim in the message", () => {
+		const raw = '[{"anchor":"do you want to see it?","reply":"see it"}]';
 		expect(parseInferred(raw, message)).toEqual([
-			{ anchor: "do you want to see it?", reply: "Show me the model." },
+			{ anchor: "do you want to see it?", reply: "see it" },
 		]);
+	});
+
+	it("drops a reply the model composed rather than quoted", () => {
+		// The anchor is verbatim, so the old rule passed this. The reply is
+		// the model answering for the user, which is what it must not do.
+		const raw = '[{"anchor":"do you want to see it?","reply":"Show me the model."}]';
+		expect(parseInferred(raw, message)).toEqual([]);
+	});
+
+	it("takes the anchor as the reply when the model returns only a span", () => {
+		const raw = '[{"anchor":"see it?"}]';
+		expect(parseInferred(raw, message)).toEqual([{ anchor: "see it?", reply: "see it?" }]);
+	});
+
+	it("drops a reply quoted only from inside code", () => {
+		const text = "Options:\n\n```sh\nnpm run build\n```\n\nShall I go ahead?";
+		const raw = '[{"anchor":"Shall I go ahead?","reply":"npm run build"}]';
+		expect(parseInferred(raw, text)).toEqual([]);
 	});
 
 	it("drops a paraphrased anchor rather than repairing it", () => {
@@ -44,10 +63,8 @@ describe("parseInferred (believing a small model only so far)", () => {
 	});
 
 	it("unwraps a ```json fence", () => {
-		const raw = '```json\n[{"anchor":"see it?","reply":"Show me the model."}]\n```';
-		expect(parseInferred(raw, message)).toEqual([
-			{ anchor: "see it?", reply: "Show me the model." },
-		]);
+		const raw = '```json\n[{"anchor":"see it?","reply":"see it"}]\n```';
+		expect(parseInferred(raw, message)).toEqual([{ anchor: "see it?", reply: "see it" }]);
 	});
 
 	it("returns nothing for malformed JSON", () => {
@@ -61,9 +78,9 @@ describe("parseInferred (believing a small model only so far)", () => {
 	it("keeps the good entries when one is bad", () => {
 		const text = "Want me to fix them one at a time, or show all three errors first?";
 		const raw = JSON.stringify([
-			{ anchor: "fix them one at a time", reply: "Fix them one at a time." },
+			{ anchor: "fix them one at a time", reply: "fix them one at a time" },
 			{ anchor: "invented span", reply: "nope" },
-			{ anchor: "show all three errors first", reply: "Show me all three errors first." },
+			{ anchor: "show all three errors first", reply: "show all three errors first" },
 		]);
 		expect(parseInferred(raw, text).map((s) => s.anchor)).toEqual([
 			"fix them one at a time",
@@ -80,16 +97,16 @@ describe("parseInferred (believing a small model only so far)", () => {
 	it("drops an overlapping anchor so a span is never underlined twice", () => {
 		const text = "Want me to rebuild the solution?";
 		const raw = JSON.stringify([
-			{ anchor: "rebuild the solution", reply: "Rebuild the solution." },
-			{ anchor: "the solution", reply: "Yes." },
+			{ anchor: "rebuild the solution", reply: "rebuild the solution" },
+			{ anchor: "the solution", reply: "the solution" },
 		]);
 		expect(parseInferred(raw, text).map((s) => s.anchor)).toEqual(["rebuild the solution"]);
 	});
 
 	it("drops a duplicate anchor", () => {
 		const raw = JSON.stringify([
-			{ anchor: "see it?", reply: "Show me the model." },
-			{ anchor: "see it?", reply: "Yes please." },
+			{ anchor: "see it?", reply: "see it" },
+			{ anchor: "see it?", reply: "see it?" },
 		]);
 		expect(parseInferred(raw, message)).toHaveLength(1);
 	});
@@ -102,24 +119,46 @@ describe("parseInferred (believing a small model only so far)", () => {
 		}
 	});
 
+	it("moves both branches onto their own spans when the model reuses one anchor", () => {
+		// A live small model answers an either/or by anchoring both branches on
+		// the whole question clause. The dedupe rule would drop the second; the
+		// reply is a verbatim span too, so it can carry the underline instead.
+		const text = "Should the cache survive a session restart, or start empty each time?";
+		const raw = JSON.stringify([
+			{ anchor: "survive a session restart, or start empty each time?", reply: "survive a session restart" },
+			{ anchor: "survive a session restart, or start empty each time?", reply: "start empty each time" },
+		]);
+		expect(parseInferred(raw, text)).toEqual([
+			{ anchor: "survive a session restart", reply: "survive a session restart" },
+			{ anchor: "start empty each time", reply: "start empty each time" },
+		]);
+	});
+
+	it("drops an oversized reply even when it is a real quote", () => {
+		const long = "x".repeat(MAX_SUGGESTION_LENGTH + 1);
+		const text = `Shall I run ${long}?`;
+		const raw = JSON.stringify([{ anchor: `run ${long}`, reply: long }]);
+		expect(parseInferred(raw, text)).toEqual([]);
+	});
+
 	it("keeps every anchor of a message that asks many things", () => {
 		// The cap is a runaway guard, not a style rule: a message asking eight
 		// questions gets eight chips, not four.
 		const words = Array.from({ length: 8 }, (_, i) => `opt${i}`);
 		const text = `Pick one: ${words.join(", ")}?`;
-		const raw = JSON.stringify(words.map((w) => ({ anchor: w, reply: `Use ${w}.` })));
+		const raw = JSON.stringify(words.map((w) => ({ anchor: w, reply: w })));
 		expect(parseInferred(raw, text)).toHaveLength(8);
 	});
 
 	it("stops a runaway answer at the cap", () => {
 		const words = Array.from({ length: MAX_INFERRED_PER_MESSAGE + 20 }, (_, i) => `opt${i}`);
 		const text = `Pick one: ${words.join(", ")}?`;
-		const raw = JSON.stringify(words.map((w) => ({ anchor: w, reply: `Use ${w}.` })));
+		const raw = JSON.stringify(words.map((w) => ({ anchor: w, reply: w })));
 		expect(parseInferred(raw, text)).toHaveLength(MAX_INFERRED_PER_MESSAGE);
 	});
 
-	it("ignores entries that aren't objects with two strings", () => {
-		const raw = JSON.stringify(["see it?", { anchor: "see it?" }, { reply: "hi" }, null, 3]);
+	it("ignores entries that aren't objects carrying an anchor string", () => {
+		const raw = JSON.stringify(["see it?", { anchor: 7 }, { reply: "hi" }, null, 3]);
 		expect(parseInferred(raw, message)).toEqual([]);
 	});
 });

@@ -45,7 +45,7 @@ const BUILT = existsSync(EXTENSION);
 const INFER_MARKER = INFER_SYSTEM_PROMPT.slice(0, 48);
 
 const QUESTION = "I'm done the model, do you want to see it?";
-const ANCHORS = '[{"anchor":"do you want to see it?","reply":"Show me the model."}]';
+const ANCHORS = '[{"anchor":"do you want to see it?","reply":"see it"}]';
 
 interface MockRequest {
 	kind: "primary" | "infer";
@@ -174,7 +174,7 @@ describe.skipIf(missing !== "")(`inference layer against a mock LLM in real pi${
 
 			// And what came back is what the layer would have underlined.
 			expect(parseInferred(infer[0]!.reply, QUESTION)).toEqual([
-				{ anchor: "do you want to see it?", reply: "Show me the model." },
+				{ anchor: "do you want to see it?", reply: "see it" },
 			]);
 		},
 		120_000,
@@ -223,7 +223,7 @@ describe.skipIf(missing !== "")(`inference layer against a mock LLM in real pi${
 		async () => {
 			const requests = await runSession({
 				script: [QUESTION],
-				infer: '[{"anchor":"Do you want to see it","reply":"Show me the model."}]',
+				infer: '[{"anchor":"Do you want to see it","reply":"Do you want to see it"}]',
 			});
 
 			const infer = requests.filter((r) => r.kind === "infer");

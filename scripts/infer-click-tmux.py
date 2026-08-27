@@ -20,9 +20,11 @@ the offset that makes click mapping non-trivial (see scripts/click-offset-repro.
 which predates this and drives its own pty emulator because the machine it was
 written for has no tmux).
 
-The assertion is unambiguous in a way layer 1's cannot be: an inferred anchor
-inserts a *reply* that appears nowhere in the assistant's message, so finding
-"Show me the model." on screen can only mean the click worked.
+The reply is a quote of the message (PRD §17.2 rule 5), so unlike an earlier
+version of this harness it cannot be identified by being absent from the
+transcript. The assertion is positional instead: the reply occurs exactly once
+in the message, so a *second* occurrence, below the anchor's row, can only be
+the composer.
 
 Usage:  python3 scripts/infer-click-tmux.py   (exit 0 = PASS)
 """
@@ -42,9 +44,9 @@ FIXTURE = os.path.join(ROOT, "test", "fixtures", "mock-llm.js")
 SESSION = "pi-snippet-infer-click"
 ROWS, COLS = 40, 110
 
-QUESTION = "I'm done the model, do you want to see it?"
-ANCHOR = "do you want to see it?"
-REPLY = "Show me the model."
+QUESTION = "The model is built. Want me to show you the model, or leave it for now?"
+ANCHOR = "show you the model"
+REPLY = "show you the model"
 ANCHORS_JSON = json.dumps([{"anchor": ANCHOR, "reply": REPLY}])
 
 # The inference layer's own system prompt identifies its requests to the mock.
@@ -79,13 +81,20 @@ def wait_for(predicate, seconds, label):
     sys.exit(1)
 
 
-def find_text(screen, needle):
-    """(row, col) of `needle` on screen, 0-based, or None."""
+def find_text(screen, needle, after_row=-1):
+    """(row, col) of `needle` on screen below `after_row`, 0-based, or None."""
     for r, line in enumerate(screen):
+        if r <= after_row:
+            continue
         c = line.find(needle)
         if c >= 0:
             return (r, c)
     return None
+
+
+def count_text(screen, needle):
+    """How many screen rows contain `needle`."""
+    return sum(1 for line in screen if needle in line)
 
 
 def send_click(row, col):
@@ -156,25 +165,21 @@ def main():
     if row < 10:
         print("WARNING: anchor above row 10 — the mid-screen offset was not reproduced")
 
-    if find_text(screen, REPLY):
-        print("FAIL: %r was already on screen before the click" % REPLY)
+    before = count_text(screen, REPLY)
+    if before != 1:
+        print("FAIL: expected %r once on screen before the click, saw %d" % (REPLY, before))
         cleanup()
         return 1
 
     send_click(row, col + 3)
 
     inserted = wait_for(
-        lambda s: find_text(s, REPLY),
+        lambda s: find_text(s, REPLY, after_row=row),
         10,
         "the inferred reply to appear in the composer after the click",
     )
     irow, _ = inserted
     print("reply appeared on screen row %d: %r" % (irow, capture()[irow].strip()[:90]))
-
-    if irow <= row:
-        print("FAIL: %r appeared above the anchor — that is the transcript, not the composer" % REPLY)
-        cleanup()
-        return 1
 
     cleanup()
     print("PASS: clicking an inferred anchor mid-screen composed %r" % REPLY)

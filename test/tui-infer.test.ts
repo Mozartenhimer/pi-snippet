@@ -58,7 +58,7 @@ class FakeTui {
 
 const HAIKU = { id: "claude-haiku-4-5", provider: "anthropic", cost: { input: 1 } };
 
-const ANSWER = '[{"anchor":"do you want to see it?","reply":"Show me the model."}]';
+const ANSWER = '[{"anchor":"do you want to see it?","reply":"see it"}]';
 
 function setup(options: { answer?: string; complete?: any } = {}) {
 	const handlers = new Map<string, (event: any, ctx: any) => void>();
@@ -193,14 +193,14 @@ describe("pi-snippet-tui: inferring untagged questions", () => {
 		expect(h.render(other)).toBe(other);
 	});
 
-	it("clicking an underlined span inserts the inferred reply, not the words on screen", async () => {
+	it("clicking an underlined span inserts its quoted reply, not the whole anchor", async () => {
 		const h = setup();
 		await h.enableClicks();
 		const text = "I'm done the model, do you want to see it?";
 		await h.say(text);
 		h.tui.draw([text]);
 		h.tui.click(0, text.indexOf("do you want") + 3);
-		expect(h.editor()).toBe("Show me the model.");
+		expect(h.editor()).toBe("see it");
 	});
 
 	it("a click that lands off the span inserts nothing", async () => {
@@ -244,7 +244,7 @@ describe("pi-snippet-tui: inferring untagged questions", () => {
 	});
 
 	it("an answer the message doesn't support underlines nothing", async () => {
-		const h = setup({ answer: '[{"anchor":"a span that is not there","reply":"Sure."}]' });
+		const h = setup({ answer: '[{"anchor":"a span that is not there","reply":"a span that is not there"}]' });
 		await h.enableClicks();
 		const text = "I'm done the model, do you want to see it?";
 		await h.say(text);
