@@ -319,6 +319,9 @@ A suggestion, once accepted, keeps its number for the life of the message — la
 **H3.** As an operator, I want to swap the tag name for a rebranded distribution.
 *Accept:* Tag name is configurable; parser and prompt snippet read from the same constant.
 
+**H4.** As a user, I want the choices I make in `/snippets` to still hold the next time I start pi, so I am not turning click-to-insert back on every session.
+*Accept:* All three toggles are written to a settings file (`$XDG_CONFIG_HOME/pi-snippet/settings.json`, overridable with `PI_SNIPPET_SETTINGS`) as they are changed, and read back at load. The file lives outside the session store — these are preferences about the tool, not state of one conversation, so a fork or a resume finds the same answer as a fresh start. A missing, malformed, or unreadable file falls back to defaults rather than failing to load; a write that fails leaves the toggle in force for the session and says so in the notification. `--no-suggestions` is a session override and never rewrites the stored preference.
+
 ---
 
 ## 10. Worked examples
@@ -513,7 +516,7 @@ Consequences of that hook returning *markdown* rather than components:
 The TUI also supports real clicking, via terminal mouse reporting (DECSET 1000 + SGR 1006):
 
 - Hit testing matches the *rendered text* of each `ⁿlabel` span on the visible screen — no position markers are embedded in the message, so the session file and the model's context stay clean. Both halves of a span wrapped across lines are clickable.
-- Mouse reporting is terminal-wide: while on, the wheel is delivered to the application (terminal scrollback stops responding) and click-drag selection needs Shift. To keep that cost small, reporting is engaged only while the latest message actually has suggestions — which now includes one still streaming, from the frame its first chip is painted — and can be toggled off entirely in `/suggestions`.
+- Mouse reporting is terminal-wide: while on, the wheel is delivered to the application (terminal scrollback stops responding) and click-drag selection needs Shift. To keep that cost small, reporting is engaged only while the latest message actually has suggestions — which now includes one still streaming, from the frame its first chip is painted — and can be toggled off entirely in `/snippets`. The toggle is persisted (H4): click-to-insert is off by default, so anyone who wants it wants it every session.
 - Clicking mid-stream is hit-tested against the lines drawn at click time, and the screen is moving underneath it. A click resolves through a DSR round trip (well under a frame in practice); if the message scrolls in that window the click misses rather than inserting something else, because hit testing matches the chip's rendered text and not a stored coordinate.
 - Wheel, right-button, motion, and release events are swallowed while reporting is on, so no escape sequences leak into the editor as typed garbage.
 - Screen-to-buffer mapping is anchored with a cursor-position report (DSR, `ESC[6n`) issued at click time: pi never clears the screen and draws with relative cursor moves only, so when pi is launched below an existing shell prompt its first buffer line is not screen row 0. The DSR answer, correlated with pi-tui's buffer-relative cursor bookkeeping, gives the exact offset; a terminal that never answers falls back to a bottom-aligned mapping. After an insertion the TUI is asked to repaint — consumed input bypasses pi's own render pass.

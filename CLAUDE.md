@@ -49,6 +49,8 @@ A single pi TUI extension (`src/extension/pi-snippet-tui.ts`) over a shared, ter
 
 **The TUI transformer is display-only.** `registerMarkdownTransformer` changes what is painted; stored messages keep their raw `<snippet>` tags, which is what keeps sessions readable by any other transcript consumer. Never write a `message_end` handler that rewrites stored message text — a previously installed extension did exactly that and corrupted transcripts for every other consumer.
 
+**The `/snippets` toggles are persisted, the session state is not.** `src/extension/settings.ts` writes the three switches to `$XDG_CONFIG_HOME/pi-snippet/settings.json` on every change and reads them at load; `PI_SNIPPET_SETTINGS` overrides the path, and `test/setup.ts` points it at a temp file so a test run never touches the real one. `--no-suggestions` is latched in a separate `flagDisabled`, never in `state.enabled`, so a flagged session cannot write `off` over what the user chose.
+
 **Caps are guards, not style.** `MAX_SUGGESTIONS_PER_MESSAGE` (99) is a runaway-output guard, not a style rule — it matches what two-digit `Alt` addressing reaches. The prompt itself gives no numeric guidance; `Zero suggestions is normal and correct for most messages` is the only steer the model gets.
 
 ## Terminal facts this code depends on
