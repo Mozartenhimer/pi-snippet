@@ -139,6 +139,14 @@ npm run test:e2e  # live, against a real model through pi RPC
 
 The unit suite covers the parser edge-case matrix, the TUI transformer, digit addressing, and terminal hit-testing against a stand-in TUI. For the inference layer it covers what is believed of a small model's answer, model selection and pinning, the stand-down breaker, and the layering itself.
 
+`scripts/infer-probe.ts` runs the inference prompt against a **live** model and prints both the raw answer and what `parseInferred()` keeps of it. The mock-LLM test proves the wiring; this proves the prompt — specifically whether the model you picked copies anchors verbatim, which is what costs a chip when it doesn't. Any provider pi can reach will do:
+
+```bash
+npm run build:probe
+GEMINI_API_KEY=... PI_SNIPPET_MODEL=google/gemini-2.5-flash-lite \
+  npx pi --mode rpc --no-session --no-extensions -e dist/scripts/infer-probe.js </dev/null
+```
+
 `test/fixtures/mock-llm.js` is a **mock LLM registered as a real pi provider** — `ProviderConfig.streamSimple` serves completions from a function, so a real pi process runs a real session against a scripted model with no network and no credentials. It plays both parts: the primary model answering the user, and the small model answering the inference layer. `test/pi-mock-llm.test.ts` drives it over RPC and asserts which requests pi actually made — mostly the ones that must *not* happen, since three of the four cost gates are "spend nothing when …".
 
 ```bash
