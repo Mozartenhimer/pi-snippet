@@ -13,7 +13,9 @@
  * the href in parentheses when the terminal has no OSC 8, so a `pisnip://` URL
  * on such a terminal would trail every chip on screen.
  */
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import piSnippetTui from "../src/extension/pi-snippet-tui.js";
 import { DEFAULT_SETTINGS } from "../src/extension/settings.js";
@@ -50,11 +52,14 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 		"utf8",
 	);
 	for (const key of ["TERM", "TERM_PROGRAM", "TMUX", "KITTY_WINDOW_ID"]) delete process.env[key];
+	// Keep `isInstalled()` off the developer's real ~/.local/share.
+	process.env.XDG_DATA_HOME ??= mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
 	Object.assign(process.env, env);
 	resetOsc8Cache();
 
 	const handlers = new Map<string, (event: any, ctx: any) => void>();
 	let transformer: ((md: string, c: any) => string) | undefined;
+	let command: ((args: string, ctx: any) => Promise<void>) | undefined;
 	const pi = {
 		registerFlag: () => {},
 		getFlag: () => undefined,
@@ -63,11 +68,14 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 			transformer = t;
 		},
 		registerShortcut: () => {},
-		registerCommand: () => {},
+		registerCommand: (_name: string, opts: any) => {
+			command = opts.handler;
+		},
 	};
 	piSnippetTui(pi as any);
 
 	const tui = new FakeTui();
+	const offered: string[] = [];
 	const ctx: any = {
 		mode: "tui",
 		hasUI: true,
@@ -77,6 +85,10 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 			setEditorText: () => {},
 			notify: () => {},
 			setStatus: () => {},
+			select: async (_title: string, choices: string[]) => {
+				offered.push(...choices);
+				return undefined;
+			},
 			setFooter: (factory?: any) => {
 				if (factory) factory(tui);
 			},
@@ -92,6 +104,11 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 	return {
 		tui,
 		say,
+		menu: async () => {
+			offered.length = 0;
+			await command!("", ctx);
+			return [...offered];
+		},
 		render: (md: string) => transformer!(md, { messageType: "assistant", isStreaming: false }),
 	};
 }
@@ -115,6 +132,25 @@ describe("clicking on by default", () => {
 		const h = setup({}, { TERM_PROGRAM: "ghostty" });
 		h.say(CHIPPED);
 		expect(h.render(CHIPPED)).toMatch(/\]\(pisnip:\/\/[0-9a-f]{8}\/[0-9a-f]{8}\/c1\)/);
+	});
+
+	// The only route to a working Ctrl+click is this row, so its presence is
+	// the feature. Switching the *method* and registering a handler are
+	// different acts: with link mode already on by default, offering only the
+	// method toggle would leave no way to install at all.
+	it("offers registration while link mode is on and the handler is missing", async () => {
+		process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
+		const h = setup({}, { TERM_PROGRAM: "ghostty" });
+		const choices = await h.menu();
+		expect(choices).toContainEqual(expect.stringContaining("Register click handler"));
+		expect(choices).toContainEqual(expect.stringContaining("not registered yet"));
+	});
+
+	it("does not offer registration to someone who chose the mouse path", async () => {
+		process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
+		const h = setup({ linkMode: false }, { TERM: "xterm-256color" });
+		const choices = await h.menu();
+		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
 	});
 
 	it("still engages mouse reporting for anyone who chose that path", () => {

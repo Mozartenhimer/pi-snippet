@@ -401,7 +401,7 @@ export default function piSnippetTui(pi: any): void {
 		if (linkInstall.isInstalled()) return;
 		unregisteredHintShown = true;
 		ctx.ui?.notify?.(
-			"Ctrl+click needs a one-time handler registration — run /snippets and pick “Click method”",
+			"Ctrl+click needs a one-time handler registration — run /snippets and pick “Register click handler”",
 		);
 	};
 
@@ -801,7 +801,11 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const clickMethodLabel = (): string => {
 		if (process.platform !== "linux") return "mouse reporting (link mode is Linux-only for now)";
-		if (state.linkMode) return "Ctrl+click, resolved by the terminal — switch back to mouse";
+		if (state.linkMode) {
+			return linkInstall.isInstalled()
+				? "Ctrl+click, resolved by the terminal — switch back to mouse"
+				: "Ctrl+click, resolved by the terminal (not registered yet) — switch back to mouse";
+		}
 		return linkInstall.isInstalled()
 			? "mouse reporting — switch to Ctrl+click (handler already registered, will re-verify)"
 			: "mouse reporting — switch to Ctrl+click (registers a handler with your desktop)";
@@ -899,6 +903,9 @@ export default function piSnippetTui(pi: any): void {
 						: ""
 				}`,
 				`Click method: ${clickMethodLabel()}`,
+				...(process.platform === "linux" && state.linkMode && !linkInstall.isInstalled()
+					? ["Register click handler — one-time desktop setup, needed before Ctrl+click works"]
+					: []),
 				`Infer untagged questions: ${magicLabel(ctx)}`,
 				"Inference model — choose",
 				...(process.platform === "linux" && linkInstall.isInstalled()
@@ -919,6 +926,8 @@ export default function piSnippetTui(pi: any): void {
 						? "Click to insert enabled — while suggestions are on screen, the wheel belongs to pi and selection needs Shift"
 						: "Click to insert disabled — scrolling and selection back to normal") + persist(),
 				);
+			} else if (choice.startsWith("Register click handler")) {
+				await installClickHandler(ctx);
 			} else if (choice.startsWith("Click method:")) {
 				if (!state.linkMode) {
 					// Turning it on is the install: without a registered
