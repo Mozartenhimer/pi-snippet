@@ -1,7 +1,9 @@
 # Sketch: let the terminal resolve the click
 
-**Status: sketch.** Nothing here is built. One load-bearing fact is unmeasured
-(§9), and it can kill the whole thing — read that section before writing code.
+**Status: sketch, §9 now measured.** Nothing here is built. The two facts the
+design rested on are settled: pi-tui does hand a custom scheme through verbatim,
+and Ghostty does open one — but on macOS only behind a confirmation dialog per
+click, which changes the transport (§6a). Read §9 first.
 
 ## 1. The idea
 
@@ -41,6 +43,10 @@ Buys:
   what it meant then (§4).
 - **Right session, no ambiguity.** Two pi windows each mint their own token, so
   a click lands in the pi that painted it.
+- **The gesture is already the gesture.** Ghostty activates an OSC 8 link on
+  `mouse_mods.equal(input.ctrlOrSuper(.{}))` — Ctrl on Linux, Cmd on macOS, and
+  *no other modifier held*. Hold Ctrl and click is not an approximation of what
+  Ghostty does; it is the condition, verbatim (`src/Surface.zig:4325`).
 
 Doesn't buy:
 
@@ -217,48 +223,118 @@ The socket is a local IPC endpoint that types into the user's composer, so:
 | Terminal without OSC 8 at all | Same. |
 | Terminal that restricts URI schemes | The unmeasured risk. See §9. |
 | No handler installed | Link mode not offered; mouse path unchanged. |
+| `link-osc8 = false` in the user's Ghostty config | OSC 8 links stop being highlighted, previewed, copied or opened. Default is true; nothing detects it from inside, so it fails as a click that does nothing. |
 | Session ends, user clicks an old chip in scrollback | Socket is gone; the opener fails quietly. Acceptable — arguably better than inserting into a session that has moved on. |
 | Two sessions, one terminal (tabs) | Correct by token; each session's chips reach only that session. |
 
-## 9. Measure this before writing anything
+## 9. Measured
 
-**Does Ghostty open a custom scheme?** Terminals validate OSC 8 URIs before
-handing them to the OS — a restriction to `http`/`https`/`file`/`mailto` is a
-reasonable thing for a terminal to do, and if Ghostty does it, `pisnip://` never
-leaves the terminal and this design is dead as written.
+Both halves are now answered — the pi half on a live pty against real pi
+0.84.3, the terminal half from Ghostty's own source and test suite.
 
-Fifteen-minute probe, no code from this repo involved:
+### 9a. pi-tui hands the href through verbatim — yes
 
-```bash
-# 1. a logging opener
-printf '#!/bin/sh\necho "$@" >> /tmp/opener.log\n' > /tmp/fake-open && chmod +x /tmp/fake-open
-# register it for x-scheme-handler/pisnip (desktop file, as in §6)
+`scripts/osc8-probe.py` forks a pty, runs real pi against the mock LLM, and
+reads the bytes. Three runs:
 
-# 2. paint a hyperlink and Ctrl+click it
-printf '\e]8;;pisnip://test/0000/c1\e\\CLICK ME\e]8;;\e\\\n'
+| Regime | Result |
+|---|---|
+| `TERM_PROGRAM=ghostty`, real `<snippet>` chips | `\x1b]8;;chip:1` and `\x1b]8;;chip:2` on the wire. Real OSC 8, href verbatim, no paren fallback. |
+| `TERM_PROGRAM=ghostty`, a markdown link with `pisnip://a1b2c3d4/0007/c1` | Emitted **verbatim**: `\x1b]8;;pisnip://a1b2c3d4/0007/c1`. No scheme validation, no sanitization, no rewriting. |
+| `TERM=xterm-256color`, no `TERM_PROGRAM` | Zero OSC 8 opens; `(chip:1)` printed after the label, exactly as documented. |
 
-# 3. did anything reach the opener?
-cat /tmp/opener.log
+The renderer's link case is unconditional about it
+(`pi-tui/dist/components/markdown.js:532`): if `getCapabilities().hyperlinks`
+it emits `hyperlink(styledLink, token.href)` with `token.href` untouched;
+otherwise it appends `` (${token.href}) ``. So the URL is ours to choose.
+
+The third row also confirms the detection trick in §5 works: the two regimes
+are trivially distinguishable in the painted bytes, so link mode can arm itself
+without asking anyone.
+
+`getCapabilities()` (`pi-tui/dist/terminal-image.js`) is env-sniffing, and it is
+worth knowing which terminals it says yes to: Ghostty, kitty, WezTerm, Warp,
+iTerm2, Windows Terminal, VS Code, Alacritty → `hyperlinks: true`. Under tmux it
+shells out to `tmux display-message -p '#{client_termfeatures}'` and requires
+`hyperlinks` in the list. screen, JetBrains, and anything unrecognised → false.
+
+### 9b. Ghostty opens a custom scheme — but the platforms differ sharply
+
+`processLinks` → `openUrl` → the apprt, falling back to `internal_os.open`
+(`src/Surface.zig:4425`, `src/os/open.zig`).
+
+**Linux (GTK apprt).** `Application.openUrl` sends anything that is not a path
+or a `file://` URL to the XDG desktop portal
+(`org.freedesktop.portal.OpenURI`), falling back to `xdg-open` if the portal
+errors. The portal routes by the system's registered scheme handler, so a
+`.desktop` file claiming `x-scheme-handler/pisnip` is exactly the right
+registration. **This works as designed.**
+
+**macOS — the problem.** The generic opener refuses OSC 8 outright:
+
+```zig
+// src/os/open.zig
+if (comptime builtin.os.tag == .macos) {
+    if (kind == .osc8) return error.UnsafeOSC8Link;
+}
 ```
 
-Run it for `pisnip://`, `https://`, and `file://` and compare. If only the
-last two fire, the fallbacks are, in order of preference:
+The native apprt handles it instead, through `UntrustedURL.decision`
+(`macos/Sources/Helpers/UntrustedURL.swift`), which sorts an OSC 8 target three
+ways:
 
-1. **`file://` with a registered extension.** Touch `…/pi-snippet/<token>/<msg>-c1.pisnip`
-   in the runtime dir, register a MIME type for `.pisnip`, and let the opener
-   route by file type. Same handler, same socket, one more thing to clean up.
-2. **`http://127.0.0.1:<port>/…`** — accepted by any validator, but the opener
-   launches a *browser*, which steals focus. Worse than the mouse mode it is
-   meant to replace. Listed for completeness, not recommended.
-3. Terminal-native hooks only (§6), i.e. WezTerm/Kitty/iTerm2 get link mode and
-   Ghostty doesn't — an awkward inversion, since Ghostty is what this repo
-   measures against.
+| Target | Decision |
+|---|---|
+| `http`/`https` with a host, `mailto:` with a path | `.allow` — opens immediately |
+| `file:` naming an existing, non-executable, non-script regular file or directory | `.allow` — opens immediately |
+| **any other scheme** | `.confirm` — a modal alert per click, showing the target |
+| malformed, scheme-less, invisible/bidi characters, executable or script files, `.command`/`.app`/`.desktop`/`.url`/… | `.deny` |
 
-Second thing to measure, once a click round-trips: **latency.** Opener spawn
-plus interpreter startup is the whole budget. python3 ≈ 25 ms, node ≈ 40 ms,
-`xdg-open` itself is the wildcard (it can be a long shell script). If the chip
-takes a visible beat to land, the mouse path stays the better gesture and this
-becomes a compatibility option rather than the recommended one.
+Ghostty's own tests pin it: `confirmsCustomSchemes` asserts
+`vscode://…` and `ssh://…` land on `.confirm`.
+
+So `pisnip://` is not blocked on macOS — it is *dialogged*, on every single
+click. A modal per chip insertion is strictly worse than the mouse mode this
+was meant to replace. The whole premise ("no terminal-mode funniness") does not
+survive that on macOS.
+
+### 9c. What that means for the design
+
+Linux keeps the custom scheme. macOS needs a transport that lands in `.allow`,
+and the file rule is the opening:
+
+**`file://` to a real, boring file.** `fileDecision` allows a URL that names an
+existing regular file, resolves symlinks first, has no query or fragment, no
+remote host, is not in `unsafePathExtensions` (`app`, `command`, `desktop`,
+`url`, `webloc`, `scpt`, `jar`, …), does not conform to `.application`,
+`.executable` or `.script`, and does not have the executable bit set. A
+zero-byte `0644` file named `…/pi-snippet/<token>/<msg>-c1.pisnip` meets every
+one of those, and `NSWorkspace.open` then hands it to whatever app claims the
+extension — our handler — **with no dialog**.
+
+The cost is that the extension has to materialize one file per clickable target
+and sweep them, and that the URL gets longer. It also means macOS registers a
+document type rather than a scheme, which is a different (and slightly fussier)
+Info.plist. Worth it: it is the difference between a click and a click-plus-modal.
+
+Recommended split, then:
+
+- **Linux:** `pisnip://<token>/<msg>/<id>` via the portal.
+- **macOS:** `file:///…/<token>/<msg>-<id>.pisnip` via LaunchServices.
+- Same socket, same handler, same extension-side code; only the URL builder and
+  the installer differ per platform.
+
+### 9d. Still unmeasured
+
+- **Latency.** Portal round trip and LaunchServices dispatch, plus interpreter
+  startup, on real hardware. If a chip takes a visible beat, link mode is a
+  compatibility option rather than the recommended one.
+- **The portal's first-run behavior** for a scheme with exactly one registered
+  handler — silent dispatch or a chooser. If it prompts every time, Linux has
+  the macOS problem too and `file://` becomes the answer on both.
+- **`.pisnip` UTI classification** on a real Mac: a dynamic UTI for an unknown
+  extension should conform to `public.data`, not `.script`, but that is inferred
+  from the code rather than observed.
 
 ## 10. Tests
 
@@ -276,9 +352,8 @@ becomes a compatibility option rather than the recommended one.
 
 ## 11. Open questions
 
-- Is Ctrl+click even the right gesture to document? It is terminal-specific
-  (Cmd on macOS, some terminals plain-click, Ghostty configurable). The help
-  text can't state one chord for everyone.
+- Ghostty's gesture is settled (§2), but other hyperlink-capable terminals
+  differ, so the help text still can't state one chord for everyone.
 - Should link mode be *default on* once installed? It has none of the mouse
   path's costs, so the reason click-to-insert defaults off (`settings.ts`)
   evaporates. Probably yes — which makes the installer the real product

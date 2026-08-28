@@ -27,6 +27,7 @@ npm run gen:widths                     # regenerate src/extension/char-width.ts
 python3 scripts/chord-live.py          # Alt+digit gestures, keystrokes encoded by real Ghostty
 python3 scripts/click-offset-repro.py  # clicking, with pi launched mid-screen
 python3 scripts/infer-click-tmux.py    # inferred-anchor click, real TUI via tmux, no provider needed
+python3 scripts/osc8-probe.py ghostty  # what pi-tui paints for a chip URL: OSC 8, or the paren fallback
 PI_SNIPPET_CLICK_DEBUG=/tmp/click.log pi -e dist/extension/pi-snippet-tui.js  # log click mapping
 ```
 
@@ -44,7 +45,16 @@ The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a g
 
 ### Installing pi somewhere else (a sandbox, CI, a fresh machine)
 
-**Do not install pi from npm.** `@mariozechner/pi-coding-agent` stopped at 0.73.1 (May 2026) and predates `registerMarkdownTransformer` — pi refuses to load this extension at all, with `Failed to load extension: pi.registerMarkdownTransformer is not a function`. It is still worth installing as an *API reference* (`docs/`, `dist/core/extensions/types.d.ts` with the full `ExtensionAPI`, and `examples/extensions/preset.ts`, the model for an extension that keeps its own config file), just never as the thing you run.
+**Start with `@earendil-works/pi-coding-agent` from npm — it just works.**
+Measured 2026-08-28 in a sandbox: `npm i @earendil-works/pi-coding-agent@0.84.3`
+(182 packages, ~10s) gives a runnable pi, newer than the snap, with no model-data
+stubbing and no source build. `node <pkg>/dist/cli.js --version` prints 0.84.3,
+the extension smoke-test exits 0, and `test/pi-mock-llm.test.ts` runs against it
+for real instead of skipping. Install it *outside* this repo (a sibling dir plus a
+`pi` shim on PATH) — inside, the next `npm i` prunes it as extraneous. The
+pi-mono source build below is only needed when you want to patch pi itself.
+
+**Do not install pi from npm** *under the old scope*. `@mariozechner/pi-coding-agent` stopped at 0.73.1 (May 2026) and predates `registerMarkdownTransformer` — pi refuses to load this extension at all, with `Failed to load extension: pi.registerMarkdownTransformer is not a function`. It is still worth installing as an *API reference* (`docs/`, `dist/core/extensions/types.d.ts` with the full `ExtensionAPI`, and `examples/extensions/preset.ts`, the model for an extension that keeps its own config file), just never as the thing you run.
 
 The live source is `github.com/earendil-works/pi-mono` — `packages/coding-agent`, 0.84.3 as of 2026-08-26, versus 0.84.2 in the snap:
 
