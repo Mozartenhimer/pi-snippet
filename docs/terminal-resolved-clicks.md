@@ -163,38 +163,87 @@ SSH and for un-installed machines. Persisted in `pi-snippet.json` beside the
 others; `clickEnabled: boolean` becomes `clickMode: "off" | "link" | "mouse"`
 with a `merge()` migration from the boolean (`true` → `"mouse"`).
 
-## 6. The install procedure
+## 6. The install procedure (Linux)
 
-One action in `/snippets`, writing per-platform registration, then proving it.
+Prototyped and measured end to end in `scripts/link-register.py`
+(`--install`, `--probe`, `--status`, `--uninstall`). Everything is user-level:
+no root, no system paths, three files.
 
-**Linux.** `~/.local/share/applications/pi-snippet-open.desktop` with
-`Exec=<handler> %u`, `MimeType=x-scheme-handler/pisnip;`, `NoDisplay=true`; then
-`update-desktop-database` and `xdg-mime default pi-snippet-open.desktop
-x-scheme-handler/pisnip`.
+| File | Purpose |
+|---|---|
+| `$XDG_DATA_HOME/pi-snippet/open-handler` | the handler, generated at install |
+| `$XDG_DATA_HOME/applications/pi-snippet-open.desktop` | declares `MimeType=x-scheme-handler/pisnip;`, `NoDisplay=true` |
+| `$XDG_CONFIG_HOME/mimeapps.list` | `[Default Applications]` entry making us the default for the scheme |
 
-**macOS.** A minimal bundle at `~/Applications/pi-snippet-open.app` — Info.plist
-with `CFBundleURLTypes`/`CFBundleURLSchemes`, a shell script in `MacOS/` —
-registered with `lsregister -f`. Expect a one-time "allow" prompt.
+**No hard dependency on xdg-utils.** Measured with neither `xdg-utils` nor
+`desktop-file-utils` installed: a `.desktop` file plus the `mimeapps.list` entry
+is sufficient on its own — `mimeinfo.cache` is not consulted for a *default*
+lookup. So `xdg-mime`, `update-desktop-database` and `desktop-file-validate` are
+used when present and skipped when not, and the association is written directly
+otherwise. This matters: the tools were absent on a stock container.
 
-**The handler itself** is generated at install time, because it has to speak
-AF_UNIX from a shell exec and there is no portable way to do that. Probe in
-order and bake the winner in: `python3` (three lines, present nearly everywhere),
-then `node` (only if a real node is on PATH — `process.execPath` under the snap
-is the pi binary, not a node CLI), then `socat`, then `nc -U`. If none exists,
-the install fails honestly and link mode is not offered.
+**The handler lives under `XDG_DATA_HOME`, not the pi agent dir.** The `Exec`
+line is baked in at install time and must stay valid for every future session,
+while `PI_CODING_AGENT_DIR` moves per session (`test/setup.ts` repoints it on
+every test run). Same reasoning as `settings.ts` keeping preferences outside the
+session store, one level further out.
 
-**Terminal-native alternative, worth checking first per terminal.** WezTerm's
-`open-uri` Lua event, Kitty's `open_actions.conf`, and iTerm2's semantic-history
-triggers can all invoke a command for a custom scheme with *no OS registration
-at all* — for those the "installer" appends to the terminal's own config, which
-is both simpler and more auditable. Ghostty (the terminal this repo is measured
-against) has no such hook, so it goes through the OS opener.
+**Do not quote the `Exec` path.** The Desktop Entry spec allows it and GLib
+parses it correctly, but `xdg-open` reads the line with
+`grep ^Exec | cut -d= -f2- | first_word | which` — the quotes arrive attached to
+the path and `which` fails. Unquoted works in both parsers. The cost is that a
+handler path containing a space cannot satisfy xdg-open at all; the installer
+warns rather than pretending otherwise.
 
-**The probe is the acceptance test.** After registering, the installer opens
-`pisnip://<token>/0000/ping` through the platform opener and waits ~2s for the
-socket to see it. Round-trip or it didn't happen: link mode is enabled only on
-success, and the failure message says which step (no opener, no handler
-transport, registered but never called) rather than "something went wrong".
+**The handler is stateless and written once.** It derives the socket from the
+token in the URL, so it serves every future session without re-registration, and
+it carries no text — the URL names a slot (§4). A dead session (a chip clicked
+in old scrollback) is a failed connect and a silent exit, which is the correct
+behavior rather than an error dialog.
+
+### 6a. The probe is the acceptance test
+
+Registration that isn't proven is a guess, so `--probe` fires a real
+`pisnip://probe000/0000/ping` at each opener and checks whether the socket hears
+it. Openers are tried nearest-to-Ghostty first, because Ghostty's GTK apprt
+calls the portal and only falls back to `xdg-open` if the portal errors:
+
+1. `gdbus` → `org.freedesktop.portal.Desktop` `OpenURI` with `ask=false`
+2. `gio open`
+3. `xdg-open`
+
+Measured here (no D-Bus session bus in a container, so the portal is skipped
+rather than failed — an absent environment says nothing about whether the portal
+would dispatch the scheme):
+
+```
+skip  gdbus      -> skipped: no D-Bus session bus
+ok    gio        -> 0000/ping
+ok    xdg-open   -> 0000/ping
+```
+
+Link mode is offered only on a round trip. The failure message names the step —
+no opener, no handler transport, registered but never called — rather than
+"something went wrong".
+
+Two quirks worth knowing before debugging a failure by hand:
+
+- `xdg-open`'s scheme lookup is gated behind `has_display`. With no `DISPLAY`
+  or `WAYLAND_DISPLAY` it skips `x-scheme-handler` entirely and falls through to
+  its browser list, failing with exit 3 — which looks exactly like a broken
+  registration and is not one.
+- `xdg-open` treats a hyphen in the desktop-file name as a vendor prefix, so
+  `pi-snippet-open.desktop` is first looked for at `applications/pi-snippet/open.desktop`
+  before the normal glob finds it. Harmless today; it would bite if such a
+  directory ever existed.
+
+### 6b. Terminal-native alternative
+
+WezTerm's `open-uri` Lua event, Kitty's `open_actions.conf`, and iTerm2's
+semantic-history triggers can invoke a command for a custom scheme with no OS
+registration at all — for those the installer appends to the terminal's own
+config, which is simpler and more auditable. Ghostty has no such hook, so it
+goes through the portal.
 
 ## 7. Security
 
@@ -228,6 +277,10 @@ The socket is a local IPC endpoint that types into the user's composer, so:
 | Two sessions, one terminal (tabs) | Correct by token; each session's chips reach only that session. |
 
 ## 9. Measured
+
+> **Scope: Linux.** macOS is out of scope as of this revision. §9b's macOS
+> findings and the `file://` transport in §9c are kept because they are the
+> reason the split exists, not because they are being built.
 
 Both halves are now answered — the pi half on a live pty against real pi
 0.84.3, the terminal half from Ghostty's own source and test suite.

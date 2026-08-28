@@ -28,6 +28,7 @@ python3 scripts/chord-live.py          # Alt+digit gestures, keystrokes encoded 
 python3 scripts/click-offset-repro.py  # clicking, with pi launched mid-screen
 python3 scripts/infer-click-tmux.py    # inferred-anchor click, real TUI via tmux, no provider needed
 python3 scripts/osc8-probe.py ghostty  # what pi-tui paints for a chip URL: OSC 8, or the paren fallback
+python3 scripts/link-register.py --probe  # pisnip:// scheme registration, fired through portal/gio/xdg-open
 PI_SNIPPET_CLICK_DEBUG=/tmp/click.log pi -e dist/extension/pi-snippet-tui.js  # log click mapping
 ```
 
