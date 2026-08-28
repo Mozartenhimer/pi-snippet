@@ -525,6 +525,36 @@ The TUI also supports real clicking, via terminal mouse reporting (DECSET 1000 +
 - Wheel, right-button, motion, and release events are swallowed while reporting is on, so no escape sequences leak into the editor as typed garbage.
 - Screen-to-buffer mapping is anchored with a cursor-position report (DSR, `ESC[6n`) issued at click time: pi never clears the screen and draws with relative cursor moves only, so when pi is launched below an existing shell prompt its first buffer line is not screen row 0. The DSR answer, correlated with pi-tui's buffer-relative cursor bookkeeping, gives the exact offset; a terminal that never answers falls back to a bottom-aligned mapping. After an insertion the TUI is asked to repaint — consumed input bypasses pi's own render pass.
 
+### 12.1a Click without mouse mode (Linux)
+
+Mouse reporting buys clicking at the price of a terminal-wide mode. Where the
+terminal supports OSC 8 hyperlinks it already knows which cells belong to a
+chip — it has to, to underline one under the pointer — so the second delivery
+path hands the click back to it:
+
+- A chip's href stops being inert and becomes `pisnip://<token>/<msg>/<id>`.
+  pi-tui paints it into an OSC 8 hyperlink, Ghostty resolves Ctrl+click
+  (`ctrlOrSuper`, no other modifier), and the desktop dispatches the URL to a
+  handler registered once per machine, which forwards it to a per-session unix
+  socket the extension listens on.
+- **No terminal-wide mode.** The wheel keeps scrolling the terminal's own
+  scrollback and selection needs no Shift, which is the entire cost this
+  removes. The mouse path stays as the fallback for terminals without OSC 8,
+  for SSH (the terminal would dispatch on the wrong machine), and for anyone
+  who does not want a scheme handler registered.
+- **The URL carries an index, never text**, so nothing reaching the socket can
+  put words in the composer that the model did not write; and it is **keyed by
+  message**, so a chip clicked in old scrollback still resolves to what it
+  meant rather than to the current message's Nth suggestion. That widens
+  §12.1 deliberately: digits stay latest-message-only because a number must
+  not mean two things, while a URL is unambiguous.
+- Registration is a `/snippets` action and is only believed when a probe URL
+  completes the whole round trip; a failure leaves clicking on the mouse path.
+  Linux only for now — on macOS Ghostty routes OSC 8 through a safe-open policy
+  that puts a confirmation dialog in front of every custom-scheme click.
+
+Design, measurements and open items: `docs/terminal-resolved-clicks.md`.
+
 ### 12.2 Addressing more than ten suggestions
 
 A terminal has ten digit keys, so `Alt+N` alone tops out at ten. Digits are therefore accumulated into a number:

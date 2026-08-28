@@ -27,6 +27,7 @@
  * PRD §5.2 rule intact for a layer whose spans are not in the text itself.
  */
 import { codeRegions } from "./inferred.js";
+import { buildChipUrl, messageKey } from "./link-url.js";
 import { parseSuggestions, type SuggestOptions, visibleStreamingPrefix } from "./suggestions.js";
 
 export interface TuiRenderOptions {
@@ -45,6 +46,17 @@ export interface TuiRenderOptions {
 	 * change nothing.
 	 */
 	anchors?: string[];
+	/**
+	 * Session token for terminal-resolved clicking. When set, a chip's href
+	 * stops being inert and becomes the channel the terminal dispatches on
+	 * (`link-url.ts`); when absent, chips keep the `chip:N` placeholder and the
+	 * mouse path hit-tests the label as before.
+	 *
+	 * Passed in rather than read from module state so the function stays pure:
+	 * the message key is derived from the very text being rendered, so the same
+	 * input always paints the same URL, on every repaint and resize.
+	 */
+	linkToken?: string;
 }
 
 const SUPERSCRIPTS = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"] as const;
@@ -67,6 +79,12 @@ function escapeLinkLabel(text: string): string {
 	return text.replace(/[\\[\]]/g, (c) => "\\" + c);
 }
 
+/** Who to address a link to, when the terminal is resolving the click. */
+export interface LinkContext {
+	token: string;
+	msg: string;
+}
+
 function inAnyRegion(regions: Array<{ start: number; end: number }>, pos: number): boolean {
 	return regions.some((r) => pos >= r.start && pos < r.end);
 }
@@ -78,7 +96,7 @@ function inAnyRegion(regions: Array<{ start: number; end: number }>, pos: number
  * an anchor that contains another still renders once. Occurrences inside code
  * are skipped — the same rule the tag parser follows.
  */
-export function linkifyAnchors(text: string, anchors: string[]): string {
+export function linkifyAnchors(text: string, anchors: string[], link?: LinkContext): string {
 	const wanted = anchors.filter((a) => a.length > 0);
 	if (wanted.length === 0) return text;
 	const regions = codeRegions(text);
@@ -106,7 +124,8 @@ export function linkifyAnchors(text: string, anchors: string[]): string {
 		}
 		const n = wanted.indexOf(bestAnchor) + 1;
 		out += text.slice(i, bestAt);
-		out += `[${escapeLinkLabel(bestAnchor)}](infer:${n})`;
+		const href = link ? buildChipUrl(link.token, link.msg, "a", n) : `infer:${n}`;
+		out += `[${escapeLinkLabel(bestAnchor)}](${href})`;
 		i = bestAt + bestAnchor.length;
 	}
 	return out;
@@ -116,13 +135,17 @@ export function toTuiMarkdown(rawText: string, opts: TuiRenderOptions): string {
 	const text = opts.isStreaming ? visibleStreamingPrefix(rawText, opts.parse) : rawText;
 	const { nodes } = parseSuggestions(text, opts.parse);
 	const anchors = opts.enabled ? (opts.anchors ?? []) : [];
+	const link = opts.linkToken ? { token: opts.linkToken, msg: messageKey(text) } : undefined;
 	let out = "";
 	for (const node of nodes) {
 		if (node.type === "text" || !opts.enabled) {
-			out += node.type === "text" ? linkifyAnchors(node.text, anchors) : node.text;
+			out += node.type === "text" ? linkifyAnchors(node.text, anchors, link) : node.text;
 		} else {
 			const oneBased = node.index + 1;
-			out += `[${escapeLinkLabel(chipLabel(oneBased, node.text))}](chip:${oneBased})`;
+			const href = opts.linkToken
+				? buildChipUrl(opts.linkToken, messageKey(text), "c", oneBased)
+				: `chip:${oneBased}`;
+			out += `[${escapeLinkLabel(chipLabel(oneBased, node.text))}](${href})`;
 		}
 	}
 	return out;

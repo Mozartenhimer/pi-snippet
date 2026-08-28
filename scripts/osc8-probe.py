@@ -51,7 +51,8 @@ env.update(
     MOCK_LLM_SCRIPT=json.dumps([reply]),
     MOCK_LLM_INFER="[]",
     PI_CODING_AGENT_DIR=tempfile.mkdtemp(prefix="pi-agent-"),
-    PI_SNIPPET_SETTINGS=tempfile.mktemp(suffix=".json"),
+    # Honour a prepared settings file, so a run can exercise link mode.
+    PI_SNIPPET_SETTINGS=os.environ.get("PI_SNIPPET_SETTINGS") or tempfile.mktemp(suffix=".json"),
     LINES=str(ROWS), COLUMNS=str(COLS),
 )
 if regime == "ghostty":

@@ -36,6 +36,10 @@ import { registerPromptSnippet } from "./common.js";
 import { inferenceCandidates, MagicInferrer, MODEL_ENV_VAR, type ModelPin, pickInferenceModel } from "./magic.js";
 import { loadSettings, saveSettings, settingsPath } from "./settings.js";
 import { ClickableText, type TuiLike } from "./tui-mouse.js";
+import { LinkServer } from "./link-server.js";
+import * as linkInstall from "./link-install.js";
+import { buildChipUrl, messageKey } from "../shared/link-url.js";
+import { randomBytes } from "node:crypto";
 
 interface TextBlock {
 	type: string;
@@ -58,6 +62,13 @@ export default function piSnippetTui(pi: any): void {
 		enabled: stored.enabled,
 		hotkeysEnabled: stored.hotkeysEnabled,
 		clickEnabled: stored.clickEnabled,
+		/**
+		 * Deliver clicks through the terminal's own hyperlink resolution
+		 * rather than mouse reporting (docs/terminal-resolved-clicks.md).
+		 * Requires a registered handler, so it is only reachable from
+		 * `/snippets` once the install probe has round-tripped.
+		 */
+		linkMode: stored.linkMode,
 		/**
 		 * Layer 2 (PRD §17): infer suggestions for questions the model left
 		 * untagged. Click-only, so it stays inert until clicking is on — no
@@ -147,6 +158,77 @@ export default function piSnippetTui(pi: any): void {
 	let tui: TuiLike | null = null;
 
 	/**
+	 * Names this session in every chip URL it paints, so a click dispatched by
+	 * the desktop reaches the pi that painted it and no other. Four random
+	 * bytes: it addresses a socket in the user's own runtime directory, and its
+	 * job is to disambiguate concurrent sessions, not to withstand an attacker
+	 * who can already read that directory.
+	 */
+	const linkToken = randomBytes(4).toString("hex");
+
+	/** Clicking is on, and the terminal is the one resolving it. */
+	const linkOn = () => isEnabled() && clickOn() && state.linkMode;
+
+	/**
+	 * What each rendered message's chips mean, keyed by a hash of the exact
+	 * text they were painted from (`messageKey`).
+	 *
+	 * The mouse path never needed this: it hit-tests the labels currently on
+	 * screen against the current addressable set, so "which message" is
+	 * implicit. A URL has to carry the answer, because it can be clicked long
+	 * after the message scrolled away — and resolving `c3` against whatever is
+	 * addressable *now* would insert some other message's third suggestion,
+	 * silently and wrongly. Bounded for the same reason `anchorsByText` is: old
+	 * entries are worth keeping, but not without limit.
+	 */
+	const linkTargets = new Map<string, { chips: string[]; anchors: InferredSuggestion[] }>();
+	const LINK_TARGET_LIMIT = 64;
+	const rememberLinkTargets = (
+		text: string,
+		chips: string[],
+		anchors: InferredSuggestion[],
+	): void => {
+		if (text.length === 0) return;
+		linkTargets.set(messageKey(text), { chips, anchors });
+		while (linkTargets.size > LINK_TARGET_LIMIT) {
+			const oldest = linkTargets.keys().next();
+			if (oldest.done) break;
+			linkTargets.delete(oldest.value);
+		}
+	};
+
+	/**
+	 * Index a message the way the transformer will hash it.
+	 *
+	 * The transformer is handed either a whole message or a single text block
+	 * depending on how the message was built, and while streaming it paints
+	 * `visibleStreamingPrefix` of what has arrived — so every form it might
+	 * hash is registered, each against the suggestions parsed from that same
+	 * string. Registering the parse of the identical text is what keeps the
+	 * numbering in the URL and the numbering on screen the same numbering.
+	 */
+	const indexMessageForLinks = (
+		message: { content?: TextBlock[] } | undefined,
+		opts?: { streaming?: boolean },
+	): void => {
+		if (!message || !Array.isArray(message.content)) return;
+		const forms: string[] = [];
+		for (const block of message.content) {
+			if (block.type !== "text") continue;
+			const raw = block.text ?? "";
+			forms.push(raw);
+			if (opts?.streaming) forms.push(visibleStreamingPrefix(raw));
+		}
+		forms.push(messageText(message));
+		for (const form of forms) {
+			if (form.length === 0) continue;
+			const chips = parseSuggestions(form).suggestions;
+			const anchors = state.inferred.filter((a) => form.includes(a.anchor));
+			if (chips.length > 0 || anchors.length > 0) rememberLinkTargets(form, chips, anchors);
+		}
+	};
+
+	/**
 	 * Closing tags seen so far in the message now streaming — the gate described
 	 * on `countCloseTags`. Reset per assistant message.
 	 */
@@ -172,6 +254,38 @@ export default function piSnippetTui(pi: any): void {
 			const text =
 				target.id.startsWith("a") ? state.inferred[index]?.reply : state.addressable[index];
 			if (text) insertText(lastCtx, text);
+		},
+	});
+
+	/**
+	 * The far end of a terminal-resolved click. Same lookup the mouse path
+	 * does, reached from a socket instead of an escape sequence — and keyed by
+	 * message, so a chip clicked in old scrollback still means what it meant.
+	 */
+	/** Set while an install probe is in flight; see `installClickHandler`. */
+	let probeArrived: (() => void) | null = null;
+	/** The message key a probe URL uses, which no real message can collide with. */
+	const PROBE_KEY = "00000000";
+	const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+	const linkServer = new LinkServer({
+		token: linkToken,
+		resolve: (msg, kind, index) => {
+			if (msg === PROBE_KEY) {
+				probeArrived?.();
+				return undefined; // a probe proves the path; it inserts nothing
+			}
+			const entry = linkTargets.get(msg);
+			if (!entry) return undefined;
+			return kind === "a" ? entry.anchors[index - 1]?.reply : entry.chips[index - 1];
+		},
+		onActivate: (text) => {
+			if (!lastCtx) return;
+			insertText(lastCtx, text);
+			// A socket callback is even further outside pi's render pass than a
+			// consumed keystroke: without this the text sits invisibly in the
+			// editor until the next keypress.
+			tui?.requestRender?.();
 		},
 	});
 
@@ -250,11 +364,30 @@ export default function piSnippetTui(pi: any): void {
 		return tui;
 	};
 
-	/** Engage mouse reporting only while there is something to click. */
+	/**
+	 * Point clicking at whichever delivery path is selected, and only while
+	 * there is something to click.
+	 *
+	 * The two are mutually exclusive by design. Mouse reporting is a
+	 * terminal-wide mode with real costs (the wheel, shift-less selection), so
+	 * it stays off entirely in link mode — the whole point of letting the
+	 * terminal resolve the click is that none of those costs apply. The link
+	 * server, by contrast, is cheap enough to leave listening: it holds a
+	 * socket, not a terminal mode, so it does not need the "only while there
+	 * are chips" gate that mouse reporting does.
+	 */
 	const syncMouse = (ctx: any) => {
 		lastCtx = ctx;
 		const captured = captureTui(ctx);
 		if (captured) watchAltRelease(captured);
+
+		if (linkOn()) {
+			if (clickable.enabled) clickable.detach();
+			if (!linkServer.listening) linkServer.start();
+			return;
+		}
+		if (linkServer.listening) linkServer.stop();
+
 		const want =
 			isEnabled() && clickOn() && (state.addressable.length > 0 || state.inferred.length > 0);
 		if (want) {
@@ -300,6 +433,7 @@ export default function piSnippetTui(pi: any): void {
 				enabled: isEnabled(),
 				// A streaming message has no anchors yet — it hasn't been read.
 				anchors: ctx.isStreaming ? [] : anchorsByText.get(markdown),
+				linkToken: linkOn() ? linkToken : undefined,
 			});
 		},
 	);
@@ -360,6 +494,7 @@ export default function piSnippetTui(pi: any): void {
 			const here = labels.filter((label) => text.includes(label));
 			if (here.length > 0) rememberAnchors(text, here);
 		}
+		indexMessageForLinks(message);
 		syncMouse(ctx);
 		tui?.requestRender?.();
 	};
@@ -520,12 +655,14 @@ export default function piSnippetTui(pi: any): void {
 		const suggestions = suggestionsFromMessage(event.message, { streaming: true });
 		if (suggestions.length === 0) return; // a close tag that resolved to plain text
 		setAddressable(suggestions);
+		indexMessageForLinks(event.message, { streaming: true });
 		syncMouse(ctx);
 	});
 
 	pi.on("message_end", (event: { message?: { role?: string; content?: TextBlock[] } }, ctx: any) => {
 		if (!event.message || event.message.role !== "assistant" || !isEnabled()) return;
 		setAddressable(suggestionsFromMessage(event.message));
+		indexMessageForLinks(event.message);
 		streamCloseTags = 0;
 		syncMouse(ctx);
 		maybeInfer(event.message, ctx);
@@ -577,6 +714,7 @@ export default function piSnippetTui(pi: any): void {
 				enabled: state.enabled,
 				hotkeysEnabled: state.hotkeysEnabled,
 				clickEnabled: state.clickEnabled,
+				linkMode: state.linkMode,
 				magicEnabled: state.magicEnabled,
 				model: state.modelOverride ?? null,
 			},
@@ -600,6 +738,21 @@ export default function piSnippetTui(pi: any): void {
 		return `on via ${model.id} — toggle`;
 	};
 
+	/**
+	 * How a click reaches the editor, and what changing it would cost.
+	 *
+	 * Phrased as the action rather than the state, because turning link mode on
+	 * is not a toggle — it registers a scheme handler with the desktop, which
+	 * is a thing worth naming before it happens.
+	 */
+	const clickMethodLabel = (): string => {
+		if (process.platform !== "linux") return "mouse reporting (link mode is Linux-only for now)";
+		if (state.linkMode) return "Ctrl+click, resolved by the terminal — switch back to mouse";
+		return linkInstall.isInstalled()
+			? "mouse reporting — switch to Ctrl+click (handler already registered, will re-verify)"
+			: "mouse reporting — switch to Ctrl+click (registers a handler with your desktop)";
+	};
+
 	/** Let the user name the inference model rather than trusting the guess. */
 	const chooseModel = async (ctx: any): Promise<void> => {
 		const candidates = inferenceCandidates(ctx);
@@ -621,6 +774,60 @@ export default function piSnippetTui(pi: any): void {
 		);
 	};
 
+	/**
+	 * Register `pisnip://` with the desktop, then prove it round-trips.
+	 *
+	 * Registration that is not proven is a guess, so link mode is only offered
+	 * after a real URL has travelled the whole path — opener, handler, socket —
+	 * and arrived here. The failure message names the step that broke rather
+	 * than saying it did not work.
+	 */
+	const installClickHandler = async (ctx: any): Promise<void> => {
+		if (process.platform !== "linux") {
+			ctx.ui.notify("Terminal-resolved clicking is Linux-only for now", "warning");
+			return;
+		}
+		const result = linkInstall.install();
+		for (const warning of result.warnings) ctx.ui.notify(warning, "warning");
+
+		// Probe against the live server, so what is tested is the real socket.
+		const started = linkServer.listening ? linkServer.socketPath : linkServer.start();
+		if (!started) {
+			ctx.ui.notify("Could not open a socket to receive clicks on", "warning");
+			return;
+		}
+		let arrived = false;
+		const previous = probeArrived;
+		probeArrived = () => {
+			arrived = true;
+		};
+		try {
+			const url = buildChipUrl(linkToken, PROBE_KEY, "c", 1);
+			const outcome = await linkInstall.probe(url, async () => {
+				// The dispatch is asynchronous all the way through: opener,
+				// handler process, connect. Give it a moment before judging.
+				for (let i = 0; i < 20 && !arrived; i++) await delay(100);
+				return arrived;
+			});
+			if (outcome.opener) {
+				state.linkMode = true;
+				ctx.ui.notify(
+					`Click handler installed and verified via ${outcome.opener}. ` +
+						`Ctrl+click a chip to insert it — no mouse mode${persist()}`,
+				);
+			} else {
+				ctx.ui.notify(
+					`Registered, but no opener completed the round trip (${outcome.tried.join(", ")}). ` +
+						"Clicking stays on the mouse path.",
+					"warning",
+				);
+			}
+		} finally {
+			probeArrived = previous;
+		}
+		syncMouse(ctx);
+	};
+
 	pi.registerCommand("snippets", {
 		description: "Toggle inline suggestions, their shortcuts, or click-to-insert",
 		handler: async (_args: string, ctx: any) => {
@@ -632,9 +839,17 @@ export default function piSnippetTui(pi: any): void {
 			const choice = await ctx.ui.select(snippetStats(ctx), [
 				`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
 				`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
-				`Click to insert: ${clickOn() ? "on" : "off"} — toggle (mouse mode costs wheel scrolling while suggestions are shown)`,
+				`Click to insert: ${clickOn() ? "on" : "off"} — toggle${
+					clickOn() && !state.linkMode
+						? " (mouse mode costs wheel scrolling while suggestions are shown)"
+						: ""
+				}`,
+				`Click method: ${clickMethodLabel()}`,
 				`Infer untagged questions: ${magicLabel(ctx)}`,
 				"Inference model — choose",
+				...(process.platform === "linux" && linkInstall.isInstalled()
+					? ["Remove click handler — unregister pisnip:// from the desktop"]
+					: []),
 			]);
 			if (!choice) return;
 			if (choice.startsWith("Suggestions:")) {
@@ -650,6 +865,21 @@ export default function piSnippetTui(pi: any): void {
 						? "Click to insert enabled — while suggestions are on screen, the wheel belongs to pi and selection needs Shift"
 						: "Click to insert disabled — scrolling and selection back to normal") + persist(),
 				);
+			} else if (choice.startsWith("Click method:")) {
+				if (!state.linkMode) {
+					// Turning it on is the install: without a registered
+					// handler the URLs would dispatch to nothing.
+					await installClickHandler(ctx);
+				} else {
+					state.linkMode = false;
+					ctx.ui.notify(
+						`Clicks back on mouse reporting — the wheel belongs to pi while suggestions show${persist()}`,
+					);
+				}
+			} else if (choice.startsWith("Remove click handler")) {
+				linkInstall.uninstall();
+				state.linkMode = false;
+				ctx.ui.notify(`Click handler removed from the desktop${persist()}`);
 			} else if (choice.startsWith("Inference model")) {
 				await chooseModel(ctx);
 			} else if (choice.startsWith("Infer untagged questions:")) {

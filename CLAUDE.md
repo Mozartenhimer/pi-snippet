@@ -29,6 +29,7 @@ python3 scripts/click-offset-repro.py  # clicking, with pi launched mid-screen
 python3 scripts/infer-click-tmux.py    # inferred-anchor click, real TUI via tmux, no provider needed
 python3 scripts/osc8-probe.py ghostty  # what pi-tui paints for a chip URL: OSC 8, or the paren fallback
 python3 scripts/link-register.py --probe  # pisnip:// scheme registration, fired through portal/gio/xdg-open
+python3 scripts/link-click-live.py     # link-mode click: real pi, chip URL, socket, insertion
 PI_SNIPPET_CLICK_DEBUG=/tmp/click.log pi -e dist/extension/pi-snippet-tui.js  # log click mapping
 ```
 
@@ -109,6 +110,8 @@ A single pi TUI extension (`src/extension/pi-snippet-tui.ts`) over a shared, ter
 **The inference layer is gated on click-to-insert.** Inferred anchors carry no number, so only the mouse can activate them; with clicking off there is nothing to activate and no call is made. That is the cost control, not an accident of wiring.
 
 **`ctx.modelRegistry.complete(model, context, options)` is real** and is how an extension makes its own model call — no HTTP, no pi-ai import. `hasConfiguredAuth()` says credentials are *configured*, not that they work, which is why `MagicInferrer` stands down after three consecutive failures.
+
+**Clicking has two delivery paths, and they are mutually exclusive.** Mouse reporting (`tui-mouse.ts`) is the default. Link mode (`link-url.ts`, `link-server.ts`, `link-install.ts`) instead makes the chip's href a real `pisnip://` URL, lets the terminal resolve Ctrl+click, and receives the result on a per-session unix socket — no terminal-wide mode, so the wheel and selection keep working. The URL carries an index and a message key, never text, and is resolved against a bounded map of recently rendered messages, which is what lets a chip in old scrollback still mean what it meant. Linux only; `/snippets` registers the handler and refuses to enable the mode until a probe URL round-trips. `PI_SNIPPET_SOCKET_DIR` points both sides at a shared directory when pi and the desktop do not share a namespace (a strictly-confined snap). See `docs/terminal-resolved-clicks.md` for what was measured.
 
 **The `/snippets` toggles are persisted, the session state is not.** pi has no settings or key-value API for extensions — `ExtensionAPI` offers only `appendEntry()`, which is session-scoped and branch-aware — so `src/extension/settings.ts` keeps a JSON file beside pi's own, at `~/.pi/agent/pi-snippet.json`, the way pi's shipped `preset.ts` example does. The agent dir is resolved as pi resolves it (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`), re-derived in three lines rather than imported so the bundle keeps no runtime dependency on pi; `PI_SNIPPET_SETTINGS` overrides the path, and `test/setup.ts` points it at a temp file so a test run never touches the real one. `--no-suggestions` is latched in a separate `flagDisabled`, never in `state.enabled`, so a flagged session cannot write `off` over what the user chose; `--snippet-click` is latched the same way in `flagClick`, pointing the other direction, and `clickOn()` is the effective value everything else reads. The inference toggle and its model pin ride the same file — `model` is the one non-boolean, so `merge()` type-checks it separately.
 

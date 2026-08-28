@@ -32,6 +32,18 @@ export interface SnippetSettings {
 	enabled: boolean;
 	hotkeysEnabled: boolean;
 	clickEnabled: boolean;
+	/**
+	 * *How* a click is delivered, not whether clicking is on.
+	 *
+	 * False is mouse reporting (`tui-mouse.ts`), which costs the wheel and
+	 * shift-less selection while suggestions are on screen. True is
+	 * terminal-resolved: the chip's href becomes a real URL, the terminal
+	 * dispatches Ctrl+click to a registered handler, and none of those costs
+	 * apply. It rides beside `clickEnabled` rather than replacing it because
+	 * the two answer different questions, and because a machine that loses its
+	 * handler registration should fall back to mouse rather than to nothing.
+	 */
+	linkMode: boolean;
 	/** Layer 2 — infer replies for questions the model left untagged (PRD §17). */
 	magicEnabled: boolean;
 	/**
@@ -55,6 +67,7 @@ export const DEFAULT_SETTINGS: SnippetSettings = {
 	enabled: true,
 	hotkeysEnabled: true,
 	clickEnabled: false,
+	linkMode: false,
 	magicEnabled: true,
 	model: null,
 };
@@ -145,6 +158,7 @@ export function saveSettings(settings: SnippetSettings, path: string = settingsP
 			enabled: settings.enabled,
 			hotkeysEnabled: settings.hotkeysEnabled,
 			clickEnabled: settings.clickEnabled,
+			linkMode: settings.linkMode,
 			magicEnabled: settings.magicEnabled,
 			model: settings.model,
 		};

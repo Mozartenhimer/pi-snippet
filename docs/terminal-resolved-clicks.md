@@ -1,9 +1,17 @@
 # Sketch: let the terminal resolve the click
 
-**Status: sketch, §9 now measured.** Nothing here is built. The two facts the
-design rested on are settled: pi-tui does hand a custom scheme through verbatim,
-and Ghostty does open one — but on macOS only behind a confirmation dialog per
-click, which changes the transport (§6a). Read §9 first.
+**Status: implemented behind a `/snippets` toggle, Linux only.** The design
+below is what was built; §9 records what was measured rather than assumed.
+
+Proven in this repo, without a desktop: real pi paints
+`pisnip://<token>/<msg>/c1` as an OSC 8 hyperlink
+(`scripts/osc8-probe.py`), a forwarded click inserts the suggestion into a live
+editor (`scripts/link-click-live.py`), and scheme registration round-trips
+through gio and xdg-open (`scripts/link-register.py --probe`).
+
+Untested until it runs on a desktop: the terminal's own dispatch — Ctrl+click →
+portal → handler — and whether snap confinement breaks either the scheme
+allowlist or the socket path. See §9d.
 
 ## 1. The idea
 

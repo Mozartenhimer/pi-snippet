@@ -28,6 +28,7 @@ describe("settings file", () => {
 			enabled: false,
 			hotkeysEnabled: false,
 			clickEnabled: true,
+			linkMode: true,
 			magicEnabled: false,
 			model: "anthropic/claude-haiku-4-5",
 		};
@@ -84,6 +85,7 @@ describe("settings file", () => {
 			"clickEnabled",
 			"enabled",
 			"hotkeysEnabled",
+			"linkMode",
 			"magicEnabled",
 			"model",
 		]);
