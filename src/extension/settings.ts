@@ -59,15 +59,31 @@ export interface SnippetSettings {
 }
 
 /**
- * Click starts off: mouse mode is a real cost, so it is opt-in. Inference is
- * on but inert until it — its anchors are click-only, so it spends nothing
- * until there is something that could activate them.
+ * Clicking starts **on**, delivered by the terminal.
+ *
+ * It used to start off, and the reason was entirely about mouse reporting:
+ * that path takes the wheel away from the terminal's own scrollback and makes
+ * text selection need Shift, which is a bad trade for anyone who scrolls more
+ * than they click. Link mode has none of those costs — the terminal resolves
+ * the click itself — so the reason to default off went away with it, and what
+ * is left is a feature that costs nothing until someone Ctrl+clicks.
+ *
+ * Two things keep that honest rather than presumptuous. Link mode paints no
+ * URL at all where the terminal cannot render a hyperlink (`osc8.ts`), so it
+ * can never leave `(pisnip://…)` sitting after every chip. And it never
+ * silently falls back to mouse reporting: choosing link mode means links or
+ * nothing, because a terminal-wide mode is precisely the thing nobody opted
+ * into.
+ *
+ * Dispatch still needs a handler registered with the desktop, which is a
+ * one-time `/snippets` action — a scheme handler is a change to the user's
+ * system and is not something to do behind their back.
  */
 export const DEFAULT_SETTINGS: SnippetSettings = {
 	enabled: true,
 	hotkeysEnabled: true,
-	clickEnabled: false,
-	linkMode: false,
+	clickEnabled: true,
+	linkMode: true,
 	magicEnabled: true,
 	model: null,
 };

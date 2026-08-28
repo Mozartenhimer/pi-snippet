@@ -548,10 +548,24 @@ path hands the click back to it:
   meant rather than to the current message's Nth suggestion. That widens
   §12.1 deliberately: digits stay latest-message-only because a number must
   not mean two things, while a URL is unambiguous.
+- **This is the default.** Click-to-insert used to be off by default, and the
+  reason was entirely mouse mode's cost; link mode removes that cost, so the
+  reason went with it. Two guards keep the default honest: link mode paints no
+  URL where the terminal cannot render a hyperlink (so `(pisnip://…)` can never
+  trail a chip), and it never silently falls back to mouse reporting — a
+  terminal that cannot paint a hyperlink gets no clicking, rather than a
+  terminal-wide mode nobody asked for. `H4` still applies: the choice persists.
 - Registration is a `/snippets` action and is only believed when a probe URL
   completes the whole round trip; a failure leaves clicking on the mouse path.
+  Because dispatch needs that one-time registration, a fresh install says so
+  once, when chips first appear and everything else is ready.
   Linux only for now — on macOS Ghostty routes OSC 8 through a safe-open policy
   that puts a confirmation dialog in front of every custom-scheme click.
+
+The inference layer's cost gate (§17.2) follows this rather than the toggle:
+it spends nothing unless a click could actually reach the result, which on a
+terminal without hyperlinks and link mode selected means nothing is spent even
+though click-to-insert reads as on.
 
 Design, measurements and open items: `docs/terminal-resolved-clicks.md`.
 

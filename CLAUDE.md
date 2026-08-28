@@ -30,6 +30,7 @@ python3 scripts/infer-click-tmux.py    # inferred-anchor click, real TUI via tmu
 python3 scripts/osc8-probe.py ghostty  # what pi-tui paints for a chip URL: OSC 8, or the paren fallback
 python3 scripts/link-register.py --probe  # pisnip:// scheme registration, fired through portal/gio/xdg-open
 python3 scripts/link-click-live.py     # link-mode click: real pi, chip URL, socket, insertion
+PI_SNIPPET_SETTINGS=/tmp/s.json python3 scripts/osc8-probe.py unknown  # the no-hyperlink path, from defaults
 PI_SNIPPET_CLICK_DEBUG=/tmp/click.log pi -e dist/extension/pi-snippet-tui.js  # log click mapping
 ```
 
@@ -110,6 +111,8 @@ A single pi TUI extension (`src/extension/pi-snippet-tui.ts`) over a shared, ter
 **The inference layer is gated on click-to-insert.** Inferred anchors carry no number, so only the mouse can activate them; with clicking off there is nothing to activate and no call is made. That is the cost control, not an accident of wiring.
 
 **`ctx.modelRegistry.complete(model, context, options)` is real** and is how an extension makes its own model call — no HTTP, no pi-ai import. `hasConfiguredAuth()` says credentials are *configured*, not that they work, which is why `MagicInferrer` stands down after three consecutive failures.
+
+**Clicking is on by default, delivered by the terminal.** The old default (off) existed because mouse reporting costs the wheel and shift-less selection; link mode has neither cost. Two guards make that safe and both are load-bearing: `osc8.ts` decides whether the terminal renders hyperlinks at all (mirroring pi-tui's own detection — guess more generously and every chip trails a visible `(pisnip://…)`), and link mode **never falls back to mouse reporting**, because a terminal-wide mode is exactly what nobody opted into by leaving a default alone. `clickActive()`, not `clickOn()`, is what the inference layer's cost gate reads: "clicking is on" and "a click could reach something" stopped being the same statement.
 
 **Clicking has two delivery paths, and they are mutually exclusive.** Mouse reporting (`tui-mouse.ts`) is the default. Link mode (`link-url.ts`, `link-server.ts`, `link-install.ts`) instead makes the chip's href a real `pisnip://` URL, lets the terminal resolve Ctrl+click, and receives the result on a per-session unix socket — no terminal-wide mode, so the wheel and selection keep working. The URL carries an index and a message key, never text, and is resolved against a bounded map of recently rendered messages, which is what lets a chip in old scrollback still mean what it meant. Linux only; `/snippets` registers the handler and refuses to enable the mode until a probe URL round-trips. `PI_SNIPPET_SOCKET_DIR` points both sides at a shared directory when pi and the desktop do not share a namespace (a strictly-confined snap). See `docs/terminal-resolved-clicks.md` for what was measured.
 

@@ -38,6 +38,7 @@ import { loadSettings, saveSettings, settingsPath } from "./settings.js";
 import { ClickableText, type TuiLike } from "./tui-mouse.js";
 import { LinkServer } from "./link-server.js";
 import * as linkInstall from "./link-install.js";
+import { terminalSupportsOsc8 } from "./osc8.js";
 import { buildChipUrl, messageKey } from "../shared/link-url.js";
 import { randomBytes } from "node:crypto";
 
@@ -166,8 +167,28 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const linkToken = randomBytes(4).toString("hex");
 
-	/** Clicking is on, and the terminal is the one resolving it. */
-	const linkOn = () => isEnabled() && clickOn() && state.linkMode;
+	/**
+	 * Clicking is on, the terminal is the one resolving it, and the terminal
+	 * can actually render a hyperlink.
+	 *
+	 * That last condition is what keeps the new default safe: where pi-tui
+	 * would fall back to printing the href, no `pisnip://` URL is painted at
+	 * all and chips keep their inert `chip:N` placeholder.
+	 */
+	const linkOn = () => isEnabled() && clickOn() && state.linkMode && terminalSupportsOsc8();
+
+	/**
+	 * Could a click actually reach a suggestion right now?
+	 *
+	 * `clickOn()` used to answer this, back when "clicking is on" and "clicking
+	 * works" were the same statement. They no longer are: link mode paints
+	 * nothing on a terminal without OSC 8, and never falls back to mouse, so
+	 * clicking can be switched on and still have no way through. That matters
+	 * beyond cosmetics — PRD §17.2 gates the inference layer on "spend nothing
+	 * when nothing could reach the result", and this is that condition.
+	 */
+	const clickActive = () =>
+		isEnabled() && clickOn() && (state.linkMode ? terminalSupportsOsc8() : true);
 
 	/**
 	 * What each rendered message's chips mean, keyed by a hash of the exact
@@ -365,6 +386,26 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/**
+	 * Say once, when it would actually help, that the handler is missing.
+	 *
+	 * With link mode on by default, a fresh install paints working hyperlinks
+	 * that the desktop has nothing to dispatch to — Ctrl+click would do
+	 * nothing, with no way to tell why. This is said at most once per session,
+	 * and only when everything *else* is ready, so it is a next step rather
+	 * than a complaint.
+	 */
+	let unregisteredHintShown = false;
+	const hintIfUnregistered = (ctx: any): void => {
+		if (unregisteredHintShown || process.platform !== "linux") return;
+		if (state.addressable.length === 0 && state.inferred.length === 0) return;
+		if (linkInstall.isInstalled()) return;
+		unregisteredHintShown = true;
+		ctx.ui?.notify?.(
+			"Ctrl+click needs a one-time handler registration — run /snippets and pick “Click method”",
+		);
+	};
+
+	/**
 	 * Point clicking at whichever delivery path is selected, and only while
 	 * there is something to click.
 	 *
@@ -381,15 +422,24 @@ export default function piSnippetTui(pi: any): void {
 		const captured = captureTui(ctx);
 		if (captured) watchAltRelease(captured);
 
-		if (linkOn()) {
+		// Link mode means links or nothing. Falling back to mouse reporting
+		// would quietly impose the terminal-wide mode that choosing link mode
+		// was a way of avoiding — so a terminal that cannot paint a hyperlink
+		// gets no clicking, not a surprise change of input mode.
+		if (state.linkMode) {
 			if (clickable.enabled) clickable.detach();
-			if (!linkServer.listening) linkServer.start();
+			if (linkOn()) {
+				if (!linkServer.listening) linkServer.start();
+				hintIfUnregistered(ctx);
+			} else if (linkServer.listening) {
+				linkServer.stop();
+			}
 			return;
 		}
 		if (linkServer.listening) linkServer.stop();
 
 		const want =
-			isEnabled() && clickOn() && (state.addressable.length > 0 || state.inferred.length > 0);
+			clickActive() && (state.addressable.length > 0 || state.inferred.length > 0);
 		if (want) {
 			const instance = captured;
 			if (!instance) return;
@@ -510,7 +560,7 @@ export default function piSnippetTui(pi: any): void {
 	 * text that is no longer the question.
 	 */
 	const maybeInfer = (message: { content?: TextBlock[] }, ctx: any): void => {
-		if (!isEnabled() || !state.magicEnabled || !clickOn()) return;
+		if (!isEnabled() || !state.magicEnabled || !clickActive()) return;
 		if (state.addressable.length > 0) return; // the model tagged it; layer 1 wins
 		const joined = messageText(message);
 		if (joined.trim().length === 0 || !asksSomething(joined)) return;
@@ -734,7 +784,11 @@ export default function piSnippetTui(pi: any): void {
 				: "on, but no usable model — toggle";
 		}
 		if (magic.stoodDown) return `stood down — ${model.id} kept failing — toggle to retry`;
-		if (!clickOn()) return `on via ${model.id}, idle until click-to-insert is on — toggle`;
+		if (!clickActive()) {
+			return state.linkMode && clickOn()
+				? `on via ${model.id}, idle until this terminal can paint hyperlinks — toggle`
+				: `on via ${model.id}, idle until click-to-insert is on — toggle`;
+		}
 		return `on via ${model.id} — toggle`;
 	};
 

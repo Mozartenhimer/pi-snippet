@@ -77,8 +77,25 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
+/**
+ * Store click-to-insert as off before the extension loads.
+ *
+ * These tests are about the stored preference surviving a restart, and about
+ * `--snippet-click` not being written to disk — both of which need a stored
+ * "off" to be visible against. That used to be the default and no longer is,
+ * so the tests now say it instead of assuming it.
+ */
+function seedClickOff(): void {
+	writeFileSync(
+		file,
+		JSON.stringify({ ...DEFAULT_SETTINGS, clickEnabled: false, linkMode: false }),
+		"utf8",
+	);
+}
+
 describe("pi-snippet-tui: /snippets choices persist", () => {
 	it("click-to-insert stays on across a restart", async () => {
+		seedClickOff();
 		const { pi, commands } = makeFakePi();
 		piSnippetTui(pi);
 		await commands.get("snippets")!("", makeCtx("Click to insert:").ctx);
@@ -88,6 +105,7 @@ describe("pi-snippet-tui: /snippets choices persist", () => {
 	});
 
 	it("turning click back off persists too", async () => {
+		seedClickOff();
 		const first = makeFakePi();
 		piSnippetTui(first.pi);
 		await first.commands.get("snippets")!("", makeCtx("Click to insert:").ctx);
@@ -130,6 +148,7 @@ describe("pi-snippet-tui: /snippets choices persist", () => {
 	});
 
 	it("a --no-suggestions session leaves the stored preference alone", async () => {
+		seedClickOff();
 		const on = makeFakePi();
 		piSnippetTui(on.pi);
 		await on.commands.get("snippets")!("", makeCtx("Click to insert:").ctx);
@@ -230,6 +249,7 @@ describe("persisting the inference preferences", () => {
  */
 describe("--snippet-click stays a session override", () => {
 	it("turns clicking on without storing it", async () => {
+		seedClickOff();
 		const { pi, handlers, commands } = makeFakePi("snippet-click");
 		piSnippetTui(pi);
 		const started = makeCtx();
@@ -246,6 +266,7 @@ describe("--snippet-click stays a session override", () => {
 	});
 
 	it("does not leak into the file when another toggle is saved", async () => {
+		seedClickOff();
 		const { pi, handlers, commands } = makeFakePi("snippet-click");
 		piSnippetTui(pi);
 		handlers.get("session_start")!({ reason: "new" }, makeCtx().ctx);

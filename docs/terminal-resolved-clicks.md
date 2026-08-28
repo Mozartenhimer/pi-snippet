@@ -1,6 +1,6 @@
 # Sketch: let the terminal resolve the click
 
-**Status: implemented behind a `/snippets` toggle, Linux only.** The design
+**Status: implemented and on by default, Linux only.** The design
 below is what was built; §9 records what was measured rather than assumed.
 
 Proven in this repo, without a desktop: real pi paints
@@ -415,10 +415,16 @@ Recommended split, then:
 
 - Ghostty's gesture is settled (§2), but other hyperlink-capable terminals
   differ, so the help text still can't state one chord for everyone.
-- Should link mode be *default on* once installed? It has none of the mouse
-  path's costs, so the reason click-to-insert defaults off (`settings.ts`)
-  evaporates. Probably yes — which makes the installer the real product
-  decision, not the mode.
+- ~~Should link mode be default on?~~ **Decided: yes.** Clicking and link mode
+  both default on, guarded by the capability check and the no-silent-fallback
+  rule (§2). The installer is now the real product decision, as predicted — a
+  fresh install paints working hyperlinks the desktop cannot yet dispatch, and
+  says so once when chips first appear.
+- The inference gate now reads effective reachability (`clickActive()`) rather
+  than the toggle, which preserves §17.2's intent — but with clicking on by
+  default, a hyperlink-capable terminal now reaches that layer without anyone
+  opting in. `magicEnabled` is left at its existing default; whether the paid
+  layer should stay opt-in is a cost decision, not a wiring one.
 - What does the unnumbered inferred anchor (PRD §17) do here? It is already a
   link, so it comes along for free — and since link mode costs nothing, the
   "inference is gated on click-to-insert as cost control" argument gets weaker.

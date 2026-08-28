@@ -6,6 +6,7 @@
  * what is tested is the layering itself: when a call is spent, when it is not,
  * what gets underlined, and what a click on an underline actually inserts.
  */
+import { writeFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import piSnippetTui from "../src/extension/pi-snippet-tui.js";
 
@@ -60,7 +61,29 @@ const HAIKU = { id: "claude-haiku-4-5", provider: "anthropic", cost: { input: 1 
 
 const ANSWER = '[{"anchor":"do you want to see it?","reply":"Show me the model."}]';
 
-function setup(options: { answer?: string; complete?: any } = {}) {
+/**
+ * These tests exercise the *mouse* delivery path — they drive `ClickableText`
+ * directly — so they say so rather than inheriting the default, which is now
+ * terminal-resolved links. Written before the extension loads, since that is
+ * when the settings file is read.
+ */
+function writeSettings(click: boolean): void {
+	writeFileSync(
+		process.env.PI_SNIPPET_SETTINGS!,
+		JSON.stringify({
+			enabled: true,
+			hotkeysEnabled: true,
+			clickEnabled: click,
+			linkMode: false,
+			magicEnabled: true,
+			model: null,
+		}),
+		"utf8",
+	);
+}
+
+function setup(options: { answer?: string; complete?: any; click?: boolean } = {}) {
+	writeSettings(options.click ?? true);
 	const handlers = new Map<string, (event: any, ctx: any) => void>();
 	let transformer: ((md: string, c: any) => string) | undefined;
 	let command: ((args: string, ctx: any) => Promise<void>) | undefined;
@@ -132,8 +155,8 @@ function setup(options: { answer?: string; complete?: any } = {}) {
 		return msg;
 	};
 
-	/** Toggle click-to-insert on through the real `/snippets` command. */
-	const enableClicks = async () => {
+	/** Toggle click-to-insert through the real `/snippets` command. */
+	const toggleClicks = async () => {
 		selections.push("Click to insert:");
 		await command!("", ctx);
 	};
@@ -143,7 +166,7 @@ function setup(options: { answer?: string; complete?: any } = {}) {
 		tui,
 		complete,
 		say,
-		enableClicks,
+		toggleClicks,
 		render: (md: string) => transformer!(md, { messageType: "assistant", isStreaming: false }),
 		editor: () => editorText,
 		setBranch: (entries: any[]) => {
@@ -157,7 +180,6 @@ function setup(options: { answer?: string; complete?: any } = {}) {
 describe("pi-snippet-tui: inferring untagged questions", () => {
 	it("underlines a question the model never tagged", async () => {
 		const h = setup();
-		await h.enableClicks();
 		await h.say("I'm done the model, do you want to see it?");
 		expect(h.complete).toHaveBeenCalledTimes(1);
 		expect(h.render("I'm done the model, do you want to see it?")).toBe(
@@ -167,27 +189,24 @@ describe("pi-snippet-tui: inferring untagged questions", () => {
 
 	it("spends nothing on a message the model already tagged", async () => {
 		const h = setup();
-		await h.enableClicks();
 		await h.say("Want me to <snippet>rebuild</snippet>?");
 		expect(h.complete).not.toHaveBeenCalled();
 	});
 
 	it("spends nothing on a message that asks nothing", async () => {
 		const h = setup();
-		await h.enableClicks();
 		await h.say("I've pushed the branch and CI is green.");
 		expect(h.complete).not.toHaveBeenCalled();
 	});
 
 	it("spends nothing while click-to-insert is off, since nothing could reach it", async () => {
-		const h = setup();
+		const h = setup({ click: false });
 		await h.say("I'm done the model, do you want to see it?");
 		expect(h.complete).not.toHaveBeenCalled();
 	});
 
 	it("leaves other messages in the transcript untouched", async () => {
 		const h = setup();
-		await h.enableClicks();
 		await h.say("I'm done the model, do you want to see it?");
 		const other = "Something else entirely, do you want to see it?";
 		expect(h.render(other)).toBe(other);
@@ -195,7 +214,6 @@ describe("pi-snippet-tui: inferring untagged questions", () => {
 
 	it("clicking an underlined span inserts the inferred reply, not the words on screen", async () => {
 		const h = setup();
-		await h.enableClicks();
 		const text = "I'm done the model, do you want to see it?";
 		await h.say(text);
 		h.tui.draw([text]);
@@ -205,7 +223,6 @@ describe("pi-snippet-tui: inferring untagged questions", () => {
 
 	it("a click that lands off the span inserts nothing", async () => {
 		const h = setup();
-		await h.enableClicks();
 		const text = "I'm done the model, do you want to see it?";
 		await h.say(text);
 		h.tui.draw([text]);
@@ -222,7 +239,6 @@ describe("pi-snippet-tui: inferring untagged questions", () => {
 				}),
 		);
 		const h = setup({ complete });
-		await h.enableClicks();
 		const text = "I'm done the model, do you want to see it?";
 		await h.say(text);
 		// The user moved on before the small model answered.
@@ -236,7 +252,6 @@ describe("pi-snippet-tui: inferring untagged questions", () => {
 
 	it("re-reading the same message costs nothing", async () => {
 		const h = setup();
-		await h.enableClicks();
 		const text = "I'm done the model, do you want to see it?";
 		await h.say(text);
 		await h.say(text);
@@ -245,7 +260,6 @@ describe("pi-snippet-tui: inferring untagged questions", () => {
 
 	it("an answer the message doesn't support underlines nothing", async () => {
 		const h = setup({ answer: '[{"anchor":"a span that is not there","reply":"Sure."}]' });
-		await h.enableClicks();
 		const text = "I'm done the model, do you want to see it?";
 		await h.say(text);
 		expect(h.render(text)).toBe(text);

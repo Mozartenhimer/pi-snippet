@@ -16,7 +16,7 @@
  * happen — the four gates of PRD §17.2 are all "spend nothing when …".
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,13 +80,29 @@ async function runSession(options: {
 		"mockllm",
 		"--model",
 		"mock-small",
-		...(options.click === false ? [] : ["--snippet-click"]),
 	];
+
+	// Clicking is on by default now, so the interesting case is turning it off,
+	// and mouse delivery is what this test's terminal can actually do.
+	const settings = join(cwd, "pi-snippet.json");
+	writeFileSync(
+		settings,
+		JSON.stringify({
+			enabled: true,
+			hotkeysEnabled: true,
+			clickEnabled: options.click !== false,
+			linkMode: false,
+			magicEnabled: true,
+			model: null,
+		}),
+		"utf8",
+	);
 	const proc = spawn(PI!, args, {
 		cwd,
 		stdio: ["pipe", "pipe", "pipe"],
 		env: {
 			...process.env,
+			PI_SNIPPET_SETTINGS: settings,
 			MOCK_LLM_LOG: log,
 			MOCK_LLM_INFER_MARKER: INFER_MARKER,
 			MOCK_LLM_SCRIPT: JSON.stringify(options.script),
