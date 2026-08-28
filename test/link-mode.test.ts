@@ -51,7 +51,23 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 		JSON.stringify({ ...DEFAULT_SETTINGS, ...settings }),
 		"utf8",
 	);
-	for (const key of ["TERM", "TERM_PROGRAM", "TMUX", "KITTY_WINDOW_ID"]) delete process.env[key];
+	// Every env var detectOsc8() checks, so a test never inherits the host
+	// terminal's own identity (this suite failed under real Ghostty, which
+	// left GHOSTTY_RESOURCES_DIR set, before this list grew to match).
+	for (const key of [
+		"TERM",
+		"TERM_PROGRAM",
+		"TMUX",
+		"KITTY_WINDOW_ID",
+		"GHOSTTY_RESOURCES_DIR",
+		"WEZTERM_PANE",
+		"WARP_SESSION_ID",
+		"WARP_TERMINAL_SESSION_UUID",
+		"ITERM_SESSION_ID",
+		"WT_SESSION",
+	]) {
+		delete process.env[key];
+	}
 	// Keep `isInstalled()` off the developer's real ~/.local/share.
 	process.env.XDG_DATA_HOME ??= mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
 	Object.assign(process.env, env);
@@ -123,6 +139,16 @@ describe("clicking on by default", () => {
 	});
 
 	it("paints no URL there either, so nothing trails the chip on screen", () => {
+		const h = setup({}, { TERM: "xterm-256color" });
+		h.say(CHIPPED);
+		expect(h.render(CHIPPED)).toBe("Want me to [¹rebuild the solution](chip:1)?");
+	});
+
+	it("is not fooled by the host terminal's own identity leaking through", () => {
+		// Regression: this suite ran fine in a container and failed under real
+		// Ghostty, because GHOSTTY_RESOURCES_DIR survives from the outer shell
+		// and setup() wasn't clearing it.
+		process.env.GHOSTTY_RESOURCES_DIR = "/snap/ghostty/current/share/ghostty";
 		const h = setup({}, { TERM: "xterm-256color" });
 		h.say(CHIPPED);
 		expect(h.render(CHIPPED)).toBe("Want me to [¹rebuild the solution](chip:1)?");
