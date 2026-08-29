@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	InferenceEngine,
-	inferenceCandidates,
 	MODEL_ENV_VAR,
 	DEFAULT_INFER_MODEL,
 	resolveInferenceModel,
@@ -92,20 +91,6 @@ describe("resolveInferenceModel", () => {
 		expect(
 			resolveInferenceModel(host({ auth: (m) => m.provider !== "anthropic" }), "anthropic/claude-sonnet-5"),
 		).toBeUndefined();
-	});
-});
-
-describe("inferenceCandidates", () => {
-	const opus: PiModel = { id: "claude-opus-5", provider: "anthropic" };
-
-	it("puts the current choice first, then small models ahead of the rest", () => {
-		const list = inferenceCandidates(host({ available: [SONNET, opus, MODEL] }), "anthropic/claude-sonnet-5");
-		expect(list.map((m) => m.id)).toEqual(["claude-sonnet-5", MODEL.id, "claude-opus-5"]);
-	});
-
-	it("handles a current choice the registry no longer knows", () => {
-		const list = inferenceCandidates(host({ available: [SONNET, MODEL] }), "gone/vanished");
-		expect(list.map((m) => m.id)).toEqual([MODEL.id, "claude-sonnet-5"]);
 	});
 });
 

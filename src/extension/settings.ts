@@ -38,7 +38,7 @@ export interface SnippetSettings {
 	/**
 	 * The second model (`provider/id`), as chosen in `/snippets`. Undefined
 	 * means the built-in default; `PI_SNIPPET_MODEL` overrides both for a
-	 * session. Returned to by the same picker that set it.
+	 * session. Typed into the same `/snippets` prompt that sets it.
 	 */
 	inferModel?: string;
 }

@@ -51,11 +51,6 @@ export const MODEL_ENV_VAR = "PI_SNIPPET_MODEL";
 /** How long a single inference may take before it is abandoned. */
 const INFER_TIMEOUT_MS = 30_000;
 
-/**
- * Model ids that read as small and fast. Only shapes the `/snippets` picker's
- * ordering; the model itself is chosen, not guessed.
- */
-const SMALL_MODEL_PATTERN = /haiku|mini|flash|lite|small|nano|micro|8b|7b/i;
 
 /**
  * Consecutive failures before this layer stands down for the session.
@@ -147,28 +142,6 @@ export function resolveInferenceModel(host: InferHost, explicitPin?: string): Pi
 	return undefined;
 }
 
-/**
- * Models worth offering in the `/snippets` picker: everything the registry
- * has, with the current choice first and small cheap models ahead of the
- * rest, so the sensible options are at the top of a long catalogue.
- */
-export function inferenceCandidates(host: InferHost, current?: string): PiModel[] {
-	const registry = host.modelRegistry;
-	if (!registry) return [];
-	let available: PiModel[] = [];
-	try {
-		available = registry.getAvailable?.() ?? [];
-	} catch {
-		return [];
-	}
-	const rank = (m: PiModel): number =>
-		`${m.provider ?? ""}/${m.id}`.toLowerCase() === current?.toLowerCase()
-			? 0
-			: SMALL_MODEL_PATTERN.test(m.id)
-				? 1
-				: 2;
-	return [...available].sort((a, b) => rank(a) - rank(b));
-}
 
 /**
  * Runs inferences and remembers their answers.

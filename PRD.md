@@ -684,9 +684,11 @@ never rewritten; the anchors live in extension state and die with the session.
   no extra chips, exactly as if the layer were off.
 
 **What changed from the removed layer:** the model defaults to a fixed choice
-but is a preference now — `inferModel` in the settings file, chosen from a
-`/snippets` picker that lists what the registry has auth for, with
-`PI_SNIPPET_MODEL` as a session-level override above it (the key is named
+but is a preference now — `inferModel` in the settings file, typed into a
+`/snippets` prompt as a `provider/id` and validated against the registry at
+entry time (a picker was tried and removed — the catalogue is hundreds of
+models long, unusable as a menu), with `PI_SNIPPET_MODEL` as a session-level
+override above it (the key is named
 `inferModel`, not `model`, so a stale pin from the removed layer stays dead);
 there is no per-message cap on its tags (more options are better than fewer;
 only the runaway guard of 99 total per message applies); its chips are

@@ -36,7 +36,13 @@ import { DigitChord } from "../shared/digit-chord.js";
 import { asksSomething } from "../shared/inferred.js";
 import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix, MAX_SUGGESTIONS_PER_MESSAGE } from "../shared/suggestions.js";
 import { mergeSuggestions, toTuiMarkdown } from "../shared/tui-markdown.js";
-import { DEFAULT_INFER_MODEL, InferenceEngine, inferenceCandidates, MODEL_ENV_VAR } from "./infer.js";
+import {
+	DEFAULT_INFER_MODEL,
+	InferenceEngine,
+	MODEL_ENV_VAR,
+	resolvePin,
+	type PiModel,
+} from "./infer.js";
 import { registerPromptSnippet } from "./common.js";
 import { loadSettings, saveSettings, settingsPath } from "./settings.js";
 import { LinkServer } from "./link-server.js";
@@ -763,37 +769,40 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/**
-	 * Pick the second model. The candidates are everything the registry has
-	 * auth for, the current choice first and small cheap models next, so a
-	 * sensible option is at the top of a long catalogue. Resetting to the
-	 * default is always offered, even when the default *is* current, so the
-	 * way back is never a scroll hunt.
+	 * Pick the second model, by typing a `provider/id`.
+	 *
+	 * A picker was tried first and removed: the registry offers hundreds of
+	 * models, and a list that long is unusable as a menu. Typing also reaches
+	 * models that exist behind `models.json` without the list having to guess
+	 * what belongs in it. Empty input resets to the default; anything else is
+	 * validated against the registry before it is stored, because the engine
+	 * falls through to the default on an unknown pin — a typo must cost a
+	 * warning, not layer 2 quietly going silent.
 	 */
 	const pickModel = async (ctx: any): Promise<void> => {
 		const current = effectiveModel();
-		const candidates = inferenceCandidates({ modelRegistry: ctx.modelRegistry }, current.id);
-		const choices = [
-			...candidates.map((m) => {
-				const id = `${m.provider ?? ""}/${m.id}`;
-				return id.toLowerCase() === current.id.toLowerCase() ? `${id} — current` : id;
-			}),
-			...(current.id.toLowerCase() !== DEFAULT_INFER_MODEL.toLowerCase()
-				? [`Default (${DEFAULT_INFER_MODEL})`]
-				: [`Default (${DEFAULT_INFER_MODEL}) — current`]),
-		];
-		const pick = await ctx.ui.select(
-			`Second model (tags the primary model didn't add)${current.fromEnv ? " — PI_SNIPPET_MODEL is overriding it this session" : ""}`,
-			choices,
+		const entry = await ctx.ui.input(
+			`Second model (tags the primary model didn't add) — currently ${current.id}${current.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""}`,
+			"provider/id — leave empty to reset to the default",
 		);
-		if (!pick) return;
-		if (pick.startsWith(`Default (`)) {
+		if (entry === undefined) return; // cancelled
+		const pin = entry.trim();
+		if (pin === "") {
+			if (!state.inferModel) return; // already the default
 			state.inferModel = undefined;
+			infer.rearm(); // a dead credential on the old model says nothing about the default
 			ctx.ui.notify(`Second model reset to the default${persist()}`);
 			return;
 		}
-		state.inferModel = pick.replace(" — current", "");
-		infer.rearm(); // a dead credential on the old model says nothing about this one
-		ctx.ui.notify(`Second model set to ${state.inferModel}${persist()}`);
+		const available: PiModel[] = ctx.modelRegistry?.getAvailable?.() ?? [];
+		if (available.length > 0 && !resolvePin(pin, available)) {
+			ctx.ui.notify(`No model "${pin}" in the registry — nothing changed`, "warning");
+			return;
+		}
+		if (pin === state.inferModel) return;
+		state.inferModel = pin;
+		infer.rearm();
+		ctx.ui.notify(`Second model set to ${pin}${persist()}`);
 	};
 
 	pi.registerCommand("snippets", {
