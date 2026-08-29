@@ -2,13 +2,14 @@
  * The URL a chip carries when the terminal is the one resolving the click
  * (docs/terminal-resolved-clicks.md §4).
  *
- * Where the terminal cannot resolve clicks (no OSC 8, or the handler is not
- * registered) the href is inert — `chip:1` exists only because markdown link
- * syntax requires a URL. Where it can, the href becomes load-bearing: pi-tui
- * paints it into an OSC 8 hyperlink (measured verbatim, §9a), the terminal
- * resolves Ctrl+click against it, and the OS hands it to our registered
- * handler. The href is the whole channel, so its shape is a contract between
- * three processes that never speak otherwise.
+ * Where the terminal cannot resolve clicks (no OSC 8) the chip carries no URL
+ * at all — the transformer paints the bare superscript label (`tui-markdown.ts`),
+ * because pi-tui prints any href it cannot emit as OSC 8 in visible parens.
+ * Where the terminal can, the href becomes load-bearing: pi-tui paints it into
+ * an OSC 8 hyperlink (measured verbatim, §9a), the terminal resolves Ctrl+click
+ * against it, and the OS hands it to our registered handler. The href is the
+ * whole channel, so its shape is a contract between three processes that never
+ * speak otherwise.
  *
  *     pisnip://<token>/<msg>/<id>
  *

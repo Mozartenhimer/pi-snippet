@@ -2,18 +2,17 @@
  * TUI rendering of suggestion nodes (PRD §12).
  *
  * Tagged chips — what the model wrapped in `<snippet>` — render as markdown
- * links led by a superscript number: `[¹rebuild](chip:1)` renders in the
+ * links led by a superscript number: `[¹rebuild](pisnip://…)` renders in the
  * theme's link color, and the number is what `Alt+N` addresses.
  *
- * The URL is inert in the inert case (`chip:1`, never navigated); it exists
- * only because link syntax requires one. When terminal-resolved clicking is
- * active the href becomes a real `pisnip://` URL instead (`link-url.ts`). pi's
- * renderer consumes the markdown markers, and consumes the URL too wherever
- * the terminal supports OSC 8 hyperlinks; where it does not (tmux and screen,
- * unless the client advertises `hyperlinks`) pi-tui falls back to printing the
- * URL in parentheses after the label. Either way the *label* is what appears
- * on screen, which is what clicking resolves against — so the fallback is
- * cosmetic.
+ * There is one chip rendering, and the URL in it is always real (`link-url.ts`):
+ * where the terminal supports OSC 8 hyperlinks, pi's renderer turns the href
+ * into a clickable link the terminal itself resolves. Where it does not, the
+ * extension paints no link at all — just the bare superscript label — because
+ * pi-tui prints any href it cannot emit as OSC 8 in parentheses after the
+ * label, and a URL the terminal cannot dispatch is noise, not a chip. The
+ * superscript is the whole of the fallback: it is what `Alt+N` addresses, and
+ * nothing else about a chip survives a terminal that paints no hyperlinks.
  *
  * Pure function: feeds pi's markdown transformer hook, which is display-only
  * (the stored message keeps its raw tags and never gains markup).
@@ -167,10 +166,14 @@ export function toTuiMarkdown(rawText: string, opts: TuiRenderOptions): string {
 			out += node.text;
 		} else {
 			const oneBased = node.index + 1;
-			const href = opts.linkToken
-				? buildChipUrl(opts.linkToken, messageKey(text), oneBased)
-				: `chip:${oneBased}`;
-			out += `[${escapeLinkLabel(chipLabel(oneBased, node.text))}](${href})`;
+			const label = chipLabel(oneBased, node.text);
+			if (opts.linkToken) {
+				out += `[${escapeLinkLabel(label)}](${buildChipUrl(opts.linkToken, messageKey(text), oneBased)})`;
+			} else {
+				// No hyperlinks here. A URL — real or placeholder — would come back
+				// as visible parens and resolve no click; the bare label is the chip.
+				out += label;
+			}
 		}
 	}
 	return out;

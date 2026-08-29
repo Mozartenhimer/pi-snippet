@@ -23,8 +23,9 @@ generated glyph-width table. It works, and every piece of it exists because the
 process has to reconstruct something the terminal already knows.
 
 The terminal already knows it because we already told it. Chips render as
-markdown links — `[¹rebuild the solution](chip:1)` — and pi-tui turns that into
-an OSC 8 hyperlink wherever the terminal supports one. The terminal is tracking
+markdown links — `[¹rebuild the solution](pisnip://…)` — and pi-tui turns that
+into an OSC 8 hyperlink wherever the terminal supports one. Where it does not,
+the chip paints as the bare label: no href, no parens, no link at all. The terminal is tracking
 those cell ranges itself: that is what makes Ctrl+click (Cmd+click on macOS)
 light the link up under the pointer.
 
@@ -158,8 +159,8 @@ painted lines *including* escape sequences. On the first paint that contains a
 chip, look at the line —
 
 - contains `\x1b]8;;pisnip://` → pi-tui emitted the hyperlink; link mode is live.
-- contains the parenthesised URL instead → no OSC 8 on this terminal; fall back
-  to `chip:N` URLs and the mouse path, and never show the user a long URL.
+- contains the parenthesised URL instead → no OSC 8 on this terminal; no link
+  can work here, so paint no URL and never show the user a long one.
 
 That answers "did pi-tui emit it", not "will the terminal honor it". The second
 half is the installer's probe (§6).
@@ -302,7 +303,7 @@ reads the bytes. Three runs:
 |---|---|
 | `TERM_PROGRAM=ghostty`, real `<snippet>` chips | `\x1b]8;;chip:1` and `\x1b]8;;chip:2` on the wire. Real OSC 8, href verbatim, no paren fallback. |
 | `TERM_PROGRAM=ghostty`, a markdown link with `pisnip://a1b2c3d4/0007/c1` | Emitted **verbatim**: `\x1b]8;;pisnip://a1b2c3d4/0007/c1`. No scheme validation, no sanitization, no rewriting. |
-| `TERM=xterm-256color`, no `TERM_PROGRAM` | Zero OSC 8 opens; `(chip:1)` printed after the label, exactly as documented. |
+| `TERM=xterm-256color`, no `TERM_PROGRAM` | Zero OSC 8 opens; at the time of measurement the placeholder href came back as `(chip:1)` after the label — which is why the chip now paints no href at all in this regime. |
 
 The renderer's link case is unconditional about it
 (`pi-tui/dist/components/markdown.js:532`): if `getCapabilities().hyperlinks`

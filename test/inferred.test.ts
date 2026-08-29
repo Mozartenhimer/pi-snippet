@@ -148,9 +148,7 @@ describe("mergeSuggestions — layer 1 and layer 2 paint as one stream", () => {
 		expect(indexOf("wait for CI")).toBe(0);
 		expect(indexOf("fix it now")).toBe(1);
 		const out = toTuiMarkdown(text, { isStreaming: false, enabled: true, inferred: ["fix it now"] });
-		expect(out).toBe(
-			"Want me to [²fix it now](chip:2), or [¹wait for CI](chip:1)?",
-		);
+		expect(out).toBe("Want me to ²fix it now, or ¹wait for CI?");
 	});
 
 	it("never shifts an earlier anchor when a later one lands before it", () => {
@@ -173,7 +171,7 @@ describe("mergeSuggestions — layer 1 and layer 2 paint as one stream", () => {
 			enabled: true,
 			inferred: ["proceed"],
 		});
-		expect(out).toBe("Shall I [¹proceed](chip:1)?");
+		expect(out).toBe("Shall I ¹proceed?");
 	});
 
 	it("keeps an inferred anchor out of a tagged chip's span and out of code", () => {

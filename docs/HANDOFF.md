@@ -33,8 +33,8 @@ container with no terminal and no desktop* — real pi via
 `test/fixtures/mock-llm.js` standing in for the model. What that proved:
 
 - Real pi paints `pisnip://<token>/<msg>/c1` as a genuine OSC 8 hyperlink when
-  the environment says Ghostty, and paints plain `chip:1` with no URL at all
-  when it doesn't (`scripts/osc8-probe.py`).
+  the environment says Ghostty, and paints the bare `¹rebuild the solution`
+  label with no URL at all when it doesn't (`scripts/osc8-probe.py`).
 - A line written to the socket in the handler's exact wire format lands in a
   live editor (`scripts/link-click-live.py`) — proven by checking the
   suggestion text appears *without* its superscript prefix, which only the

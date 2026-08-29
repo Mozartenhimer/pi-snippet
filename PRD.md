@@ -511,7 +511,7 @@ The parser is shared. The terminal path uses pi's markdown transformer hook, whi
 
 Consequences of that hook returning *markdown* rather than components:
 
-- Chips render as markdown links in the theme's link color, led by a small superscript number: `Want me to [¹rebuild the solution](chip:1) or [²run the tests](chip:2)?` The URL is inert (never navigated) — it exists only because link syntax requires one.
+- Where the terminal paints OSC 8 hyperlinks, chips render as markdown links in the theme's link color, led by a small superscript number: `Want me to [¹rebuild the solution](pisnip://…) or [²run the tests](pisnip://…)?` — and the URL is load-bearing (§12.1). Where the terminal paints no hyperlinks, there is no link at all: the bare `¹rebuild the solution` label, since pi-tui prints any href it cannot emit as OSC 8 in visible parens, and a URL that resolves no click is noise.
 - There is no hover. Click (§12.1) and `Alt+N` (§12.2) are the affordances.
 - The transformer must stay pure — the addressable set is derived in the `message_update` and `message_end` handlers and held in extension state, never built during transformation.
 - Scrolled-away suggestions remain hotkey-addressable but invisible. Only the most recent message is addressable, to avoid `2` meaning two different things.
@@ -657,11 +657,12 @@ History in git.
 
 An earlier version of this section described an inference layer that was removed
 outright. It is back, in a different shape, because the reasons it was removed
-no longer hold: the model is free, and its chips are no longer second-class.
+no longer hold: the model costs about four hundredths of a cent per thousand
+messages, and its chips are no longer second-class.
 
 **What it does.** When an assistant message ends, a small fixed model —
-OpenRouter's `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, pinned in
-`shared/inferred.ts`; `PI_SNIPPET_MODEL` overrides — receives the message as
+OpenRouter's `qwen/qwen3.7-flash`, pinned in `extension/infer.ts`;
+`PI_SNIPPET_MODEL` overrides — receives the message as
 stored, layer-1 tags included, and re-emits it character-for-character with
 more `<snippet>` tags added around the spans the user could plausibly send
 back. It is told to leave the tags it received exactly where they are; any tag
@@ -738,15 +739,40 @@ a status update pays nothing. The call goes out at `message_end`, streams via
 the provider's `streamSimple`, and each anchor becomes a chip as its closing
 tag arrives — chips light up while the second model is still writing.
 
+**Cheap beats free.** The default was OpenRouter's free nemotron until a
+live run showed why free is the wrong axis: OpenRouter meters free models per
+*account per day*, so after fifty calls every request 429s for the rest of the
+day — and this layer surfaces no failure, so the user sees a feature that
+quietly stopped working. `qwen/qwen3.7-flash` costs about $0.00004 per call
+(a few hundred tokens in, a hundred out) and has no such ceiling.
+
+**The call carries the session's credentials.** `getProvider()` returns a
+bare transport that knows its base URL and nothing about auth, so the key and
+headers are fetched per call from the registry (`getApiKeyAndHeaders`) and
+passed in the call options. Without them the request dies locally with "No API
+key for provider: …" before reaching the network — which this layer swallows
+like any other failure, so the symptom is a second model that never adds a
+chip and never says why.
+
 **The footer line.** The built-in footer carries one extension status
 (`ctx.ui.setStatus("pi-snippet", …)`) saying where the layer stands for the
 message on screen: `snippet: not sent` while the primary streams or the gate
 said no, `snippet: sent (waiting)` while the reply streams, and then the
 report — `snippet: 2 new chips` — counted live as the anchors land, zero
-included when a reply genuinely arrived and added nothing. When the layer
-could not run at all — no auth for the pinned model, a failed request — the
-line reverts to `not sent` rather than reporting zero, which would claim a
-reply arrived when none did; a failure is still never surfaced beyond that.
+included when a reply genuinely arrived and added nothing. A failed request
+reverts to `not sent` rather than reporting zero, which would claim a reply
+arrived when none did.
+
+When there is no second model to call at all — nothing resolves, the model
+that does resolve has no configured auth, or three consecutive failures have
+stood the layer down — the line says `snippet: second model unavailable`
+instead, checked before the question-mark gate because it is a condition of
+the session rather than of the message. That state is why it exists: silence
+and `not sent` are indistinguishable from outside, so a session whose second
+model has no credentials (the default is an OpenRouter model most sessions
+have no key for) would otherwise report `not sent` after every question it
+ever asked, reading as a working layer that keeps declining. Beyond that one
+line a failure is still never surfaced.
 
 **Testing.** Fixed strings only: the engine and the contract are tested
 against canned replies through a fake registry (`test/inferred.test.ts`,

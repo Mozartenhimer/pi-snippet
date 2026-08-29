@@ -9,7 +9,7 @@ import {
 	type PiModel,
 } from "../src/extension/infer.js";
 
-const MODEL: PiModel = { id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", provider: "openrouter" };
+const MODEL: PiModel = { id: "qwen/qwen3.7-flash", provider: "openrouter" };
 const SONNET: PiModel = { id: "claude-sonnet-5", provider: "anthropic" };
 
 const MESSAGE = "Do you want to rebuild or commit?";
@@ -25,16 +25,21 @@ function deltas(text: string, size = 12) {
 function host(options: {
 	available?: PiModel[];
 	auth?: (m: PiModel) => boolean;
-	stream?: (model: PiModel, context: any) => any;
-	complete?: (model: PiModel, context: any) => any;
+	credentials?: (m: PiModel) => any;
+	stream?: (model: PiModel, context: any, callOptions?: any) => any;
+	complete?: (model: PiModel, context: any, callOptions?: any) => any;
 } = {}) {
 	return {
 		modelRegistry: {
 			getAvailable: () => options.available ?? [MODEL, SONNET],
 			hasConfiguredAuth: options.auth ?? (() => true),
+			...(options.credentials ? { getApiKeyAndHeaders: options.credentials } : {}),
 			getProvider: (provider: string) =>
 				provider === "openrouter" && options.stream
-					? { streamSimple: (model: PiModel, context: any) => options.stream!(model, context) }
+					? {
+							streamSimple: (model: PiModel, context: any, callOptions?: any) =>
+								options.stream!(model, context, callOptions),
+						}
 					: undefined,
 			complete: options.complete,
 		},
@@ -79,7 +84,7 @@ describe("resolveInferenceModel", () => {
 
 	it("PI_SNIPPET_MODEL beats the stored choice, for one session", () => {
 		process.env[MODEL_ENV_VAR] = "anthropic/claude-sonnet-5";
-		expect(resolveInferenceModel(host(), "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")?.id).toBe(
+		expect(resolveInferenceModel(host(), "openrouter/qwen/qwen3.7-flash")?.id).toBe(
 			"claude-sonnet-5",
 		);
 	});
@@ -159,6 +164,41 @@ describe("InferenceEngine", () => {
 		expect(calls).toBe(1);
 		expect(again).toEqual(["rebuild", "commit"]);
 		expect(seen).toEqual(["rebuild", "commit"]);
+	});
+
+	it("sends the session's credentials with the call — the provider carries none", async () => {
+		// `getProvider()` hands out a bare transport: called without a key it
+		// fails with "No API key for provider", which this layer would swallow
+		// like any other failure, leaving a working model looking silent.
+		let callOptions: any;
+		const engine = new InferenceEngine();
+		const h = host({
+			credentials: () => ({ ok: true, apiKey: "sk-test", headers: { "X-Title": "pi" } }),
+			stream: (_model, _context, opts) => {
+				callOptions = opts;
+				return eventStream(deltas(REPLY));
+			},
+		});
+		await engine.infer(MESSAGE, h, []);
+		expect(callOptions.apiKey).toBe("sk-test");
+		expect(callOptions.headers).toEqual({ "X-Title": "pi" });
+		expect(callOptions.signal).toBeDefined(); // and still the timeout's
+	});
+
+	it("calls anyway when the registry offers no credentials — a mock needs none", async () => {
+		let called = false;
+		const engine = new InferenceEngine();
+		const h = host({
+			credentials: () => {
+				throw new Error("no auth store here");
+			},
+			stream: () => {
+				called = true;
+				return eventStream(deltas(REPLY));
+			},
+		});
+		expect(await engine.infer(MESSAGE, h, [])).toEqual(["rebuild", "commit"]);
+		expect(called).toBe(true);
 	});
 
 	it("falls back to a single-shot complete when the provider cannot stream", async () => {

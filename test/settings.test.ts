@@ -27,7 +27,7 @@ describe("settings file", () => {
 		const settings: SnippetSettings = {
 			mode: "infer",
 			hotkeysEnabled: false,
-			inferModel: "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+			inferModel: "openrouter/qwen/qwen3.7-flash",
 		};
 		expect(saveSettings(settings, file)).toBe(true);
 		expect(loadSettings(file)).toEqual(settings);

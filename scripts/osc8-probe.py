@@ -64,7 +64,7 @@ else:
 env.pop("TMUX", None)
 
 args = ["pi", "--no-session", "--no-extensions", "-e", FIXTURE, "-e", EXT,
-        "--provider", "mockllm", "--model", "mock-small", "--snippet-click"]
+        "--provider", "mockllm", "--model", "mock-small"]
 
 pid, master = pty.fork()
 if pid == 0:
@@ -116,5 +116,5 @@ urls = [u.decode("utf8", "replace") for u in links if u]
 print(f"OSC 8 opens seen: {len(urls)}")
 for u in dict.fromkeys(urls):
     print(f"  url: {u!r}")
-for probe in (b"chip:1", b"chip:2", b"pisnip", b"(chip:", b"rebuild the solution"):
+for probe in ("\u00b9rebuild the solution".encode(), b"pisnip", b"(pisnip:", b"(chip:"):
     print(f"  {probe.decode():24} present={probe in out}")

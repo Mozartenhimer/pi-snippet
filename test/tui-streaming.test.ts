@@ -259,22 +259,22 @@ describe("pi-snippet-tui: the second model's chips render as they arrive", () =>
 			);
 			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
 
-			// Normalize the chip URL shape so the assertions hold whether this
-			// environment paints inert `chip:N` hrefs or real `pisnip://` ones.
+			// Reduce a real URL link to its bare label so the assertions hold
+			// whether this environment paints `pisnip://` links or bare labels.
 			const render = (text: string) =>
 				transformer()!(text, { messageType: "assistant", isStreaming: false }).replace(
-					/\(pisnip:\/\/[^)]*\/c(\d+)\)/g,
-					"(chip:$1)",
+					/\[([^\]]+)\]\(pisnip:\/\/[^)]*\)/g,
+					"$1",
 				);
 
 			// First anchor arrives while the second model is still writing. It
 			// sits earlier in the text than the tagged chip but numbers after
 			// it — the ¹ the user already saw must not move.
 			await vi.waitFor(() => {
-				expect(render(MESSAGE)).toContain("[\u00b2fix it now](chip:2)");
+				expect(render(MESSAGE)).toContain("\u00b2fix it now");
 			});
-			expect(render(MESSAGE)).toContain("[\u00b9wait for CI](chip:1)");
-			expect(render(MESSAGE)).not.toContain("chip:3");
+			expect(render(MESSAGE)).toContain("\u00b9wait for CI");
+			expect(render(MESSAGE)).not.toContain("\u2074");
 
 			// The addressable set matches what is painted.
 			shortcuts.get("alt+2")!(ctx);
@@ -283,10 +283,10 @@ describe("pi-snippet-tui: the second model's chips render as they arrive", () =>
 			// Second anchor arrives; earlier numbers stay put.
 			releaseSecondDelta!();
 			await vi.waitFor(() => {
-				expect(render(MESSAGE)).toContain("[\u00b3revert the commit](chip:3)");
+				expect(render(MESSAGE)).toContain("\u00b3revert the commit");
 			});
 			expect(render(MESSAGE)).toBe(
-				"Want me to [\u00b2fix it now](chip:2), or [\u00b9wait for CI](chip:1)? I can also [\u00b3revert the commit](chip:3).",
+				"Want me to \u00b2fix it now, or \u00b9wait for CI? I can also \u00b3revert the commit.",
 			);
 			shortcuts.get("alt+1")!(ctx);
 			expect(ctx.ui.getEditorText()).toBe("fix it now wait for CI");
@@ -307,17 +307,17 @@ describe("pi-snippet-tui: the second model's chips render as they arrive", () =>
 			handlers.get("message_start")!({ message: partial("") }, ctx);
 			handlers.get("message_end")!({ message: partial("\n" + MESSAGE + "\n") }, ctx);
 
-			// Normalize the chip URL shape so the assertions hold whether this
-			// environment paints inert `chip:N` hrefs or real `pisnip://` ones.
+			// Reduce a real URL link to its bare label so the assertions hold
+			// whether this environment paints `pisnip://` links or bare labels.
 			const render = (text: string) =>
 				transformer()!(text, { messageType: "assistant", isStreaming: false }).replace(
-					/\(pisnip:\/\/[^)]*\/c(\d+)\)/g,
-					"(chip:$1)",
+					/\[([^\]]+)\]\(pisnip:\/\/[^)]*\)/g,
+					"$1",
 				);
 			// pi trims each block before transforming; the anchors must be found
 			// under exactly that key, not only under the raw message text.
 			await vi.waitFor(() => {
-				expect(render(MESSAGE.trim())).toContain("[\u00b2fix it now](chip:2)");
+				expect(render(MESSAGE.trim())).toContain("\u00b2fix it now");
 			});
 		} finally {
 			delete process.env.PI_SNIPPET_MODEL;
@@ -436,10 +436,11 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 		}
 	});
 
-	it("reverts to not sent when the layer could not run — no zero report for a failure", async () => {
-		// No configured auth for the pinned model: nothing is ever sent, so the
-		// footer must not claim a reply arrived ("0 new chips") — that would
-		// make an unreachable layer indistinguishable from an empty one.
+	it("says the second model is unavailable when there is no auth for it", async () => {
+		// No configured auth for the pinned model: nothing is ever sent. "0 new
+		// chips" would claim a reply arrived, and "not sent" would read as a
+		// working layer declining this message — which is what a session with a
+		// dead second model would then say after every question it ever asked.
 		const registry = { ...makeInferRegistry([MESSAGE]).registry, hasConfiguredAuth: () => false };
 		const { pi, handlers } = makeFakePi();
 		piSnippetTui(pi);
@@ -451,8 +452,104 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			handlers.get("message_start")!({ message: partial("") }, ctx);
 			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
 			await vi.waitFor(() => {
-				expect(statusLine(ctx).at(-1)).toBe("snippet: not sent");
+				expect(statusLine(ctx).at(-1)).toBe("snippet: second model unavailable");
 			});
+		} finally {
+			delete process.env.PI_SNIPPET_MODEL;
+		}
+	});
+
+	it("says the request failed, rather than that nothing was sent", async () => {
+		// The layer asked and got nothing back — a rate limit, a dead key, a
+		// timeout. "not sent" would credit it with a decision it never made.
+		const registry = {
+			...makeInferRegistry([]).registry,
+			getProvider: () => ({
+				// eslint-disable-next-line require-yield
+				streamSimple: async function* () {
+					yield { type: "error" };
+				},
+			}),
+		};
+		const { pi, handlers } = makeFakePi();
+		piSnippetTui(pi);
+		const ctx = makeTuiCtx();
+		(ctx as any).modelRegistry = registry;
+		process.env.PI_SNIPPET_MODEL = "testmock/infer-model";
+		try {
+			handlers.get("session_start")!({ reason: "new" }, ctx);
+			handlers.get("message_start")!({ message: partial("") }, ctx);
+			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			await vi.waitFor(() => {
+				expect(statusLine(ctx).at(-1)).toBe("snippet: second model failed");
+			});
+		} finally {
+			delete process.env.PI_SNIPPET_MODEL;
+		}
+	});
+
+	it("reports unavailable once repeated failures stand the layer down", async () => {
+		const registry = {
+			...makeInferRegistry([]).registry,
+			getProvider: () => ({
+				// eslint-disable-next-line require-yield
+				streamSimple: async function* () {
+					yield { type: "error" };
+				},
+			}),
+		};
+		const { pi, handlers } = makeFakePi();
+		piSnippetTui(pi);
+		const ctx = makeTuiCtx();
+		(ctx as any).modelRegistry = registry;
+		process.env.PI_SNIPPET_MODEL = "testmock/infer-model";
+		try {
+			handlers.get("session_start")!({ reason: "new" }, ctx);
+			// Distinct questions: the cache is keyed by message text, so the same
+			// one twice would be one request and never reach the breaker.
+			for (const question of ["Rebuild it?", "Ship it?", "Revert it?"]) {
+				handlers.get("message_start")!({ message: partial("") }, ctx);
+				handlers.get("message_end")!({ message: partial(question) }, ctx);
+				await vi.waitFor(() => {
+					expect(statusLine(ctx).at(-1)).not.toBe("snippet: sent (waiting)");
+				});
+			}
+			// A failure the layer may yet recover from reads as "failed"; three
+			// in a row are what it has given up on.
+			expect(statusLine(ctx).at(-1)).toBe("snippet: second model unavailable");
+		} finally {
+			delete process.env.PI_SNIPPET_MODEL;
+		}
+	});
+
+	it("hands over the message with its layer-1 tags, so the second model adds to them", async () => {
+		// The prompt tells it to keep the tags it is given and wrap what they
+		// missed; stripping them first would ask it to start from a blind
+		// position and duplicate chips the user can already see.
+		let sent: string | undefined;
+		const { registry } = makeInferRegistry([MESSAGE]);
+		const spying = {
+			...registry,
+			getProvider: (provider: string) => ({
+				streamSimple: (_model: any, context: any) => {
+					sent = (context.messages[0].content as string) ?? "";
+					return registry.getProvider(provider)!.streamSimple();
+				},
+			}),
+		};
+		const { pi, handlers } = makeFakePi();
+		piSnippetTui(pi);
+		const ctx = makeTuiCtx();
+		(ctx as any).modelRegistry = spying;
+		process.env.PI_SNIPPET_MODEL = "testmock/infer-model";
+		try {
+			handlers.get("session_start")!({ reason: "new" }, ctx);
+			handlers.get("message_start")!({ message: partial("") }, ctx);
+			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			await vi.waitFor(() => {
+				expect(sent).toBeDefined();
+			});
+			expect(sent).toContain("<snippet>wait for CI</snippet>");
 		} finally {
 			delete process.env.PI_SNIPPET_MODEL;
 		}
@@ -471,7 +568,9 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 	});
 
 	it.each([
+		["off", false],
 		["tags", false],
+		["both", true],
 		["infer", true],
 	] as const)("mode %s asks the second model: %s", async (mode, asked) => {
 		writeFileSync(process.env.PI_SNIPPET_SETTINGS!, JSON.stringify({ mode }), "utf8");
@@ -509,16 +608,25 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 	});
 
 	it("keeps a statement at not sent — the gate never asks the second model", () => {
+		// A reachable model, so the gate is the only thing that stops this: the
+		// line has to say "not sent", not "unavailable".
+		const { registry } = makeInferRegistry([MESSAGE]);
 		const { pi, handlers } = makeFakePi();
 		piSnippetTui(pi);
 		const ctx = makeTuiCtx();
-		handlers.get("session_start")!({ reason: "new" }, ctx);
-		handlers.get("message_start")!({ message: partial("") }, ctx);
-		handlers.get("message_end")!(
-			{ message: partial("Build is green. Deployed at noon.") },
-			ctx,
-		);
-		expect(statusLine(ctx).at(-1)).toBe("snippet: not sent");
+		(ctx as any).modelRegistry = registry;
+		process.env.PI_SNIPPET_MODEL = "testmock/infer-model";
+		try {
+			handlers.get("session_start")!({ reason: "new" }, ctx);
+			handlers.get("message_start")!({ message: partial("") }, ctx);
+			handlers.get("message_end")!(
+				{ message: partial("Build is green. Deployed at noon.") },
+				ctx,
+			);
+			expect(statusLine(ctx).at(-1)).toBe("snippet: not sent");
+		} finally {
+			delete process.env.PI_SNIPPET_MODEL;
+		}
 	});
 
 	it("clears the line when suggestions are toggled off", async () => {

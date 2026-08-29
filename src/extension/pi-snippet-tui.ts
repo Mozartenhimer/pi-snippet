@@ -42,6 +42,7 @@ import {
 	InferenceEngine,
 	MODEL_ENV_VAR,
 	modelCompletions,
+	resolveInferenceModel,
 	resolvePin,
 	type PiModel,
 } from "./infer.js";
@@ -126,6 +127,17 @@ export default function piSnippetTui(pi: any): void {
 	 * alone. Anchors are answers, not part of the message.
 	 */
 	const infer = new InferenceEngine(() => state.inferModel);
+	/**
+	 * Whether there is a second model to send anything to.
+	 *
+	 * The same resolution the engine itself does — env pin, stored pin, then
+	 * the default, each refused outright rather than substituted when it has no
+	 * auth — plus the failure breaker, so a layer that has given up for the
+	 * session counts as unreachable too.
+	 */
+	const secondModelReachable = (ctx: any): boolean =>
+		!infer.stoodDown &&
+		resolveInferenceModel({ modelRegistry: ctx?.modelRegistry }, state.inferModel) !== undefined;
 	const inferred = new Map<string, string[]>();
 	const INFERRED_LIMIT = 64;
 	/** Anchors inferred for a message so far, by its stripped text. */
@@ -167,20 +179,29 @@ export default function piSnippetTui(pi: any): void {
 	const inferOn = () => isEnabled() && state.mode !== "tags";
 
 	/**
-	 * The footer's line about the second model, in the three states it can
-	 * honestly be in: not sent (the message on screen has not been handed to
-	 * it — still streaming, the gate said no, or the layer is stood down),
-	 * sent and waiting for its reply, and the report of what came back: how
-	 * many new chips it added. Painted through `ctx.ui.setStatus` so the
-	 * built-in footer carries it alongside pi's own lines — replacing the
-	 * footer wholesale would drop those.
+	 * The footer's line about the second model, in the states it can honestly
+	 * be in: not sent (the message on screen has not been handed to it — still
+	 * streaming, or the gate said no), unavailable (there is nothing to hand it
+	 * to), sent and waiting for its reply, failed (it was asked and the request
+	 * died), and the report of what came back: how many new chips it added.
+	 * Painted through `ctx.ui.setStatus` so the built-in footer carries it
+	 * alongside pi's own lines — replacing the footer wholesale would drop
+	 * those.
+	 *
+	 * "Unavailable" and "failed" are states of their own rather than more
+	 * silence because all three look identical from the outside and mean
+	 * different things: a session whose second model has no credentials, or
+	 * whose provider is rate-limiting it, would otherwise report "not sent"
+	 * after every question forever, which reads as a layer that is working and
+	 * declining rather than one that never got an answer. The reason is still
+	 * never shown — only that there wasn't one.
 	 *
 	 * A number means resolved: the count of chips that actually landed, which
 	 * is a live count while the reply is still streaming in, and the final
 	 * report once it settles — zero included, so a reply that validated to
 	 * nothing (or failed) still reports rather than dangling on "waiting".
 	 */
-	type InferStatus = "off" | "idle" | "waiting" | number;
+	type InferStatus = "off" | "idle" | "unavailable" | "failed" | "waiting" | number;
 	let inferStatus: InferStatus = "off";
 	let appliedChips = 0;
 	let lastStatusCtx: any = null;
@@ -193,6 +214,8 @@ export default function piSnippetTui(pi: any): void {
 		if (!inferOn()) inferStatus = "off";
 		let text: string | undefined;
 		if (inferStatus === "idle") text = "snippet: not sent";
+		else if (inferStatus === "unavailable") text = "snippet: second model unavailable";
+		else if (inferStatus === "failed") text = "snippet: second model failed";
 		else if (inferStatus === "waiting") text = "snippet: sent (waiting)";
 		else if (typeof inferStatus === "number")
 			text = `snippet: ${inferStatus} new chip${inferStatus === 1 ? "" : "s"}`;
@@ -680,6 +703,14 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const queueInference = (message: { role?: string; content?: TextBlock[] }, ctx: any): void => {
 		if (!inferOn()) return;
+		if (!secondModelReachable(ctx)) {
+			// Checked before the gate, not after: this is a condition of the
+			// session rather than of the message, and the user needs to see it
+			// whether or not this particular message would have been worth a call.
+			inferStatus = "unavailable";
+			syncInferStatus(ctx);
+			return;
+		}
 		const raw = messageText(message);
 		if (!asksSomething(raw)) return;
 		const existing = parseSuggestions(raw).suggestions;
@@ -690,11 +721,12 @@ export default function piSnippetTui(pi: any): void {
 			// A newer message owns the footer now; this reply's report would
 			// overwrite its "not sent" / "waiting" with a stale count.
 			if (seq !== latestAssistantSeq) return;
-			// null means the layer never ran — unreachable model, no auth, a
-			// failed request. Reverting to "not sent" keeps the line honest:
-			// a zero report would claim a reply arrived when none did.
+			// null means no answer arrived. A zero report would claim one did;
+			// "not sent" would claim the layer chose not to ask, when it asked
+			// and got nothing back. Once the breaker has tripped the honest
+			// line is that there is nothing left to ask.
 			if (result === null) {
-				inferStatus = "idle";
+				inferStatus = secondModelReachable(ctx) ? "failed" : "unavailable";
 			} else if (inferStatus === "waiting") {
 				inferStatus = appliedChips;
 			}

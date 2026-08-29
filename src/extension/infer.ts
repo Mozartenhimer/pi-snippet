@@ -6,16 +6,24 @@
  * ## Which model
  *
  * A fixed one, chosen deliberately rather than guessed: OpenRouter's
- * `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`. Free and small is the
- * point — this layer runs after every question-bearing message, so its cost
- * must be zero and its latency invisible. `PI_SNIPPET_MODEL` (`provider/id`,
- * or a bare id) overrides it, which is how the tests point it at a mock.
+ * `qwen/qwen3.7-flash`. Small and cheap rather than free — this layer runs
+ * after every question-bearing message, so its latency must be invisible and
+ * its cost per call must round to nothing (~$0.00004 at this model's rates:
+ * a few hundred tokens in, a hundred or so out). The free tier was tried
+ * first and lost on availability, not on quality: OpenRouter meters free
+ * models per day across the whole account, so the layer would fail with a 429
+ * for the rest of the day after fifty calls — silently, since it surfaces
+ * nothing. `PI_SNIPPET_MODEL` (`provider/id`, or a bare id) overrides it,
+ * which is how the tests point it at a mock.
  *
  * ## How it runs
  *
- * Streaming, via the provider's own `streamSimple` — the same path pi's
- * registries use for real models, so auth comes from wherever the session's
- * auth lives. Each `text_delta` re-runs the extraction against the
+ * Streaming, via the provider's own `streamSimple`, with the session's
+ * credentials fetched from the registry (`getApiKeyAndHeaders`) and passed
+ * per call — `getProvider()` returns a bare transport, so a call made without
+ * them dies instantly with "No API key for provider: …" and, since this layer
+ * surfaces nothing, looks exactly like a model that had nothing to add. Each
+ * `text_delta` re-runs the extraction against the
  * accumulated reply, and every newly completed tag is handed to the caller's
  * callback as soon as its closing tag arrives: chips light up while the small
  * model is still writing, the same way layer-1 chips do while the primary
@@ -44,7 +52,7 @@ import {
 } from "../shared/inferred.js";
 
 /** The model this layer uses unless `PI_SNIPPET_MODEL` or `/snippets` say otherwise. */
-export const DEFAULT_INFER_MODEL = "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free";
+export const DEFAULT_INFER_MODEL = "openrouter/qwen/qwen3.7-flash";
 
 /** Environment override, for harnesses and for pinning without a flag. */
 export const MODEL_ENV_VAR = "PI_SNIPPET_MODEL";
@@ -93,15 +101,37 @@ export function modelCompletions(query: string, available: readonly PiModel[]): 
 	}));
 }
 
+/** Credentials for one model, as the registry hands them out. */
+interface ProviderAuth {
+	ok?: boolean;
+	apiKey?: string;
+	headers?: Record<string, string>;
+}
+
 interface PiRegistry {
 	getAvailable?(): PiModel[];
 	hasConfiguredAuth?(model: PiModel): boolean;
+	getApiKeyAndHeaders?(model: PiModel): ProviderAuth | Promise<ProviderAuth>;
 	getProvider?(provider: string): PiProvider | undefined;
 	complete?(
 		model: PiModel,
 		context: { systemPrompt?: string; messages: unknown[] },
-		options?: { maxTokens?: number; signal?: AbortSignal },
+		options?: CallOptions,
 	): Promise<{ content?: Array<{ type: string; text?: string }>; stopReason?: string }>;
+}
+
+/**
+ * What a provider needs to make one call. The credentials belong here rather
+ * than on the provider: `getProvider()` hands out a bare transport that knows
+ * its base URL and nothing about the session's auth, so a call made without
+ * them fails at once with "No API key for provider: …" — which this layer
+ * would then swallow as an ordinary failure, since it surfaces none of its own.
+ */
+interface CallOptions {
+	maxTokens?: number;
+	signal?: AbortSignal;
+	apiKey?: string;
+	headers?: Record<string, string>;
 }
 
 /**
@@ -112,7 +142,7 @@ interface PiProvider {
 	streamSimple?(
 		model: PiModel,
 		context: { systemPrompt?: string; messages: unknown[] },
-		options?: { maxTokens?: number; signal?: AbortSignal },
+		options?: CallOptions,
 	): AsyncIterable<{ type: string; delta?: string; content?: Array<{ type: string; text?: string }> }> & {
 		result?: () => Promise<{ content?: Array<{ type: string; text?: string }>; stopReason?: string }>;
 	};
@@ -303,6 +333,31 @@ function maxTokensFor(text: string): number {
 }
 
 /**
+ * The session's credentials for a model, or nothing when the registry has no
+ * such method (an older pi, a test double) or cannot answer.
+ *
+ * Nothing is the right answer for a provider that needs no key — a mock
+ * registered from an extension — and for a registry that reports none: the
+ * call is made anyway and fails like any other, which is the only failure
+ * mode this layer has.
+ */
+async function credentialsFor(
+	registry: PiRegistry,
+	model: PiModel,
+): Promise<{ apiKey?: string; headers?: Record<string, string> }> {
+	try {
+		const auth = await registry.getApiKeyAndHeaders?.(model);
+		if (!auth) return {};
+		return {
+			...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
+			...(auth.headers ? { headers: auth.headers } : {}),
+		};
+	} catch {
+		return {};
+	}
+}
+
+/**
  * Stream the reply, handing each accumulated prefix to `onPartial`, or fall
  * back to a single-shot `complete` when the provider cannot stream.
  *
@@ -313,9 +368,10 @@ async function streamOrComplete(
 	registry: PiRegistry,
 	model: PiModel,
 	context: { systemPrompt?: string; messages: unknown[] },
-	options: { maxTokens?: number; signal?: AbortSignal },
+	baseOptions: CallOptions,
 	onPartial: (accumulated: string) => void,
 ): Promise<string> {
+	const options = { ...baseOptions, ...(await credentialsFor(registry, model)) };
 	let provider: PiProvider | undefined;
 	try {
 		provider = registry.getProvider?.(model.provider ?? "");

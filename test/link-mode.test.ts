@@ -143,7 +143,7 @@ describe("clicking on by default, by the terminal", () => {
 	it("paints no URL on a terminal that cannot paint hyperlinks, so nothing trails the chip", () => {
 		const h = setup({}, { TERM: "xterm-256color" });
 		h.say(CHIPPED);
-		expect(h.render(CHIPPED)).toBe("Want me to [¹rebuild the solution](chip:1)?");
+		expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
 	});
 
 	it("is not fooled by the host terminal's own identity leaking through", () => {
@@ -153,7 +153,7 @@ describe("clicking on by default, by the terminal", () => {
 		process.env.GHOSTTY_RESOURCES_DIR = "/snap/ghostty/current/share/ghostty";
 		const h = setup({}, { TERM: "xterm-256color" });
 		h.say(CHIPPED);
-		expect(h.render(CHIPPED)).toBe("Want me to [¹rebuild the solution](chip:1)?");
+		expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
 	});
 
 	it("paints a dispatchable URL where the terminal does render hyperlinks", () => {
