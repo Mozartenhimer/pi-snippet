@@ -98,6 +98,8 @@ python3 scripts/link-register.py --probe  # scheme registration: a URL round-tri
 python3 scripts/link-click-live.py     # link-mode click end to end: real pi, chip URL, insertion
 ```
 
+A second harness, `npm run infer-sweep`, is unrelated to terminal ground truth but lives by the same rule: it scores the second model's task against real API responses rather than guessing which small models tag well. It sends the exact `INFER_SYSTEM_PROMPT` used in production to a curated list of OpenRouter models (8B–50B parameters, paid included) for a fixed set of sample messages, scores each reply with the real `extractAnchors` validator, and writes an HTML report (`scripts/.build/infer-sweep-report.html`) with the prompts, a per-model summary (copy fidelity, tag preservation, anchors accepted/dropped, failures, latency), and a per-sample detail grid. `npm run infer-sweep -- <model> <model>...` narrows it to a subset; needs `OPENROUTER_API_KEY`. Requests for a model's five samples run in parallel, with a shared concurrency cap across models. Two things it surfaced worth knowing before rerunning: OpenRouter's `:free` models share one account-wide quota (50 requests/day without added credits) that a 429 body names as `free-models-per-day`, and a reasoning model can spend its whole token budget on chain-of-thought before emitting content, which this harness reports as "empty reply" rather than a prompt failure.
+
 Two findings worth keeping in mind:
 
 - **The width table is gone with mouse mode.** It existed so click hit-testing could agree with the terminal about how many cells a glyph occupies; with terminal-resolved clicks the terminal does the hit-testing, and nothing here needs a width table anymore.

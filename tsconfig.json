@@ -12,5 +12,5 @@
 		"noEmit": true,
 		"types": ["node"]
 	},
-	"include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.js", "bin/**/*.js"]
+	"include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "scripts/**/*.js", "bin/**/*.js"]
 }
