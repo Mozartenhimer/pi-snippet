@@ -27,9 +27,17 @@ describe("settings file", () => {
 		const settings: SnippetSettings = {
 			enabled: false,
 			hotkeysEnabled: false,
+			inferModel: "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 		};
 		expect(saveSettings(settings, file)).toBe(true);
 		expect(loadSettings(file)).toEqual(settings);
+	});
+
+	it("keeps an inferModel only when it is a non-empty string", () => {
+		writeFileSync(file, JSON.stringify({ inferModel: "  " }), "utf8");
+		expect(loadSettings(file).inferModel).toBeUndefined();
+		writeFileSync(file, JSON.stringify({ inferModel: 42 }), "utf8");
+		expect(loadSettings(file).inferModel).toBeUndefined();
 	});
 
 	it("creates the directory it writes into", () => {
@@ -58,7 +66,9 @@ describe("settings file", () => {
 
 	it("ignores keys from settings written by older versions", () => {
 		// clickEnabled/linkMode/magicEnabled/model used to live here; their
-		// features are gone, and a stale file must not break the read.
+		// features are gone, and a stale file must not break the read. `model`
+		// in particular is the removed 2026 layer's key — the live one is
+		// `inferModel`, so a stale pin cannot hijack the new default.
 		writeFileSync(
 			file,
 			JSON.stringify({ clickEnabled: false, linkMode: false, magicEnabled: true, model: "x/y" }),

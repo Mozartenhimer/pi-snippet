@@ -40,10 +40,10 @@ We want the affordance to be *ambient*: visible where the suggestion was made, i
 - G1. Model can mark suggested replies inline, mid-sentence, in its own prose.
 - G2. User can insert a suggestion into the composer with one click.
 - G3. Typing freely is always the default state. No mode, no focus steal, no forced choice.
-- G4. Suggestions never block the agent turn or add a round-trip *to it*. (The inference layer of §17, which once made its own model calls after the turn ended, was removed — see §17.)
+- G4. Suggestions never block the agent turn or add a round-trip *to it*. (The second model of §17 runs after `message_end`, never during the turn, and never blocks anything on its result — see §17.)
 - G5. Raw markup is never visible to the user in any web surface.
 - G6. Degrades cleanly when the model misbehaves (unclosed tags, tags in code, no tags at all).
-- G7. ~~A question the model never tagged still gets suggested replies~~ *(was served by the §17 inference layer; removed — a question that gets no tags simply gets no chips, and fixing the tagging belongs to the prompt contract, §6)*.
+- G7. A question the primary model never tagged still gets suggested replies, from the second model of §17 — same chips, same numbering, same keyboard path, indistinguishable in the UI.
 
 ### Non-Goals
 
@@ -646,31 +646,66 @@ History in git.
 | Non-blocking tool + widget tray | Extra model round-trip; suggestions detached from their sentence |
 | `<option>` as the tag name | Collides with real HTML that a coding agent handles constantly |
 | Auto-send on click | Removes the edit step, which is where most of the value is; one misclick sends a wrong instruction to an agent with write access |
-| Client-side suggestion generation (second model call), *as a replacement for inline tags* | Latency and cost for something the primary model already knows. **Reversed in part, then reversed back** — adopted as the §17 fallback for untagged messages, and finally removed with §17: the fallback's cost was ongoing and its product second-class (§17). |
+| Client-side suggestion generation (second model call), *as a replacement for inline tags* | Latency and cost for something the primary model already knows. **Reversed in part, then reversed back, then restored in a new shape** — adopted as the §17 fallback, removed with §17, and returned (§17) as an *enhancement* of inline tags rather than a replacement: the second model now re-emits the message with `<snippet>` tags, producing first-class chips, not a second-class sidecar. |
 | Structured JSON sidecar instead of inline tags | Loses inline position, which is the whole point |
 
 ---
-## 17. Inferred suggestions (layer 2) — REMOVED
+## 17. The second model (restored, reshaped)
 
-Layer 2 inferred suggestions for questions the primary model left untagged: a
-small model read the finished message and returned anchor/reply pairs, rendered
-as unnumbered underlines that only the mouse could activate. It was removed
-outright (extension, tests, and the `/snippets` toggle and model picker that
-managed it), for reasons worth keeping visible:
+An earlier version of this section described an inference layer that was removed
+outright. It is back, in a different shape, because the reasons it was removed
+no longer hold: the model is free, and its chips are no longer second-class.
 
-- **The cost was ongoing and the value was marginal.** Every question-bearing
-  untagged message paid a model call, gated on clicking being able to reach the
-  result — and what it bought was a second-class chip: no number, no keyboard
-  path, dependent on a paraphrasing small model getting a span exactly right.
-- **Layer 1's fix is better.** A model that does not tag is best fixed by the
-  prompt contract (§6) and by measured emission rates (§14), not by a second
-  model guessing after the fact.
-- **Removal simplified the hard invariants.** The parser/renderer purity rule
-  (§5.2) had to accommodate anchors that were not marked up in the text at all;
-  with layer 2 gone, everything addressable comes from the parser.
+**What it does.** When an assistant message ends, a small fixed model —
+OpenRouter's `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, pinned in
+`shared/inferred.ts`; `PI_SNIPPET_MODEL` overrides — receives the message as
+stored, layer-1 tags included, and re-emits it character-for-character with
+more `<snippet>` tags added around the spans the user could plausibly send
+back. It is told to leave the tags it received exactly where they are; any tag
+it echoes anyway matches a chip layer 1 already paints and is dropped at
+validation time. The wrapped text itself is the reply, exactly as in layer 1.
 
-The design is preserved in git history (PRD §17 as of before the removal, plus
-`src/extension/magic.ts` and `src/shared/inferred.ts`); the rules it
-established — verbatim anchors or nothing, cache by message text, stand down on
-dead credentials — are patterns worth reusing if a client-side inference layer
-is ever wanted again.
+**What the user sees.** Nothing new. The anchors are located verbatim in the
+stored message and painted as ordinary chips — numbered, Alt+N addressable,
+click-to-insert — merged into the same numbering as the tagged ones. Nothing in
+the UI distinguishes which layer painted a chip, and the stored transcript is
+never rewritten; the anchors live in extension state and die with the session.
+
+**The rules it keeps from the removed layer** (still the right rules):
+
+- **Verbatim or nothing.** A tag whose content is not verbatim in the
+  message's non-code text is dropped, not repaired. Paraphrase costs a chip,
+  never produces a wrong one.
+- **Cache by message text.** A resize, a re-render, a `/tree` walk back to a
+  message never pays twice.
+- **Stand down on dead credentials.** `hasConfiguredAuth()` says configured,
+  not working; three consecutive failures stop the layer for the session.
+- **Never surface a failure.** No auth, a timeout, tag soup — the message has
+  no extra chips, exactly as if the layer were off.
+
+**What changed from the removed layer:** the model defaults to a fixed choice
+but is a preference now — `inferModel` in the settings file, typed into a
+`/snippets` prompt as a `provider/id` and validated against the registry at
+entry time (a picker was tried and removed — the catalogue is hundreds of
+models long, unusable as a menu), with `PI_SNIPPET_MODEL` as a session-level
+override above it (the key is named
+`inferModel`, not `model`, so a stale pin from the removed layer stays dead);
+there is no per-message cap on its tags (more options are better than fewer;
+only the runaway guard of 99 total per message applies); its chips are
+first-class, so no anchor/reply JSON — the tag re-emit is the whole protocol;
+and it runs on every question-bearing message, seeing the tags layer 1 already
+painted so it adds to them rather than restarting from a blind position.
+
+**Cost control.** The gate is a question mark outside code (`asksSomething`):
+a status update pays nothing. The call goes out at `message_end`, streams via
+the provider's `streamSimple`, and each anchor becomes a chip as its closing
+tag arrives — chips light up while the second model is still writing.
+
+**Testing.** Fixed strings only: the engine and the contract are tested
+against canned replies through a fake registry (`test/inferred.test.ts`,
+`test/infer-engine.test.ts`). No test makes a live model call.
+
+The design of the *removed* layer remains in git history (PRD §17 as of before
+the removal, plus `src/extension/magic.ts` and `src/shared/inferred.ts`);
+`magic.ts` is still the reference for model-picking heuristics if the fixed
+model ever needs to become a choice again.

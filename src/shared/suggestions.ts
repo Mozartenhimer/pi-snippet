@@ -40,6 +40,8 @@ export interface SuggestOptions {
 export interface TextNode {
 	type: "text";
 	text: string;
+	/** Offset of this run within the text that was parsed. */
+	start: number;
 }
 
 export interface SuggestionNode {
@@ -48,6 +50,13 @@ export interface SuggestionNode {
 	text: string;
 	/** Index among accepted suggestions in this message (0-based). */
 	index: number;
+	/**
+	 * Offset of the trimmed content within the text that was parsed, so
+	 * callers can know which spans the message's chips already cover — how
+	 * inferred anchors (shared/inferred.ts) avoid doubling up a chip the
+	 * primary model already tagged.
+	 */
+	start: number;
 }
 
 export type SuggestNode = TextNode | SuggestionNode;
@@ -164,19 +173,26 @@ export function parseSuggestions(text: string, opts?: SuggestOptions): ParseResu
 	const suggestions: string[] = [];
 	let accepted = acceptedSoFar;
 	let buf = "";
+	/** Where `buf` began in `text`; kept alongside it so text nodes carry offsets. */
+	let bufStart = 0;
 	let i = 0;
 
 	const flush = () => {
 		if (buf.length > 0) {
-			nodes.push({ type: "text", text: buf });
+			nodes.push({ type: "text", text: buf, start: bufStart });
 			buf = "";
 		}
+	};
+	/** Append to the buffer, remembering where a fresh run began. */
+	const keep = (chunk: string, from: number) => {
+		if (buf.length === 0) bufStart = from;
+		buf += chunk;
 	};
 
 	while (i < text.length) {
 		const fence = inRegion(fences, i);
 		if (fence) {
-			buf += text.slice(i, fence.end);
+			keep(text.slice(i, fence.end), i);
 			i = fence.end;
 			continue;
 		}
@@ -184,13 +200,13 @@ export function parseSuggestions(text: string, opts?: SuggestOptions): ParseResu
 		if (ch === "`") {
 			const spanLen = codeSpanLength(text, i);
 			if (spanLen > 0) {
-				buf += text.slice(i, i + spanLen);
+				keep(text.slice(i, i + spanLen), i);
 				i += spanLen;
 			} else {
 				// Literal backtick run.
 				let n = 1;
 				while (text[i + n] === "`") n++;
-				buf += text.slice(i, i + n);
+				keep(text.slice(i, i + n), i);
 				i += n;
 			}
 			continue;
@@ -210,6 +226,7 @@ export function parseSuggestions(text: string, opts?: SuggestOptions): ParseResu
 				if (!closeAt) {
 					// Unclosed: drop the open tag, inner text flows as ordinary text.
 					i = contentStart;
+					if (buf.length === 0) bufStart = contentStart;
 					continue;
 				}
 				let content = text.slice(contentStart, closeAt.start);
@@ -225,22 +242,30 @@ export function parseSuggestions(text: string, opts?: SuggestOptions): ParseResu
 				const invalid =
 					trimmed.length > maxLength || /\n[ \t]*\n/.test(content) || accepted >= maxPerMessage;
 				if (invalid) {
-					buf += content;
+					keep(content, contentStart);
 					i = afterClose;
 					continue;
 				}
 				flush();
-				nodes.push({ type: "suggestion", text: trimmed, index: accepted });
+				// Offset of the trimmed content: skip the leading whitespace that
+				// trimStart() removed from the raw slice.
+				const lead = content.length - content.trimStart().length;
+				nodes.push({
+					type: "suggestion",
+					text: trimmed,
+					index: accepted,
+					start: contentStart + lead,
+				});
 				suggestions.push(trimmed);
 				accepted++;
 				i = afterClose;
 				continue;
 			}
-			buf += ch;
+			keep(ch, i);
 			i++;
 			continue;
 		}
-		buf += ch;
+		keep(ch, i);
 		i++;
 	}
 	flush();

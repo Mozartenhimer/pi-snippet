@@ -35,11 +35,18 @@ import { dirname, join } from "node:path";
 export interface SnippetSettings {
 	enabled: boolean;
 	hotkeysEnabled: boolean;
+	/**
+	 * The second model (`provider/id`), as chosen in `/snippets`. Undefined
+	 * means the built-in default; `PI_SNIPPET_MODEL` overrides both for a
+	 * session. Typed into the same `/snippets` prompt that sets it.
+	 */
+	inferModel?: string;
 }
 
 export const DEFAULT_SETTINGS: SnippetSettings = {
 	enabled: true,
 	hotkeysEnabled: true,
+	inferModel: undefined,
 };
 
 /**
@@ -85,10 +92,11 @@ function merge(raw: unknown): SnippetSettings {
 	const settings = { ...DEFAULT_SETTINGS };
 	if (typeof raw !== "object" || raw === null) return settings;
 	const source = raw as Record<string, unknown>;
-	for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof SnippetSettings)[]) {
+	for (const key of ["enabled", "hotkeysEnabled"] as const) {
 		const value = source[key];
 		if (typeof value === "boolean") settings[key] = value;
 	}
+	if (typeof source.inferModel === "string" && source.inferModel.trim() !== "") settings.inferModel = source.inferModel;
 	return settings;
 }
 
@@ -120,6 +128,7 @@ export function saveSettings(settings: SnippetSettings, path: string = settingsP
 		const body: SnippetSettings = {
 			enabled: settings.enabled,
 			hotkeysEnabled: settings.hotkeysEnabled,
+			...(settings.inferModel ? { inferModel: settings.inferModel } : {}),
 		};
 		writeFileSync(temp, `${JSON.stringify(body, null, "\t")}\n`, "utf8");
 		renameSync(temp, path);

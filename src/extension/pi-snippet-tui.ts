@@ -33,8 +33,16 @@
  * transformation (PRD §5.2 hard rule).
  */
 import { DigitChord } from "../shared/digit-chord.js";
-import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix } from "../shared/suggestions.js";
-import { chipLabel, toTuiMarkdown } from "../shared/tui-markdown.js";
+import { asksSomething } from "../shared/inferred.js";
+import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix, MAX_SUGGESTIONS_PER_MESSAGE } from "../shared/suggestions.js";
+import { mergeSuggestions, toTuiMarkdown } from "../shared/tui-markdown.js";
+import {
+	DEFAULT_INFER_MODEL,
+	InferenceEngine,
+	MODEL_ENV_VAR,
+	resolvePin,
+	type PiModel,
+} from "./infer.js";
 import { registerPromptSnippet } from "./common.js";
 import { loadSettings, saveSettings, settingsPath } from "./settings.js";
 import { LinkServer } from "./link-server.js";
@@ -63,14 +71,53 @@ export default function piSnippetTui(pi: any): void {
 
 	const state = {
 		enabled: stored.enabled,
+		/**
+		 * The second model, as chosen in `/snippets`. Undefined means the
+		 * built-in default; `PI_SNIPPET_MODEL` overrides both for a session.
+		 * Named `inferModel`, not `model` — that key belonged to the removed
+		 * 2026 layer, and a stale pin from it must stay dead, not hijack this
+		 * one.
+		 */
+		inferModel: stored.inferModel,
 		hotkeysEnabled: stored.hotkeysEnabled,
 		/**
 		 * Suggestions of the most recent assistant message — the one streaming,
 		 * once it has produced a complete suggestion of its own, otherwise the
-		 * last one that finished.
+		 * last one that finished. Includes the second model's chips once they
+		 * have arrived.
 		 */
 		addressable: [] as string[],
 	};
+
+	/**
+	 * The second model (shared/inferred.ts, extension/infer.ts): after an
+	 * assistant message ends, a small fixed model re-emits it with `<snippet>`
+	 * tags around the replies the primary model didn't tag. Its anchors live
+	 * here — keyed by the stripped message text, appended as they stream in —
+	 * and are merged into the chip numbering by `mergeSuggestions`, which is
+	 * the one place that decides what a message's chips are. Nothing else in
+	 * the UI knows or cares which layer painted a chip.
+	 *
+	 * Session-ephemeral by design: a restart loses the answers, and the stored
+	 * transcript (raw tags only, never rewritten) repaints with layer-1 chips
+	 * alone. Anchors are answers, not part of the message.
+	 */
+	const infer = new InferenceEngine(() => state.inferModel);
+	const inferred = new Map<string, string[]>();
+	const INFERRED_LIMIT = 64;
+	/** Anchors inferred for a message so far, by its stripped text. */
+	const inferredFor = (message?: { content?: TextBlock[] }): string[] => {
+		if (!message) return [];
+		return inferred.get(messageText(message)) ?? [];
+	};
+	/**
+	 * How many assistant messages have started this session. An inference
+	 * result outlives the turn that asked for it; a callback arriving after a
+	 * newer message began — or after `/tree` moved the branch — must not paint
+	 * or address into the wrong message.
+	 */
+	let assistantSeq = 0;
+	let latestAssistantSeq = 0;
 
 	/**
 	 * `--no-suggestions` is a session override, deliberately kept out of
@@ -139,6 +186,7 @@ export default function piSnippetTui(pi: any): void {
 		opts?: { streaming?: boolean },
 	): void => {
 		if (!message || !Array.isArray(message.content)) return;
+		const anchors = inferredFor(message);
 		const forms: string[] = [];
 		for (const block of message.content) {
 			if (block.type !== "text") continue;
@@ -149,7 +197,7 @@ export default function piSnippetTui(pi: any): void {
 		forms.push(messageText(message));
 		for (const form of forms) {
 			if (form.length === 0) continue;
-			const chips = parseSuggestions(form).suggestions;
+			const chips = mergeSuggestions(form, undefined, anchors).suggestions;
 			if (chips.length > 0) rememberLinkTargets(form, chips);
 		}
 	};
@@ -330,6 +378,11 @@ export default function piSnippetTui(pi: any): void {
 				isStreaming: ctx.isStreaming,
 				enabled: isEnabled(),
 				linkToken: linkOn() ? linkToken : undefined,
+				// The second model's anchors, keyed by the exact text the
+				// transformer was handed — the same deterministic key the click
+				// targets use. A lookup, never a build: the anchors were derived
+				// in the message lifecycle handlers (PRD §5.2).
+				inferred: isEnabled() ? inferred.get(messageKey(markdown)) : undefined,
 			});
 		},
 	);
@@ -348,15 +401,19 @@ export default function piSnippetTui(pi: any): void {
 		opts?: { streaming?: boolean },
 	): string[] => {
 		if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return [];
-		const suggestions: string[] = [];
-		for (const block of message.content) {
-			if (block.type !== "text") continue;
-			const raw = block.text ?? "";
-			const text = opts?.streaming ? visibleStreamingPrefix(raw) : raw;
-			const res = parseSuggestions(text, { acceptedSoFar: suggestions.length });
-			suggestions.push(...res.suggestions);
+		const anchors = inferredFor(message);
+		if (opts?.streaming) {
+			const suggestions: string[] = [];
+			for (const block of message.content) {
+				if (block.type !== "text") continue;
+				const raw = block.text ?? "";
+				const text = visibleStreamingPrefix(raw);
+				const res = mergeSuggestions(text, { acceptedSoFar: suggestions.length }, anchors);
+				suggestions.push(...res.suggestions);
+			}
+			return suggestions;
 		}
-		return suggestions;
+		return mergeSuggestions(messageText(message), undefined, anchors).suggestions;
 	};
 
 	/** The message text, in document order. */
@@ -445,6 +502,9 @@ export default function piSnippetTui(pi: any): void {
 		// "resume" — that reason is only for /resume inside a running process.
 		// A restart that skips hydration leaves linkTargets empty, so the chip
 		// URLs the transcript is repainted with resolve to nothing.
+		// A fresh session re-arms the second model: the failure breaker exists
+		// to stop a dead credential firing per message, not to outlive a fix.
+		infer.rearm();
 		if (
 			event.reason === "startup" ||
 			event.reason === "resume" ||
@@ -459,6 +519,11 @@ export default function piSnippetTui(pi: any): void {
 	});
 
 	pi.on("session_tree", (_event: unknown, ctx: any) => {
+		// Pending inference callbacks address the message that asked for them;
+		// once the branch moves, no live message owns the numbering, so the
+		// sequence must move past anything in flight.
+		assistantSeq++;
+		latestAssistantSeq = assistantSeq;
 		hydrateFromBranch(ctx);
 		streamCloseTags = 0;
 		chord.reset();
@@ -475,6 +540,8 @@ export default function piSnippetTui(pi: any): void {
 	pi.on("message_start", (event: { message?: { role?: string } }) => {
 		if (event.message?.role !== "assistant") return;
 		streamCloseTags = 0;
+		assistantSeq++;
+		latestAssistantSeq = assistantSeq;
 	});
 
 	/**
@@ -493,6 +560,68 @@ export default function piSnippetTui(pi: any): void {
 	 * not at `message_start`, so a long tool-calling turn doesn't strip the
 	 * chips still on screen above it.
 	 */
+	/**
+	 * Send a finished assistant message to the second model.
+	 *
+	 * The message goes as stored, layer-1 tags included: the second model sees
+	 * what is already covered and is asked to add more, not to repeat it — and
+	 * anything it echoes anyway is dropped at validation time. The gate is the
+	 * old one: a message that asks nothing pays nothing. Every failure inside
+	 * is silent.
+	 */
+	const queueInference = (message: { role?: string; content?: TextBlock[] }, ctx: any): void => {
+		if (!isEnabled()) return;
+		const raw = messageText(message);
+		if (!asksSomething(raw)) return;
+		const existing = parseSuggestions(raw).suggestions;
+		const seq = latestAssistantSeq;
+		void infer
+			.infer(
+				raw,
+				{ modelRegistry: ctx.modelRegistry, signal: ctx.signal },
+				existing,
+				(anchor) => {
+					applyInferredAnchor(seq, message, raw, anchor, ctx);
+				},
+			)
+			.catch(() => {
+				/* the engine resolves to [] on failure; a floating rejection
+				   must never crash the session either */
+			});
+	};
+
+	/**
+	 * Paint one freshly streamed-in anchor: register it under the message's
+	 * key, extend the addressable set, and force a repaint — this runs outside
+	 * pi's render pass, where nothing repaints by itself.
+	 */
+	const applyInferredAnchor = (
+		seq: number,
+		message: { role?: string; content?: TextBlock[] },
+		raw: string,
+		anchor: string,
+		ctx: any,
+	): void => {
+		if (!isEnabled()) return;
+		const known = inferred.get(raw) ?? [];
+		if (known.includes(anchor)) return;
+		if (seq !== latestAssistantSeq) return; // a newer message owns the numbering now
+		// Keep two-digit addressing meaningful: layer 1 has first claim on the
+		// numbers, and the runaway guard caps what the keyboard can reach.
+		const layer1 = parseSuggestions(messageText(message)).suggestions.length;
+		if (layer1 + known.length >= MAX_SUGGESTIONS_PER_MESSAGE) return;
+		inferred.set(raw, [...known, anchor]);
+		while (inferred.size > INFERRED_LIMIT) {
+			const oldest = inferred.keys().next();
+			if (oldest.done) break;
+			inferred.delete(oldest.value);
+		}
+		indexMessageForLinks(message);
+		setAddressable(suggestionsFromMessage(message));
+		syncClicks(ctx);
+		tui?.requestRender?.();
+	};
+
 	pi.on("message_update", (event: { message?: { role?: string; content?: TextBlock[] } }, ctx: any) => {
 		if (!event.message || event.message.role !== "assistant" || !isEnabled()) return;
 		const closeTags = countCloseTags(event.message);
@@ -511,6 +640,7 @@ export default function piSnippetTui(pi: any): void {
 		indexMessageForLinks(event.message);
 		streamCloseTags = 0;
 		syncClicks(ctx);
+		queueInference(event.message, ctx);
 	});
 
 	for (let n = 0; n <= 9; n++) {
@@ -621,10 +751,58 @@ export default function piSnippetTui(pi: any): void {
 			{
 				enabled: state.enabled,
 				hotkeysEnabled: state.hotkeysEnabled,
+				...(state.inferModel ? { inferModel: state.inferModel } : {}),
 			},
 			settingsFile,
 		);
 		return ok ? "" : " (this session only — could not write the settings file)";
+	};
+
+	/**
+	 * The model the second layer would use right now, for the menu to show:
+	 * the stored choice, else the session's environment override, else the
+	 * built-in default.
+	 */
+	const effectiveModel = (): { id: string; fromEnv: boolean } => {
+		if (process.env[MODEL_ENV_VAR]) return { id: process.env[MODEL_ENV_VAR]!, fromEnv: true };
+		return { id: state.inferModel ?? DEFAULT_INFER_MODEL, fromEnv: false };
+	};
+
+	/**
+	 * Pick the second model, by typing a `provider/id`.
+	 *
+	 * A picker was tried first and removed: the registry offers hundreds of
+	 * models, and a list that long is unusable as a menu. Typing also reaches
+	 * models that exist behind `models.json` without the list having to guess
+	 * what belongs in it. Empty input resets to the default; anything else is
+	 * validated against the registry before it is stored, because the engine
+	 * falls through to the default on an unknown pin — a typo must cost a
+	 * warning, not layer 2 quietly going silent.
+	 */
+	const pickModel = async (ctx: any): Promise<void> => {
+		const current = effectiveModel();
+		const entry = await ctx.ui.input(
+			`Second model (tags the primary model didn't add) — currently ${current.id}${current.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""}`,
+			"provider/id — leave empty to reset to the default",
+		);
+		if (entry === undefined) return; // cancelled
+		const pin = entry.trim();
+		if (pin === "") {
+			if (!state.inferModel) return; // already the default
+			state.inferModel = undefined;
+			infer.rearm(); // a dead credential on the old model says nothing about the default
+			ctx.ui.notify(`Second model reset to the default${persist()}`);
+			return;
+		}
+		const available: PiModel[] = ctx.modelRegistry?.getAvailable?.() ?? [];
+		if (available.length > 0 && !resolvePin(pin, available)) {
+			ctx.ui.notify(`No model "${pin}" in the registry — nothing changed`, "warning");
+			return;
+		}
+		if (pin === state.inferModel) return;
+		state.inferModel = pin;
+		infer.rearm();
+		ctx.ui.notify(`Second model set to ${pin}${persist()}`);
 	};
 
 	pi.registerCommand("snippets", {
@@ -640,6 +818,7 @@ export default function piSnippetTui(pi: any): void {
 				[
 					`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
 					`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
+					`Second model: ${effectiveModel().id}${effectiveModel().fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
 					...(process.platform === "linux" && !linkInstall.isInstalled()
 						? ["Register click handler — one-time desktop setup, needed before Ctrl+click works"]
 						: []),
@@ -653,6 +832,8 @@ export default function piSnippetTui(pi: any): void {
 				state.enabled = !state.enabled;
 				if (!state.enabled) state.addressable = [];
 				ctx.ui.notify(`Inline suggestions ${state.enabled ? "enabled" : "disabled"}${persist()}`);
+			} else if (choice.startsWith("Second model:")) {
+				await pickModel(ctx);
 			} else if (choice.startsWith("Register click handler")) {
 				await installClickHandler(ctx);
 			} else if (choice.startsWith("Remove click handler")) {

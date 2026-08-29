@@ -19,7 +19,13 @@
  * (the stored message keeps its raw tags and never gains markup).
  */
 import { buildChipUrl, messageKey } from "./link-url.js";
-import { parseSuggestions, type SuggestOptions, visibleStreamingPrefix } from "./suggestions.js";
+import { locateAnchors, type LocatedAnchor } from "./inferred.js";
+import {
+	parseSuggestions,
+	type SuggestNode,
+	type SuggestOptions,
+	visibleStreamingPrefix,
+} from "./suggestions.js";
 
 export interface TuiRenderOptions {
 	/** True for partial assistant updates: partial tags are buffered (C1). */
@@ -41,6 +47,12 @@ export interface TuiRenderOptions {
 	 * input always paints the same URL, on every repaint and resize.
 	 */
 	linkToken?: string;
+	/**
+	 * Anchors the second model inferred for this message (`shared/inferred.ts`),
+	 * painted as ordinary chips at their verbatim positions, numbered after the
+	 * tagged ones. Nothing distinguishes them from layer-1 chips in the output.
+	 */
+	inferred?: readonly string[];
 }
 
 const SUPERSCRIPTS = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"] as const;
@@ -58,6 +70,69 @@ export function chipLabel(oneBasedNumber: number, text: string): string {
 	return `${superscript(oneBasedNumber)}${text}`;
 }
 
+/**
+ * Parse the tagged chips and merge the inferred anchors in, in document order.
+ *
+ * This is the single source of truth for what a message's chips are and how
+ * they are numbered — the transformer paints from it and the extension's
+ * addressable set (Alt+N) and click targets are computed from the same call,
+ * which is what keeps the number on screen, the number Alt+N addresses and the
+ * number in a chip URL the same number.
+ *
+ * An anchor that lands inside a tagged chip, inside code, or on top of an
+ * earlier anchor is dropped by `locateAnchors`: the failure mode is a missing
+ * chip, never a doubled or shifted one.
+ */
+export function mergeSuggestions(
+	text: string,
+	opts?: SuggestOptions,
+	inferred?: readonly string[],
+): { nodes: SuggestNode[]; suggestions: string[] } {
+	const base = parseSuggestions(text, opts);
+	if (!inferred || inferred.length === 0) return base;
+
+	const tagged: LocatedAnchor[] = base.nodes
+		.filter((n) => n.type === "suggestion")
+		.map((n) => ({ text: n.text, start: n.start, end: n.start + n.text.length }));
+	const located = locateAnchors(text, inferred, tagged);
+	if (located.length === 0) return base;
+
+	// Re-tile the text. An anchor always sits inside a run of ordinary text
+	// (locateAnchors refused every overlap with a tagged chip), so the parse
+	// nodes are walked again and each text node is split around the anchors it
+	// contains. Indices are reassigned in document order, which for a
+	// whole-message render is exactly the parser's own numbering.
+	const acceptedSoFar = opts?.acceptedSoFar ?? 0;
+	const nodes: SuggestNode[] = [];
+	const suggestions: string[] = [];
+	let index = acceptedSoFar;
+	let nextAnchor = 0;
+	for (const node of base.nodes) {
+		if (node.type === "suggestion") {
+			nodes.push({ type: "suggestion", text: node.text, index, start: node.start });
+			suggestions.push(node.text);
+			index++;
+			continue;
+		}
+		const nodeEnd = node.start + node.text.length;
+		let cursor = node.start;
+		while (nextAnchor < located.length && located[nextAnchor]!.end <= nodeEnd) {
+			const anchor = located[nextAnchor]!;
+			nextAnchor++;
+			if (anchor.start < cursor) continue; // cannot happen, but never double-paint
+			const before = text.slice(cursor, anchor.start);
+			if (before.length > 0) nodes.push({ type: "text", text: before, start: cursor });
+			nodes.push({ type: "suggestion", text: anchor.text, index, start: anchor.start });
+			suggestions.push(anchor.text);
+			index++;
+			cursor = anchor.end;
+		}
+		const rest = text.slice(cursor, nodeEnd);
+		if (rest.length > 0) nodes.push({ type: "text", text: rest, start: cursor });
+	}
+	return { nodes, suggestions };
+}
+
 /** Escapes the characters that would otherwise terminate a markdown link's label. */
 function escapeLinkLabel(text: string): string {
 	return text.replace(/[\\[\]]/g, (c) => "\\" + c);
@@ -65,7 +140,7 @@ function escapeLinkLabel(text: string): string {
 
 export function toTuiMarkdown(rawText: string, opts: TuiRenderOptions): string {
 	const text = opts.isStreaming ? visibleStreamingPrefix(rawText, opts.parse) : rawText;
-	const { nodes } = parseSuggestions(text, opts.parse);
+	const { nodes } = mergeSuggestions(text, opts.parse, opts.inferred);
 	let out = "";
 	for (const node of nodes) {
 		if (node.type === "text" || !opts.enabled) {

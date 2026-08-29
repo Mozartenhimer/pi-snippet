@@ -18,9 +18,9 @@ describe("parseSuggestions — basics", () => {
 		const res = parseSuggestions("Want me to <snippet>rebuild the solution</snippet> first?");
 		expect(res.suggestions).toEqual(["rebuild the solution"]);
 		expect(res.nodes).toEqual([
-			{ type: "text", text: "Want me to " },
-			{ type: "suggestion", text: "rebuild the solution", index: 0 },
-			{ type: "text", text: " first?" },
+			{ type: "text", text: "Want me to ", start: 0 },
+			{ type: "suggestion", text: "rebuild the solution", index: 0, start: 20 },
+			{ type: "text", text: " first?", start: 50 },
 		]);
 	});
 
@@ -35,7 +35,7 @@ describe("parseSuggestions — basics", () => {
 		const text = "Done — the migration ran clean and all 47 rows moved over.";
 		const res = parseSuggestions(text);
 		expect(res.suggestions).toEqual([]);
-		expect(res.nodes).toEqual([{ type: "text", text }]);
+		expect(res.nodes).toEqual([{ type: "text", text, start: 0 }]);
 	});
 
 	it("ignores attributes on the open tag", () => {
@@ -84,7 +84,7 @@ describe("parseSuggestions — edge case matrix (PRD §11)", () => {
 		const long = "x".repeat(121);
 		const res = parseSuggestions(`<snippet>${long}</snippet>`);
 		expect(res.suggestions).toEqual([]);
-		expect(res.nodes).toEqual([{ type: "text", text: long }]);
+		expect(res.nodes).toEqual([{ type: "text", text: long, start: 9 }]);
 	});
 
 	it("content of exactly 120 chars: still a chip", () => {
