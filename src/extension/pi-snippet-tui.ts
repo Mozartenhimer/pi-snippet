@@ -40,6 +40,7 @@ import {
 	DEFAULT_INFER_MODEL,
 	InferenceEngine,
 	MODEL_ENV_VAR,
+	modelCompletions,
 	resolvePin,
 	type PiModel,
 } from "./infer.js";
@@ -111,6 +112,16 @@ export default function piSnippetTui(pi: any): void {
 		return inferred.get(messageText(message)) ?? [];
 	};
 	/**
+	 * The same anchors, indexed by the hash of every shape of the message the
+	 * markdown transformer might be handed. pi renders an assistant message one
+	 * text block at a time and trims each block before transforming it, so a
+	 * lookup keyed only by the joined message text — or by the raw, untrimmed
+	 * block — misses, and the second model's chips end up addressable but never
+	 * painted. Written alongside `inferred` by `applyInferredAnchor`, read by
+	 * the transformer, and as session-ephemeral as the answers themselves.
+	 */
+	const inferredByForm = new Map<string, string[]>();
+	/**
 	 * How many assistant messages have started this session. An inference
 	 * result outlives the turn that asked for it; a callback arriving after a
 	 * newer message began — or after `/tree` moved the branch — must not paint
@@ -127,6 +138,42 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	let flagDisabled = false;
 	const isEnabled = () => state.enabled && !flagDisabled;
+
+	/**
+	 * The footer's line about the second model, in the three states it can
+	 * honestly be in: not sent (the message on screen has not been handed to
+	 * it — still streaming, the gate said no, or the layer is stood down),
+	 * sent and waiting for its reply, and the report of what came back: how
+	 * many new chips it added. Painted through `ctx.ui.setStatus` so the
+	 * built-in footer carries it alongside pi's own lines — replacing the
+	 * footer wholesale would drop those.
+	 *
+	 * A number means resolved: the count of chips that actually landed, which
+	 * is a live count while the reply is still streaming in, and the final
+	 * report once it settles — zero included, so a reply that validated to
+	 * nothing (or failed) still reports rather than dangling on "waiting".
+	 */
+	type InferStatus = "off" | "idle" | "waiting" | number;
+	let inferStatus: InferStatus = "off";
+	let appliedChips = 0;
+	let lastStatusCtx: any = null;
+
+	const syncInferStatus = (ctx?: any): void => {
+		const c = ctx ?? lastStatusCtx;
+		if (!c) return;
+		lastStatusCtx = c;
+		if (c.mode !== "tui") return;
+		if (!isEnabled()) inferStatus = "off";
+		let text: string | undefined;
+		if (inferStatus === "idle") text = "snippet: not sent";
+		else if (inferStatus === "waiting") text = "snippet: sent (waiting)";
+		else if (typeof inferStatus === "number")
+			text = `snippet: ${inferStatus} new chip${inferStatus === 1 ? "" : "s"}`;
+		// Matches the rest of the footer, which pi dims wholesale (footer.js's own
+		// theme.fg("dim", ...) calls) — without this, this one line is the only
+		// undimmed text down there.
+		c.ui?.setStatus?.("pi-snippet", text === undefined ? undefined : (c.ui.theme?.fg("dim", text) ?? text));
+	};
 
 	let tui: TuiLike | null = null;
 
@@ -187,19 +234,38 @@ export default function piSnippetTui(pi: any): void {
 	): void => {
 		if (!message || !Array.isArray(message.content)) return;
 		const anchors = inferredFor(message);
-		const forms: string[] = [];
-		for (const block of message.content) {
-			if (block.type !== "text") continue;
-			const raw = block.text ?? "";
-			forms.push(raw);
-			if (opts?.streaming) forms.push(visibleStreamingPrefix(raw));
-		}
-		forms.push(messageText(message));
-		for (const form of forms) {
+		for (const form of messageForms(message, opts)) {
 			if (form.length === 0) continue;
 			const chips = mergeSuggestions(form, undefined, anchors).suggestions;
 			if (chips.length > 0) rememberLinkTargets(form, chips);
 		}
+	};
+
+	/**
+	 * Every shape of a message the transformer may be handed, since pi renders
+	 * an assistant message one text block at a time and trims each block before
+	 * transforming it. Both the raw and the trimmed shape of every block — and
+	 * of the joined message — are registered; a key derived only from the joined
+	 * text would miss every per-block render, and one derived only from raw
+	 * blocks would miss the trim.
+	 */
+	const messageForms = (
+		message: { content?: TextBlock[] } | undefined,
+		opts?: { streaming?: boolean },
+	): string[] => {
+		const forms: string[] = [];
+		if (!message || !Array.isArray(message.content)) return forms;
+		for (const block of message.content) {
+			if (block.type !== "text") continue;
+			const raw = block.text ?? "";
+			forms.push(raw, raw.trim());
+			if (opts?.streaming) {
+				forms.push(visibleStreamingPrefix(raw), visibleStreamingPrefix(raw.trim()));
+			}
+		}
+		const whole = messageText(message);
+		forms.push(whole, whole.trim());
+		return forms;
 	};
 
 	/**
@@ -381,8 +447,9 @@ export default function piSnippetTui(pi: any): void {
 				// The second model's anchors, keyed by the exact text the
 				// transformer was handed — the same deterministic key the click
 				// targets use. A lookup, never a build: the anchors were derived
-				// in the message lifecycle handlers (PRD §5.2).
-				inferred: isEnabled() ? inferred.get(messageKey(markdown)) : undefined,
+				// in the message lifecycle handlers (PRD §5.2) and indexed per
+				// form by `applyInferredAnchor`.
+				inferred: isEnabled() ? inferredByForm.get(messageKey(markdown)) : undefined,
 			});
 		},
 	);
@@ -489,6 +556,11 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	pi.on("session_start", (event: { reason?: string }, ctx: any) => {
+		// Nothing on screen has been sent anywhere yet; the first assistant
+		// message flips this to "not sent" while it streams.
+		inferStatus = "off";
+		appliedChips = 0;
+		syncInferStatus(ctx);
 		// Falls back to the random token from setup if the session has no id
 		// (a trust-limited or otherwise degraded ctx); a socket that dies with
 		// the process is the same behavior this extension always had.
@@ -537,11 +609,14 @@ export default function piSnippetTui(pi: any): void {
 		linkServer.stop();
 	});
 
-	pi.on("message_start", (event: { message?: { role?: string } }) => {
+	pi.on("message_start", (event: { message?: { role?: string } }, ctx: any) => {
 		if (event.message?.role !== "assistant") return;
 		streamCloseTags = 0;
+		appliedChips = 0;
+		inferStatus = isEnabled() ? "idle" : "off";
 		assistantSeq++;
 		latestAssistantSeq = assistantSeq;
+		syncInferStatus(ctx);
 	});
 
 	/**
@@ -575,6 +650,22 @@ export default function piSnippetTui(pi: any): void {
 		if (!asksSomething(raw)) return;
 		const existing = parseSuggestions(raw).suggestions;
 		const seq = latestAssistantSeq;
+		inferStatus = "waiting";
+		syncInferStatus(ctx);
+		const settleInferStatus = (result: string[] | null) => {
+			// A newer message owns the footer now; this reply's report would
+			// overwrite its "not sent" / "waiting" with a stale count.
+			if (seq !== latestAssistantSeq) return;
+			// null means the layer never ran — unreachable model, no auth, a
+			// failed request. Reverting to "not sent" keeps the line honest:
+			// a zero report would claim a reply arrived when none did.
+			if (result === null) {
+				inferStatus = "idle";
+			} else if (inferStatus === "waiting") {
+				inferStatus = appliedChips;
+			}
+			syncInferStatus();
+		};
 		void infer
 			.infer(
 				raw,
@@ -584,6 +675,7 @@ export default function piSnippetTui(pi: any): void {
 					applyInferredAnchor(seq, message, raw, anchor, ctx);
 				},
 			)
+			.then(settleInferStatus, settleInferStatus)
 			.catch(() => {
 				/* the engine resolves to [] on failure; a floating rejection
 				   must never crash the session either */
@@ -610,16 +702,41 @@ export default function piSnippetTui(pi: any): void {
 		// numbers, and the runaway guard caps what the keyboard can reach.
 		const layer1 = parseSuggestions(messageText(message)).suggestions.length;
 		if (layer1 + known.length >= MAX_SUGGESTIONS_PER_MESSAGE) return;
-		inferred.set(raw, [...known, anchor]);
+		const next = [...known, anchor];
+		inferred.set(raw, next);
 		while (inferred.size > INFERRED_LIMIT) {
 			const oldest = inferred.keys().next();
 			if (oldest.done) break;
 			inferred.delete(oldest.value);
 		}
+		// Index the answer under every form of the message the transformer can
+		// be handed (a trimmed block among them) — without this the chips stay
+		// addressable but never paint.
+		for (const form of messageForms(message)) {
+			if (form.length === 0) continue;
+			inferredByForm.set(messageKey(form), next);
+			while (inferredByForm.size > INFERRED_LIMIT) {
+				const oldest = inferredByForm.keys().next();
+				if (oldest.done) break;
+				inferredByForm.delete(oldest.value);
+			}
+		}
 		indexMessageForLinks(message);
 		setAddressable(suggestionsFromMessage(message));
 		syncClicks(ctx);
-		tui?.requestRender?.();
+		appliedChips++;
+		inferStatus = appliedChips;
+		syncInferStatus(ctx);
+		// The transformer runs inside pi-tui's render, and a finished message's
+		// Markdown component caches its output on (text, width) — neither of
+		// which has changed. A plain requestRender would re-run the render loop
+		// straight into those caches, and the new chip would stay invisible
+		// until something else happened to repaint; the components must be
+		// invalidated so the transformer is asked again. (A layer-1 chip never
+		// needs this: pi rebuilds the message component on every message_update
+		// while streaming.)
+		tui?.invalidate?.();
+		tui?.requestRender?.(true);
 	};
 
 	pi.on("message_update", (event: { message?: { role?: string; content?: TextBlock[] } }, ctx: any) => {
@@ -769,26 +886,18 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/**
-	 * Pick the second model, by typing a `provider/id`.
-	 *
-	 * A picker was tried first and removed: the registry offers hundreds of
-	 * models, and a list that long is unusable as a menu. Typing also reaches
-	 * models that exist behind `models.json` without the list having to guess
-	 * what belongs in it. Empty input resets to the default; anything else is
+	 * Apply a `provider/id` pin: empty resets to the default, anything else is
 	 * validated against the registry before it is stored, because the engine
 	 * falls through to the default on an unknown pin — a typo must cost a
-	 * warning, not layer 2 quietly going silent.
+	 * warning, not layer 2 quietly going silent. Shared by `/snippets model`'s
+	 * handler and the RPC/print-mode fallback in `pickModel`.
 	 */
-	const pickModel = async (ctx: any): Promise<void> => {
-		const current = effectiveModel();
-		const entry = await ctx.ui.input(
-			`Second model (tags the primary model didn't add) — currently ${current.id}${current.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""}`,
-			"provider/id — leave empty to reset to the default",
-		);
-		if (entry === undefined) return; // cancelled
-		const pin = entry.trim();
+	const applyModelPin = async (pin: string, ctx: any): Promise<void> => {
 		if (pin === "") {
-			if (!state.inferModel) return; // already the default
+			if (!state.inferModel) {
+				ctx.ui.notify(`Second model is already the default (${effectiveModel().id})`);
+				return;
+			}
 			state.inferModel = undefined;
 			infer.rearm(); // a dead credential on the old model says nothing about the default
 			ctx.ui.notify(`Second model reset to the default${persist()}`);
@@ -805,10 +914,69 @@ export default function piSnippetTui(pi: any): void {
 		ctx.ui.notify(`Second model set to ${pin}${persist()}`);
 	};
 
+	/**
+	 * Pick the second model.
+	 *
+	 * In the TUI this prefills `/snippets model <current pin>` in the composer
+	 * and hands focus back, rather than opening a blocking dialog: `ui.input()`
+	 * has no autocomplete (`ExtensionUIDialogOptions` offers a timeout and an
+	 * abort signal, nothing else), and only a slash command's own
+	 * `getArgumentCompletions` gets pi's tab-completing dropdown — the same one
+	 * `/model` uses. Elsewhere (RPC, print) there is no composer to prefill, so
+	 * this keeps the old typed prompt, which is also what scripted callers
+	 * (`docs/rpc.md`) already drive.
+	 */
+	const pickModel = async (ctx: any): Promise<void> => {
+		if (ctx.mode === "tui") {
+			ctx.ui.setEditorText(`/snippets model ${state.inferModel ?? ""}`);
+			ctx.ui.notify("Tab-completes provider/id — leave it empty and press Enter to reset to the default");
+			tui?.requestRender?.();
+			return;
+		}
+		const current = effectiveModel();
+		const entry = await ctx.ui.input(
+			`Second model (tags the primary model didn't add) — currently ${current.id}${current.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""}`,
+			"provider/id — leave empty to reset to the default",
+		);
+		if (entry === undefined) return; // cancelled
+		await applyModelPin(entry.trim(), ctx);
+	};
+
 	pi.registerCommand("snippets", {
-		description: "Toggle inline suggestions or their shortcuts; register or remove the click handler",
-		handler: async (_args: string, ctx: any) => {
+		description:
+			"Toggle inline suggestions or their shortcuts; register or remove the click handler; `model` sets the second model",
+		/**
+		 * Only the `model` subcommand tab-completes, folded in from the former
+		 * standalone `/snippet-model` — two top-level commands for one feature
+		 * was the annoyance being fixed. Per `CombinedAutocompleteProvider`
+		 * (`pi-tui`'s `autocomplete.js`), `prefix` here is everything typed after
+		 * `/snippets ` and a returned `value` replaces that whole span, which is
+		 * why completions below are prefixed back with `model `. `lastCtx` rather
+		 * than a ctx argument for the same reason `/model`'s own completions work
+		 * this way (see interactive-mode.js): `getArgumentCompletions` gets only
+		 * the typed prefix. `syncClicks` sets `lastCtx` on `session_start`, before
+		 * a user could type anything, so a registry is always there by the time
+		 * completion runs.
+		 */
+		getArgumentCompletions: (prefix: string) => {
+			const spaceIdx = prefix.indexOf(" ");
+			if (spaceIdx === -1) {
+				if (prefix !== "" && !"model".startsWith(prefix)) return null;
+				return [{ value: "model ", label: "model", description: "Set the second model" }];
+			}
+			if (prefix.slice(0, spaceIdx) !== "model") return null;
+			const available: PiModel[] = lastCtx?.modelRegistry?.getAvailable?.() ?? [];
+			if (available.length === 0) return null;
+			const items = modelCompletions(prefix.slice(spaceIdx + 1), available);
+			return items.length > 0 ? items.map((item) => ({ ...item, value: `model ${item.value}` })) : null;
+		},
+		handler: async (args: string, ctx: any) => {
 			if (!ctx.hasUI) return;
+			const trimmed = args.trim();
+			if (trimmed === "model" || trimmed.startsWith("model ")) {
+				await applyModelPin(trimmed.slice("model".length).trim(), ctx);
+				return;
+			}
 			if (flagDisabled) {
 				ctx.ui.notify("Inline suggestions are off for this session (--no-suggestions)");
 				return;
@@ -831,6 +999,7 @@ export default function piSnippetTui(pi: any): void {
 			if (choice.startsWith("Suggestions:")) {
 				state.enabled = !state.enabled;
 				if (!state.enabled) state.addressable = [];
+				syncInferStatus(ctx);
 				ctx.ui.notify(`Inline suggestions ${state.enabled ? "enabled" : "disabled"}${persist()}`);
 			} else if (choice.startsWith("Second model:")) {
 				await pickModel(ctx);

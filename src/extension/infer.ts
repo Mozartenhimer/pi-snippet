@@ -36,6 +36,7 @@
  *   consecutive failures stand the layer down for the session.
  */
 
+import { fuzzyFilter } from "@earendil-works/pi-tui";
 import {
 	buildInferPrompt,
 	extractAnchors,
@@ -65,6 +66,31 @@ export interface PiModel {
 	id: string;
 	name?: string;
 	provider?: string;
+}
+
+export interface ModelCompletionItem {
+	value: string;
+	label: string;
+	description?: string;
+}
+
+/**
+ * `provider/id` completions for `/snippets model`'s argument, ranked by pi's
+ * own fuzzy matcher (`@earendil-works/pi-tui`'s `fuzzyFilter` — word-boundary
+ * and consecutive-run bonuses, an alpha/digit swap heuristic) so typing here
+ * feels the same as typing after `/model`. Bundled at build time, not a
+ * runtime dependency on whatever pi-tui a host process happens to carry.
+ */
+export function modelCompletions(query: string, available: readonly PiModel[]): ModelCompletionItem[] {
+	const items = available.map((m) => ({
+		model: m,
+		searchText: `${m.provider ?? ""}/${m.id} ${m.name ?? ""}`,
+	}));
+	return fuzzyFilter(items, query, (item) => item.searchText).map(({ model }) => ({
+		value: `${model.provider ?? ""}/${model.id}`,
+		label: model.id,
+		description: model.provider,
+	}));
 }
 
 interface PiRegistry {
@@ -153,7 +179,7 @@ export function resolveInferenceModel(host: InferHost, explicitPin?: string): Pi
  */
 export class InferenceEngine {
 	private readonly cache = new Map<string, string[]>();
-	private readonly inFlight = new Map<string, Promise<string[]>>();
+	private readonly inFlight = new Map<string, Promise<string[] | null>>();
 	private failures = 0;
 
 	/**
@@ -199,14 +225,18 @@ export class InferenceEngine {
 	 * are dropped at validation time. `onChip` fires once per newly completed
 	 * anchor as the reply streams in — and, on the cache path, once per
 	 * anchor immediately, so a caller can treat the two paths alike. Resolves
-	 * to the full anchor list, `[]` on every failure path.
+	 * to the full anchor list — `[]` when a reply arrived and added nothing,
+	 * `null` when the layer could not run at all: gate said no, no model or
+	 * no auth, stood down, or the request itself failed. The distinction is
+	 * what lets the footer report an honest zero without claiming the layer
+	 * ran when it never sent anything.
 	 */
 	async infer(
 		messageText: string,
 		host: InferHost,
 		existing: readonly string[],
 		onChip?: (anchor: string) => void,
-	): Promise<string[]> {
+	): Promise<string[] | null> {
 		const cached = this.cache.get(messageText);
 		if (cached) {
 			for (const anchor of cached) onChip?.(anchor);
@@ -214,13 +244,13 @@ export class InferenceEngine {
 		}
 		const pending = this.inFlight.get(messageText);
 		if (pending) return pending;
-		if (this.stoodDown) return [];
+		if (this.stoodDown) return null;
 
 		const model = resolveInferenceModel(host, this.getPin());
 		const registry = host.modelRegistry;
-		if (!model || !registry) return [];
+		if (!model || !registry) return null;
 
-		const run = (async (): Promise<string[]> => {
+		const run = (async (): Promise<string[] | null> => {
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), INFER_TIMEOUT_MS);
 			host.signal?.addEventListener("abort", () => controller.abort());
@@ -251,9 +281,11 @@ export class InferenceEngine {
 				return anchors;
 			} catch {
 				// Timeout, transport failure, a provider that rejected the
-				// request: all mean "no chips", never a visible error.
+				// request: all mean "the layer did not run", never a visible
+				// error — and never a zero report, which would claim a reply
+				// arrived when none did.
 				this.failures++;
-				return [];
+				return null;
 			} finally {
 				clearTimeout(timer);
 				this.inFlight.delete(messageText);

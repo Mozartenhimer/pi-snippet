@@ -105,6 +105,13 @@ export interface LocatedAnchor {
 	text: string;
 	start: number;
 	end: number;
+	/**
+	 * The anchor's index in the array it was located from — the rank that
+	 * decides its chip number (`shared/tui-markdown.ts` numbers layer-2 chips
+	 * by arrival order, never by document position, so a late-arriving anchor
+	 * cannot renumber one already on screen).
+	 */
+	order: number;
 }
 
 /**
@@ -121,12 +128,12 @@ export interface LocatedAnchor {
 export function locateAnchors(
 	text: string,
 	anchors: readonly string[],
-	existing: ReadonlyArray<LocatedAnchor> = [],
+	existing: ReadonlyArray<{ text: string; start: number; end: number }> = [],
 ): LocatedAnchor[] {
 	const regions = codeRegions(text);
 	const taken: Array<{ start: number; end: number }> = [...existing];
 	const found: LocatedAnchor[] = [];
-	for (const anchor of anchors) {
+	for (const [order, anchor] of anchors.entries()) {
 		if (anchor.length === 0) continue;
 		let placed = false;
 		for (
@@ -137,7 +144,7 @@ export function locateAnchors(
 			const end = start + anchor.length;
 			if (regions.some((r) => start < r.end && end > r.start)) continue;
 			if (taken.some((t) => start < t.end && end > t.start)) continue;
-			found.push({ text: anchor, start, end });
+			found.push({ text: anchor, start, end, order });
 			taken.push({ start, end });
 			placed = true;
 			break;

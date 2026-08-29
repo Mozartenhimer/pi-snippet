@@ -3,6 +3,7 @@ import {
 	InferenceEngine,
 	MODEL_ENV_VAR,
 	DEFAULT_INFER_MODEL,
+	modelCompletions,
 	resolveInferenceModel,
 	resolvePin,
 	type PiModel,
@@ -222,14 +223,14 @@ describe("InferenceEngine", () => {
 			},
 		});
 		for (let i = 0; i < 3; i++) {
-			expect(await engine.infer(`question ${i}?`, h, [])).toEqual([]);
+			expect(await engine.infer(`question ${i}?`, h, [])).toBeNull();
 		}
 		expect(calls).toBe(3);
 		expect(engine.stoodDown).toBe(true);
-		expect(await engine.infer("question more?", h, [])).toEqual([]);
+		expect(await engine.infer("question more?", h, [])).toBeNull();
 		expect(calls).toBe(3); // stood down: nothing fired
 		engine.rearm();
-		expect(await engine.infer("question more?", h, [])).toEqual([]);
+		expect(await engine.infer("question more?", h, [])).toBeNull();
 		expect(calls).toBe(4);
 	});
 
@@ -238,7 +239,33 @@ describe("InferenceEngine", () => {
 		const h = host({
 			complete: async () => ({ content: [], stopReason: "error" }),
 		});
-		expect(await engine.infer("still asking?", h, [])).toEqual([]);
+		expect(await engine.infer("still asking?", h, [])).toBeNull();
 		expect(engine.stoodDown).toBe(false); // one strike of three
+	});
+});
+
+describe("modelCompletions", () => {
+	const available: PiModel[] = [
+		{ id: "mock-small", provider: "mockllm" },
+		{ id: "claude-sonnet-5", provider: "anthropic" },
+		{ id: "gpt-4o", provider: "openai", name: "GPT-4o" },
+	];
+
+	it("ranks a tighter id match first, `provider/id` as the value to insert", () => {
+		const items = modelCompletions("sonnet", available);
+		expect(items[0]).toEqual({ value: "anthropic/claude-sonnet-5", label: "claude-sonnet-5", description: "anthropic" });
+	});
+
+	it("matches a model's display name too", () => {
+		const items = modelCompletions("4o", available);
+		expect(items.map((i) => i.value)).toContain("openai/gpt-4o");
+	});
+
+	it("an empty query returns every model, unfiltered", () => {
+		expect(modelCompletions("", available)).toHaveLength(3);
+	});
+
+	it("no match is an empty list, not a thrown error", () => {
+		expect(modelCompletions("zzzzzz-nonexistent", available)).toEqual([]);
 	});
 });

@@ -27,11 +27,14 @@ python3 scripts/osc8-probe.py ghostty  # what pi-tui paints for a chip URL: OSC 
 python3 scripts/link-register.py --probe  # pisnip:// scheme registration, fired through portal/gio/xdg-open
 python3 scripts/link-click-live.py     # terminal-resolved click: real pi, chip URL, socket, insertion
 PI_SNIPPET_SETTINGS=/tmp/s.json python3 scripts/osc8-probe.py unknown  # the no-hyperlink path, from defaults
+python3 scripts/snippet-model-rpc-smoke.py  # real pi over RPC: /snippets model applies, validates, persists
+python3 scripts/snippet-model-tmux.py  # real pi, real terminal: /snippets model's tab-completing dropdown, Tab, /snippets menu redirect
+python3 scripts/snippet-infer-tmux.py  # real pi, real terminal: primary streams, second model's chips light up, superscripts stay put, footer tracks not sent / waiting / new-chip count
 ```
 
 The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a grid, answering cursor-position queries), and assert what lands in the editor. They are the only way to test terminal interaction end to end — `script` starts pi at screen row 0, which masks a whole class of bugs.
 
-(The mouse-reporting harnesses — `click-offset-repro.py`, `infer-click-tmux.py`, the width-table checks — went with mouse mode; git history has them. The mock-LLM fixture `test/fixtures/mock-llm.js` went with the inference layer. If something model-shaped comes back, git shows how the fixture registered a provider via `ProviderConfig.streamSimple`.)
+(The mouse-reporting harnesses — `click-offset-repro.py`, `infer-click-tmux.py`, the width-table checks — went with mouse mode; git history has them. The mock-LLM fixture `test/fixtures/mock-llm.js`, which scripted both a primary and a small model's replies via `ProviderConfig.streamSimple`, went with the inference layer too; git shows how it registered. `test/fixtures/mock-llm.js` has since been restored in the tag-re-emit shape — one mock provider playing both the primary and the second model, told apart by a marker in the system prompt, both roles streamed in chunks so partial frames are observable — and `test/fixtures/mock-models.js` is the narrower catalogue-only fixture for `/snippets model`'s harnesses, which need something for `getAvailable()` to return but never a reply.)
 
 **pi-tui prints a link's URL in parentheses when the terminal has no OSC 8.** Under tmux a chip would render `¹rebuild the solution (pisnip://…)`; the extension avoids it by painting no URL at all there (`osc8.ts` mirrors pi-tui's own detection). Don't "fix" it by painting URLs more generously.
 
@@ -116,6 +119,7 @@ A single pi TUI extension (`src/extension/pi-snippet-tui.ts`) over a shared, ter
 These were established by measurement (against `libghostty-vt` and live ptys) and are expensive to rediscover:
 
 - **`setEditorText` from a consumed input listener does not repaint.** Call `tui.requestRender()` or the inserted text stays invisible until the next keypress — this applies to socket callbacks too, which are even further outside pi's render pass.
+- **A finished message's Markdown component caches its render on (text, width), and the transformer runs inside that render.** Changing what a message *paints* — a second-model chip arriving for a message that finished streaming long ago — without changing its text is therefore invisible to `requestRender()` alone: the render loop walks straight back into the caches. Invalidate the components first (`tui.invalidate()`, then `requestRender(true)`). pi rebuilds the message component on every `message_update` while streaming, which is why layer-1 chips never needed this.
 - **Ghostty sends no bytes at all for a standalone Alt press or release** at the Kitty flags pi requests (7); modifier events need flag 8. So "commit on modifier release" is unavailable in the terminal, and the two-digit chord settles on a timeout instead. The browser gets a real `keyup`.
 - **Superscript digits are not one contiguous range.** `¹²³` are Latin-1 (U+00B9/B2/B3), the rest are U+2070–2079, so `[⁰-⁹]` is a broken character class. Chip labels use these, so regexes over rendered text must enumerate all ten.
 - **Desktop daemons cache the scheme-handler database.** After removing the handler, files alone do not settle it — query `xdg-mime query default x-scheme-handler/pisnip` and point at `systemctl --user restart xdg-desktop-portal` when the answer is stale. `link-install.ts` `uninstall()` cleans both mimeapps.list locations and the mimeinfo cache for the same reason.

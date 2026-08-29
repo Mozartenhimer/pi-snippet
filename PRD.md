@@ -671,6 +671,26 @@ click-to-insert — merged into the same numbering as the tagged ones. Nothing i
 the UI distinguishes which layer painted a chip, and the stored transcript is
 never rewritten; the anchors live in extension state and die with the session.
 
+**Numbering is by layer, then by arrival — never by document position.**
+Layer-1 chips number first, in document order (which is also the order their
+tags closed while streaming); layer-2 anchors number after all of them, in the
+order the second model emitted them. The anchors arrive one at a time after
+the message is on screen, so an anchor landing *before* an existing chip in
+the text must not push that chip's superscript off the number the user already
+saw. The painted order can therefore differ from the numbered order — ³ may
+sit left of ² — and that is the trade working as intended.
+
+**Render wiring (two ways this layer has actually broken).** The transformer
+is handed one trimmed text block at a time and looks its anchors up by the
+hash of exactly what it was handed, so the anchors are indexed under every
+form of the message — each block raw and trimmed, and the joined text — not
+just under the joined text. And because the transformer runs inside pi-tui's
+render, a finished message's Markdown component caches its output on (text,
+width): when an anchor lands, the components must be invalidated before
+`requestRender`, or the render loop walks straight back into the caches and
+the new chip stays invisible. (Layer 1 never needs the invalidate — pi
+rebuilds the message component on every `message_update` while streaming.)
+
 **The rules it keeps from the removed layer** (still the right rules):
 
 - **Verbatim or nothing.** A tag whose content is not verbatim in the
@@ -684,11 +704,25 @@ never rewritten; the anchors live in extension state and die with the session.
   no extra chips, exactly as if the layer were off.
 
 **What changed from the removed layer:** the model defaults to a fixed choice
-but is a preference now — `inferModel` in the settings file, typed into a
-`/snippets` prompt as a `provider/id` and validated against the registry at
-entry time (a picker was tried and removed — the catalogue is hundreds of
-models long, unusable as a menu), with `PI_SNIPPET_MODEL` as a session-level
-override above it (the key is named
+but is a preference now — `inferModel` in the settings file, typed as a
+`provider/id` and validated against the registry at entry time (a picker was
+tried and removed — the catalogue is hundreds of models long, unusable as a
+menu). Entry is `/snippets model`, a subcommand whose
+`getArgumentCompletions` tab-completes against the registry with pi's own
+fuzzy matcher (`@earendil-works/pi-tui`'s `fuzzyFilter`, bundled at build
+time, not a runtime dependency — the same one `/model` itself uses), because
+`ui.input()` — the blocking dialog `/snippets` → "Second model" used to open
+directly — has no autocomplete in `ExtensionUIContext` at all; only a slash
+command's own argument completions get pi's dropdown. (It was a standalone
+`/snippet-model` command at first; folded into `/snippets` as a subcommand
+because two top-level commands for one feature was the annoyance — pi passes
+a slash command's `getArgumentCompletions` everything typed after the command
+name, so `model` is just the first word of that string, matched and stripped
+by hand.) In the TUI, that menu entry now prefills `/snippets model <current
+pin>` in the composer and hands focus back rather than opening the dialog;
+outside the TUI (RPC, print, where there is no composer to prefill) it still
+opens the old typed prompt. With
+`PI_SNIPPET_MODEL` as a session-level override above it (the key is named
 `inferModel`, not `model`, so a stale pin from the removed layer stays dead);
 there is no per-message cap on its tags (more options are better than fewer;
 only the runaway guard of 99 total per message applies); its chips are
@@ -700,6 +734,16 @@ painted so it adds to them rather than restarting from a blind position.
 a status update pays nothing. The call goes out at `message_end`, streams via
 the provider's `streamSimple`, and each anchor becomes a chip as its closing
 tag arrives — chips light up while the second model is still writing.
+
+**The footer line.** The built-in footer carries one extension status
+(`ctx.ui.setStatus("pi-snippet", …)`) saying where the layer stands for the
+message on screen: `snippet: not sent` while the primary streams or the gate
+said no, `snippet: sent (waiting)` while the reply streams, and then the
+report — `snippet: 2 new chips` — counted live as the anchors land, zero
+included when a reply genuinely arrived and added nothing. When the layer
+could not run at all — no auth for the pinned model, a failed request — the
+line reverts to `not sent` rather than reporting zero, which would claim a
+reply arrived when none did; a failure is still never surfaced beyond that.
 
 **Testing.** Fixed strings only: the engine and the contract are tested
 against canned replies through a fake registry (`test/inferred.test.ts`,

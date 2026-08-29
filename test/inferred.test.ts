@@ -104,9 +104,12 @@ describe("extractAnchors", () => {
 describe("locateAnchors", () => {
 	it("finds each anchor at its verbatim position, in document order", () => {
 		const found = locateAnchors("Do you want to rebuild or commit?", ["commit", "rebuild"]);
+		// `order` records each anchor's rank in the array it was located from —
+		// commit was asked for first, so it keeps the earlier number even though
+		// it sits later in the text.
 		expect(found).toEqual([
-			{ text: "rebuild", start: 15, end: 22 },
-			{ text: "commit", start: 26, end: 32 },
+			{ text: "rebuild", start: 15, end: 22, order: 1 },
+			{ text: "commit", start: 26, end: 32, order: 0 },
 		]);
 	});
 
@@ -118,7 +121,7 @@ describe("locateAnchors", () => {
 	it("never lands inside a code fence", () => {
 		const text = "```\nrebuild\n```\nWant me to rebuild?";
 		expect(locateAnchors(text, ["rebuild"])).toEqual([
-			{ text: "rebuild", start: text.indexOf("rebuild?"), end: text.indexOf("rebuild?") + 7 },
+			{ text: "rebuild", start: text.indexOf("rebuild?"), end: text.indexOf("rebuild?") + 7, order: 0 },
 		]);
 	});
 });
@@ -130,6 +133,37 @@ describe("mergeSuggestions — layer 1 and layer 2 paint as one stream", () => {
 		expect(merged.suggestions).toEqual(["tagged", "go ahead"]);
 		const kinds = merged.nodes.map((n) => n.type);
 		expect(kinds).toEqual(["text", "suggestion", "text", "suggestion", "text"]);
+	});
+
+	it("keeps a tagged chip's number when an anchor lands before it in the text", () => {
+		const text = "Want me to fix it now, or <snippet>wait for CI</snippet>?";
+		const merged = mergeSuggestions(text, undefined, ["fix it now"]);
+		// The anchor sits earlier in the document but numbers after: the tagged
+		// chip streamed in as ¹ and must not become ² under the user's fingers.
+		expect(merged.suggestions).toEqual(["wait for CI", "fix it now"]);
+		const indexOf = (label: string) => {
+			const node = merged.nodes.find((n) => n.type === "suggestion" && n.text === label);
+			return node && node.type === "suggestion" ? node.index : -1;
+		};
+		expect(indexOf("wait for CI")).toBe(0);
+		expect(indexOf("fix it now")).toBe(1);
+		const out = toTuiMarkdown(text, { isStreaming: false, enabled: true, inferred: ["fix it now"] });
+		expect(out).toBe(
+			"Want me to [²fix it now](chip:2), or [¹wait for CI](chip:1)?",
+		);
+	});
+
+	it("never shifts an earlier anchor when a later one lands before it", () => {
+		const text = "Try a or b, then <snippet>c</snippet>?";
+		// Arrival order, not document order: "b" was inferred first.
+		const merged = mergeSuggestions(text, undefined, ["b", "a"]);
+		expect(merged.suggestions).toEqual(["c", "b", "a"]);
+		const indexOf = (label: string) => {
+			const node = merged.nodes.find((n) => n.type === "suggestion" && n.text === label);
+			return node && node.type === "suggestion" ? node.index : -1;
+		};
+		expect(indexOf("b")).toBe(1);
+		expect(indexOf("a")).toBe(2);
 	});
 
 	it("paints an inferred chip exactly like a tagged one", () => {

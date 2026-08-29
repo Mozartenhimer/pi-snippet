@@ -71,13 +71,23 @@ export function chipLabel(oneBasedNumber: number, text: string): string {
 }
 
 /**
- * Parse the tagged chips and merge the inferred anchors in, in document order.
+ * Parse the tagged chips and merge the inferred anchors in.
  *
  * This is the single source of truth for what a message's chips are and how
  * they are numbered — the transformer paints from it and the extension's
  * addressable set (Alt+N) and click targets are computed from the same call,
  * which is what keeps the number on screen, the number Alt+N addresses and the
  * number in a chip URL the same number.
+ *
+ * Numbering is by layer, then by arrival — never by document position. Layer-1
+ * chips number first, in document order, which is also the order their tags
+ * closed while streaming. Layer-2 anchors number after all of them, in the
+ * order they were inferred, because they arrive one at a time after the
+ * message is on screen: an anchor that lands *before* an existing chip in the
+ * text must not push that chip's superscript off the number the user already
+ * saw (and may already be reaching for). The painted order can therefore
+ * differ from the numbered order — ³ may sit left of ² — and that is the
+ * trade working as intended.
  *
  * An anchor that lands inside a tagged chip, inside code, or on top of an
  * earlier anchor is dropped by `locateAnchors`: the failure mode is a missing
@@ -91,7 +101,7 @@ export function mergeSuggestions(
 	const base = parseSuggestions(text, opts);
 	if (!inferred || inferred.length === 0) return base;
 
-	const tagged: LocatedAnchor[] = base.nodes
+	const tagged = base.nodes
 		.filter((n) => n.type === "suggestion")
 		.map((n) => ({ text: n.text, start: n.start, end: n.start + n.text.length }));
 	const located = locateAnchors(text, inferred, tagged);
@@ -103,15 +113,24 @@ export function mergeSuggestions(
 	// contains. Indices are reassigned in document order, which for a
 	// whole-message render is exactly the parser's own numbering.
 	const acceptedSoFar = opts?.acceptedSoFar ?? 0;
+	// Layer 1 has first claim on the numbers: every tagged chip in this text,
+	// however many anchors end up interleaved among them. The parser has
+	// already baked `acceptedSoFar` into each node's index.
+	const layer1Count = base.nodes.reduce((n, node) => (node.type === "suggestion" ? n + 1 : n), 0);
 	const nodes: SuggestNode[] = [];
 	const suggestions: string[] = [];
-	let index = acceptedSoFar;
+	// Anchors tile into the text between the layer-1 chips but number after
+	// all of them, so their suggestion texts are collected here — keyed by
+	// arrival rank, since the walk meets them in document order — and appended
+	// in arrival order once the walk is done, keeping `suggestions` in
+	// numbering order, which is the contract its consumers (the addressable
+	// set, the click targets) rely on.
+	const anchorSuggestions = new Map<number, string>();
 	let nextAnchor = 0;
 	for (const node of base.nodes) {
 		if (node.type === "suggestion") {
-			nodes.push({ type: "suggestion", text: node.text, index, start: node.start });
+			nodes.push({ type: "suggestion", text: node.text, index: node.index, start: node.start });
 			suggestions.push(node.text);
-			index++;
 			continue;
 		}
 		const nodeEnd = node.start + node.text.length;
@@ -122,14 +141,15 @@ export function mergeSuggestions(
 			if (anchor.start < cursor) continue; // cannot happen, but never double-paint
 			const before = text.slice(cursor, anchor.start);
 			if (before.length > 0) nodes.push({ type: "text", text: before, start: cursor });
-			nodes.push({ type: "suggestion", text: anchor.text, index, start: anchor.start });
-			suggestions.push(anchor.text);
-			index++;
+			const anchorIndex = acceptedSoFar + layer1Count + (anchor.order ?? 0);
+			nodes.push({ type: "suggestion", text: anchor.text, index: anchorIndex, start: anchor.start });
+			anchorSuggestions.set(anchor.order ?? 0, anchor.text);
 			cursor = anchor.end;
 		}
 		const rest = text.slice(cursor, nodeEnd);
 		if (rest.length > 0) nodes.push({ type: "text", text: rest, start: cursor });
 	}
+	suggestions.push(...[...anchorSuggestions.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t));
 	return { nodes, suggestions };
 }
 

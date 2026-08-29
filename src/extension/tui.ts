@@ -13,4 +13,12 @@
 export interface TuiLike {
 	addInputListener(listener: (data: string) => { consume?: boolean } | undefined): () => void;
 	requestRender?(force?: boolean): void;
+	/**
+	 * Drops every component's rendered-output cache, so the next render
+	 * re-transforms messages whose *inputs* did not change but whose painted
+	 * form has — a second-model chip arriving for a message that finished
+	 * streaming long ago. Without it, requestRender alone walks the render
+	 * loop straight back into pi-tui's per-component caches.
+	 */
+	invalidate?(): void;
 }
