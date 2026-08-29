@@ -38,13 +38,13 @@ function send(path: string, line: string): Promise<void> {
 }
 
 function serverFor(options: {
-	resolve?: (msg: string, kind: "c" | "a", index: number) => string | undefined;
+	resolve?: (msg: string, index: number) => string | undefined;
 	inserted: string[];
 }): LinkServer {
 	return new LinkServer({
 		token: () => "a1b2c3d4",
 		env: { PI_SNIPPET_SOCKET_DIR: dir },
-		resolve: options.resolve ?? ((msg, kind, index) => (msg === "0f3e2a91" && kind === "c" ? `chip ${index}` : undefined)),
+		resolve: options.resolve ?? ((msg, index) => (msg === "0f3e2a91" ? `chip ${index}` : undefined)),
 		onActivate: (text) => options.inserted.push(text),
 	});
 }

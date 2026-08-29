@@ -17,7 +17,7 @@ What the model writes:
 Want me to <snippet>rebuild the solution</snippet> or <snippet>run the tests</snippet>?
 ```
 
-What you see in the terminal — link-styled text led by a small superscript number. The transformer's actual output is a markdown link (`[¹rebuild the solution](chip:1)`) whose URL is inert and never navigated. Whether the URL is *visible* is the terminal's call, not ours: pi-tui emits an OSC 8 hyperlink when the terminal supports one (Ghostty does) and the URL stays hidden, but where OSC 8 is unavailable — under tmux or screen, unless the client advertises `hyperlinks` — pi-tui falls back to printing `(chip:1)` after the label. That fallback is cosmetic and hits tagged chips and inferred anchors alike; clicking is unaffected, since hit-testing matches the label text.
+What you see in the terminal — link-styled text led by a small superscript number. The transformer's actual output is a markdown link (`[¹rebuild the solution](#1)`-shaped) whose URL is either the inert `chip:1` placeholder or — once clicking is registered — a real `pisnip://…` URL the terminal resolves on Ctrl+click. Whether a URL is *visible* is the terminal's call, not ours: pi-tui emits an OSC 8 hyperlink when the terminal supports one (Ghostty does) and the URL stays hidden, but where OSC 8 is unavailable — under tmux or screen, unless the client advertises `hyperlinks` — pi-tui falls back to printing the URL after the label. The extension paints no URL on such a terminal, so the fallback never appears; the chip is simply not clickable there.
 
 GitHub's sanitizer strips the `href` from that `chip:` scheme entirely, so the examples below use plain `#N` anchors instead, purely so this page renders them link-styled the way the terminal does:
 
@@ -54,42 +54,10 @@ Install it permanently with `pi install /path/to/pi-snippet/dist/extension/pi-sn
 
 Suggestions render through pi's markdown transformer hook, which is **display-only**: stored messages keep their raw `<snippet>` tags, so a session stays readable by anything else that consumes the transcript.
 
-- **Click a chip** to insert it. Mouse reporting is a terminal-wide mode, so it is engaged only while the latest message actually has suggestions; during that window the scroll wheel belongs to pi and text selection needs Shift held.
+- **Ctrl+click a chip** to insert it. The click is resolved by the terminal itself — the chip's href is a real `pisnip://` URL, and the desktop dispatches it back to the pi session that painted it. No terminal-wide mouse mode is ever engaged: the scroll wheel and text selection are never taken away. One-time setup: `/snippets` → *Register click handler* (Linux; needs a terminal that paints OSC 8 hyperlinks — Ghostty, kitty, WezTerm, …).
 - **`Alt+N`** inserts the Nth suggestion of the most recent message — only that message is addressable, so a number never means two things. Ten digit keys address ten suggestions; **beyond ten**, hold Alt and type two digits (Alt held across `1` then `2` inserts the twelfth). A single digit commits immediately unless a longer number is still reachable, so the brief wait only exists on a message with ten or more suggestions. `Alt+0` still means the tenth. The cap is 99 — see below.
 - **Trigger it while the model is still writing.** A chip goes live the moment its closing tag arrives, which is the moment it is painted: answer the question as it is asked, without waiting out the rest of the reply or the tool calls that follow it. A half-received suggestion is neither painted nor addressable, so `Alt+N` can never insert a partial sentence, and numbering never shifts as more suggestions stream in.
-- **`/snippets`** toggles four things independently: the feature, the `Alt` shortcuts, click-to-insert, and inference (below) — and lets you pick the model inference uses. Every choice is remembered: they are written to `~/.pi/agent/pi-snippet.json`, beside pi's own `settings.json` (`PI_CODING_AGENT_DIR` moves it, `PI_SNIPPET_SETTINGS` overrides the filename outright), and read back at startup, so click-to-insert and your chosen inference model do not have to be set again every session. `--no-suggestions` disables everything for one session, and `--snippet-click` turns clicking on for one session, neither touching what is stored.
-
-## Questions the model didn't tag
-
-Everything above depends on the model wrapping its own suggestions as it writes. It often doesn't, and a provider bridge that rebuilds the system prompt may never have shown it the contract at all.
-
-So there is a second layer. When a message ends, asks something, and carries no tags, a small fast model reads it and works out what you'd say back:
-
-```
-I'm done the model, do you want to see it?
-                   ~~~~~~~~~~~~~~~~~~~~~~~
-```
-
-The question is underlined — link-styled, no number. Click it and `Show me the model.` lands in the composer. As always, inserting doesn't send.
-
-The two layers are meant to look different:
-
-| | Tagged (`<snippet>`) | Inferred |
-|---|---|---|
-| Written by | the model, mid-sentence, as it types | a small model, once the message is done |
-| Looks like | superscript number, link-styled | link-styled, no number |
-| Reachable by | click **and** `Alt+N` | click only |
-| Costs | nothing extra | one small-model call per untagged question |
-
-There is no number because nothing addresses these by number — a digit that sometimes meant a tagged chip and sometimes an inferred one would make `Alt+N` ambiguous, and the numbering is worth more than the second affordance.
-
-**What it will not do.** It never runs on a message that already has tags, never on a message that asks nothing, and never while click-to-insert is off (nothing could reach the result, so nothing is spent). It never uses a provider other than the one your session is already talking to. An anchor that isn't literally in the message is dropped rather than repaired, so a small model that paraphrases costs you a chip, never gives you a wrong one. Every failure — no auth, a timeout, prose instead of JSON — shows up as a message with no underlines, and after three consecutive failures the layer stands down for the session.
-
-**Choosing the model.** Most specific wins: the picker in `/snippets` (remembered across sessions, like the toggles), then `--snippet-model <provider/id>`, then `PI_SNIPPET_MODEL`, then auto-selection. Auto-selection takes a small model from your session's own provider, preferring families known to hold up at copying a span verbatim and returning bare JSON before falling back to price — the cheapest small model in a big catalogue is often a 3B that paraphrases, and a paraphrased anchor is a dropped chip. `/snippets` always names what it picked, and reports what the layer has spent.
-
-```bash
-pi -e dist/extension/pi-snippet-tui.js --snippet-model anthropic/claude-haiku-4-5
-```
+- **`/snippets`** toggles the feature and the `Alt` shortcuts independently, and registers or removes the click handler. The toggles are remembered: they are written to `~/.pi/agent/pi-snippet.json`, beside pi's own `settings.json` (`PI_CODING_AGENT_DIR` moves it, `PI_SNIPPET_SETTINGS` overrides the filename outright), and read back at startup. `--no-suggestions` disables everything for one session without touching what is stored. Clicking itself has no toggle — it is always on, and the only thing that can make it inert is a terminal that cannot paint hyperlinks.
 
 ## How it works
 
@@ -100,9 +68,11 @@ pi -e dist/extension/pi-snippet-tui.js --snippet-model anthropic/claude-haiku-4-
 | Digit addressing | `src/shared/digit-chord.ts` | Pure rules for turning typed digits into a suggestion number. |
 | TUI markdown | `src/shared/tui-markdown.ts` | Suggestion nodes → `[¹text](chip:N)`, which pi paints as link-colored text; the `chip:N` URL is inert and never navigated. |
 | Extension | `src/extension/pi-snippet-tui.ts`, `common.ts` | Injects the prompt snippet, installs the markdown transformer, and wires up the `Alt+N` shortcuts and click handling. Injection goes through both the chained `systemPrompt` return (direct providers) and `systemPromptOptions.appendSystemPrompt` (bridges like pi-claude-bridge, which rebuild their own prompt and ignore the former). |
-| Terminal clicking | `src/extension/tui-mouse.ts` | SGR mouse reporting plus hit-testing against the rendered text. Screen rows are mapped to buffer lines using a cursor-position report, because pi never clears the screen and its first line is wherever your shell prompt was. |
-| Settings | `src/extension/settings.ts` | The three `/snippets` toggles in `~/.pi/agent/pi-snippet.json`, outside the session store: preferences about the tool, not state of one conversation. pi gives extensions no settings API — only session-scoped `appendEntry()` — so this follows the convention of pi's own `preset.ts` example and keeps a JSON file beside pi's. A missing or malformed file falls back to defaults, and a failed write is reported rather than silently promised. |
-| Glyph widths | `src/extension/char-width.ts` | Generated, not hand-written — see below. |
+| Chip URLs | `src/shared/link-url.ts` | The `pisnip://<token>/<msg>/cN` URL a clickable chip carries: an index and a message key, never text. |
+| OSC 8 detection | `src/extension/osc8.ts` | Mirrors pi-tui's own capability table, so no URL is painted where the terminal would print it in parentheses. |
+| Click registration | `src/extension/link-install.ts` | Writes the `pisnip://` scheme handler (a `.desktop` entry plus a forwarder script) into the user's XDG dirs, proves it with a probe URL, and unregisters it cleanly — both `mimeapps.list` locations and the mimeinfo cache. |
+| Click socket | `src/extension/link-server.ts` | The per-session unix socket the handler forwards clicks to, keyed by the session id so a resumed session rebinds the same path. |
+| Settings | `src/extension/settings.ts` | The two `/snippets` toggles in `~/.pi/agent/pi-snippet.json`, outside the session store: preferences about the tool, not state of one conversation. pi gives extensions no settings API — only session-scoped `appendEntry()` — so this follows the convention of pi's own `preset.ts` example and keeps a JSON file beside pi's. A missing or malformed file falls back to defaults, and a failed write is reported rather than silently promised. |
 
 The parser is pure and the transformer is stateless: the set of addressable suggestions is derived in the message lifecycle handlers — `message_update` as the model writes, `message_end` when it stops — and kept outside the render path. Rendering runs on every stream tick and resize, so anything stateful built there would drift from what you see. The streaming path parses only on the ticks that actually carry a closing tag, and parses the same prefix the transformer paints, so what is addressable is exactly what is on screen.
 
@@ -112,22 +82,22 @@ The parser is pure and the transformer is stateless: the set of addressable sugg
 
 ## Ground truth from a real terminal
 
-Two things here cannot be honestly guessed: the bytes a terminal sends for a key gesture, and how many cells a glyph occupies. Both come from Ghostty's own library (`libghostty-vt`, shipped with the Ghostty snap) rather than from a hand-written table.
+One thing here cannot be honestly guessed: the bytes a terminal sends for a key gesture. It comes from Ghostty's own library (`libghostty-vt`, shipped with the Ghostty snap) rather than from a hand-written table.
 
 ```bash
-bash scripts/ghostty-env.sh            # locate libghostty-vt, build the helpers
-npm run check:widths                   # our width table vs Ghostty's, codepoint by codepoint
-npm run gen:widths                     # regenerate src/extension/char-width.ts from it
+bash scripts/ghostty-env.sh            # locate libghostty-vt, build the key-encoding helper
 python3 scripts/chord-live.py          # Alt+digit gestures, keystrokes encoded by Ghostty
-python3 scripts/click-offset-repro.py  # clicking, with pi launched mid-screen
+python3 scripts/osc8-probe.py ghostty  # what pi-tui paints for a chip URL: OSC 8, or the paren fallback
+python3 scripts/link-register.py --probe  # scheme registration: a URL round-trips to a socket
+python3 scripts/link-click-live.py     # link-mode click end to end: real pi, chip URL, insertion
 ```
 
 Two findings worth keeping in mind:
 
-- **A hand-written width table was wrong on 1171 codepoints**, including double-width emoji outside `U+1F300..1F9FF` (⌚, ⏩, ⚡) and non-Latin combining marks. Each one would shift every later chip on its line by a column and make clicks miss, so `char-width.ts` is generated from `ghostty::CodepointWidth` and checked.
+- **The width table is gone with mouse mode.** It existed so click hit-testing could agree with the terminal about how many cells a glyph occupies; with terminal-resolved clicks the terminal does the hit-testing, and nothing here needs a width table anymore.
 - **"Commit on Alt release" is not available in the terminal.** At the Kitty keyboard flags pi requests (7), Ghostty encodes a standalone Alt press or release as no bytes at all; modifier events need flag 8. The extension therefore settles a two-digit chord on a short timeout, and the release watcher stays dormant.
 
-The two Python harnesses drive a real `pi` under a pty with a small terminal emulator (tracking a grid, answering cursor-position queries) and assert what lands in the editor. They need `pi` with a working provider; the Ghostty helpers are optional, and `chord-live.py` falls back to legacy key encodings without them.
+Support per terminal — gnome-terminal in particular — is in `docs/linux-terminals.md`; the measurements behind the click path are in `docs/terminal-resolved-clicks.md`.
 
 ## Tests
 
@@ -137,15 +107,7 @@ npm run check     # tsc --noEmit
 npm run test:e2e  # live, against a real model through pi RPC
 ```
 
-The unit suite covers the parser edge-case matrix, the TUI transformer, digit addressing, and terminal hit-testing against a stand-in TUI. For the inference layer it covers what is believed of a small model's answer, model selection and pinning, the stand-down breaker, and the layering itself.
-
-`test/fixtures/mock-llm.js` is a **mock LLM registered as a real pi provider** — `ProviderConfig.streamSimple` serves completions from a function, so a real pi process runs a real session against a scripted model with no network and no credentials. It plays both parts: the primary model answering the user, and the small model answering the inference layer. `test/pi-mock-llm.test.ts` drives it over RPC and asserts which requests pi actually made — mostly the ones that must *not* happen, since three of the four cost gates are "spend nothing when …".
-
-```bash
-python3 scripts/infer-click-tmux.py   # real terminal, real TUI, real click
-```
-
-That harness closes the last gap: tmux is the terminal, `send-keys -H` injects a genuine SGR mouse report into the pane, `capture-pane` reads the screen back, and tmux answers the DSR query the click mapping depends on. pi is started ten rows down so buffer row 0 is not screen row 0. The assertion is one an inferred anchor makes unusually clean — the reply it inserts appears nowhere in the assistant's message, so finding `Show me the model.` on screen can only mean the click landed. Needs tmux, which the original `click-offset-repro.py` machine did not have. For the inference layer it covers what is believed of a small model's answer, model selection and pinning, the stand-down breaker, and the layering itself — driven through the real handler wiring against a stand-in pi: when a call is spent, when it is not, what gets underlined, and what a click on an underline actually inserts.
+The unit suite covers the parser edge-case matrix, the TUI transformer, digit addressing, the chip-URL contract, the click socket against a real `AF_UNIX` socket, and scheme registration/unregistration against a private XDG home — the uninstall removes the handler and desktop file, both `mimeapps.list` locations gio consults, the mimeinfo cache, and no one else's handler entries.
 
 The e2e test spawns pi in RPC mode with the extension loaded, asks a question with two obvious answers, and asserts the model emits well-formed tags the parser accepts — and that a plain informational question draws none. Configure with `PI_SNIPPET_TEST_PROVIDER` and `PI_SNIPPET_TEST_MODEL` (defaults `claude-bridge` and `claude-haiku-4-5`).
 
@@ -153,4 +115,4 @@ The e2e test spawns pi in RPC mode with the extension loaded, asks a question wi
 
 - `pi -p` (print mode) with the claude-bridge provider hangs on this machine and has to be killed. RPC mode, which the e2e test uses, is unaffected.
 - Not implemented from PRD Phase 3: surfacing suggestions in export/JSON modes.
-- The inference layer has no live test. Its transport is verified against real pi — `ctx.modelRegistry.complete` is called and its failure path returns no anchors — but the quality of what a given small model returns for a given message is unmeasured. PRD §17.5 (OQ10) notes constrained sampling as the way to make malformed output structurally impossible where a provider supports it.
+- Clicking needs a terminal that paints OSC 8 hyperlinks and a registered handler; on anything else the chips are inert rather than falling back to another input mode. Per-terminal support: `docs/linux-terminals.md`.

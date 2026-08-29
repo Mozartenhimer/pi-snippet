@@ -124,6 +124,15 @@ export interface InstallResult {
 	warnings: string[];
 }
 
+export interface UninstallResult {
+	/** Paths actually deleted, for the toggle to report honestly. */
+	removed: string[];
+	/** Locations consulted but unwritable, or a stale association that survived. */
+	warnings: string[];
+	/** True when nothing we know of still claims the scheme. */
+	clean: boolean;
+}
+
 export function install(env: NodeJS.ProcessEnv = process.env): InstallResult {
 	const handler = handlerPath(env);
 	const desktop = desktopPath(env);
@@ -169,26 +178,154 @@ export function install(env: NodeJS.ProcessEnv = process.env): InstallResult {
 	return { ok: true, handler, desktop, mimeapps: mimeappsPath(env), warnings };
 }
 
-export function uninstall(env: NodeJS.ProcessEnv = process.env): void {
+/**
+ * Every mimeapps.list gio consults for the user, most specific first.
+ *
+ * `~/.config/mimeapps.list` is where this install writes, but gio also reads
+ * the legacy `~/.local/share/applications/mimeapps.list`, and anything another
+ * tool wrote there (an older xdg-mime, a dotfiles setup, a manual association)
+ * takes effect the moment the config copy stops naming a default. An uninstall
+ * that cleans only one of the two is an uninstall that "didn't work".
+ */
+export function mimeappsLocations(env: NodeJS.ProcessEnv = process.env): string[] {
+	return [mimeappsPath(env), join(dataHome(env), "applications", "mimeapps.list")];
+}
+
+/**
+ * Remove this desktop's id from one scheme entry, preserving the rest.
+ *
+ * The value is a `;`-separated list: `pisnip=ours.desktop;theirs.desktop`. A
+ * line filter drops the other handler with ours; editing the value removes
+ * only ours and leaves the line only when something else still claims the
+ * scheme.
+ */
+function stripHandler(lines: string[]): { lines: string[]; changed: boolean } {
+	const key = `${MIME}=`;
+	let changed = false;
+	const kept: string[] = [];
+	for (const line of lines) {
+		if (!line.startsWith(key)) {
+			kept.push(line);
+			continue;
+		}
+		const rest = line
+			.slice(key.length)
+			.split(";")
+			.map((id) => id.trim())
+			.filter((id) => id.length > 0 && id !== DESKTOP_ID);
+		changed = true;
+		if (rest.length > 0) kept.push(key + rest.join(";"));
+	}
+	return { lines: kept, changed };
+}
+
+function cleanMimeapps(path: string): "cleaned" | "unchanged" | "failed" {
+	try {
+		if (!existsSync(path)) return "unchanged";
+		const { lines, changed } = stripHandler(readFileSync(path, "utf8").split("\n"));
+		if (changed) writeFileSync(path, lines.join("\n"), "utf8");
+		return "cleaned";
+	} catch {
+		return "failed";
+	}
+}
+
+/**
+ * Drop our id from `mimeinfo.cache` by hand.
+ *
+ * `update-desktop-database` regenerates the whole file, which is preferred —
+ * but it is an optional tool, and where it is absent a stale cache still lists
+ * this desktop file for the scheme, so `gio mime` keeps recommending an entry
+ * whose file is gone. That is precisely what "I removed it and it's still
+ * registered" looks like from the outside.
+ */
+function cleanMimeInfoCache(path: string): boolean {
+	try {
+		if (!existsSync(path)) return false;
+		const { lines, changed } = stripHandler(readFileSync(path, "utf8").split("\n"));
+		if (changed) writeFileSync(path, lines.join("\n"), "utf8");
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function cachePath(env: NodeJS.ProcessEnv): string {
+	return join(dataHome(env), "applications", "mimeinfo.cache");
+}
+
+/**
+ * Unregister `pisnip://`, every place it is registered, and say what happened.
+ *
+ * This used to remove the two files and one mimeapps.list and claim success —
+ * and then not work: the legacy mimeapps.list still carried the association,
+ * or the mimeinfo.cache still named the deleted desktop file (no
+ * update-desktop-database on the machine), so the desktop's answer to "what
+ * handles pisnip://" did not change. It now cleans both mimeapps.list
+ * locations and the cache, and then *asks the desktop* what it thinks before
+ * reporting, so the toggle's message is a measurement rather than an intention.
+ */
+export function uninstall(env: NodeJS.ProcessEnv = process.env): UninstallResult {
+	const removed: string[] = [];
+	const warnings: string[] = [];
+
 	for (const path of [desktopPath(env), handlerPath(env)]) {
 		try {
-			if (existsSync(path)) unlinkSync(path);
-		} catch {
-			/* nothing we can do, and not worth failing the toggle over */
+			if (existsSync(path)) {
+				unlinkSync(path);
+				removed.push(path);
+			}
+		} catch (error) {
+			warnings.push(`could not remove ${path} (${(error as NodeJS.ErrnoException).code})`);
 		}
 	}
-	const path = mimeappsPath(env);
-	try {
-		if (existsSync(path)) {
-			const kept = readFileSync(path, "utf8")
-				.split("\n")
-				.filter((line) => !line.startsWith(`${MIME}=`));
-			writeFileSync(path, kept.join("\n"), "utf8");
-		}
-	} catch {
-		/* the association is stale but harmless once the desktop file is gone */
+
+	for (const path of mimeappsLocations(env)) {
+		const outcome = cleanMimeapps(path);
+		if (outcome === "cleaned") removed.push(path);
+		else if (outcome === "failed") warnings.push(`could not clean ${path}`);
 	}
+	// Regenerate the cache when the tool exists, and scrub our id regardless:
+	// where update-desktop-database is absent (or fails) a stale cache keeps
+	// recommending a desktop file that is no longer there, which is precisely
+	// what "I removed it and it's still registered" looks like from outside.
 	run("update-desktop-database", [dirname(desktopPath(env))]);
+	cleanMimeInfoCache(cachePath(env));
+
+	// Ask, rather than assume. An empty query answer is the success case; our
+	// id still in it means a location we could not clean survived.
+	const claimed = queryDefaultHandler(env);
+	if (claimed === DESKTOP_ID) {
+		warnings.push(
+			`the desktop still reports ${DESKTOP_ID} as the handler — a location above may be unwritable`,
+		);
+	}
+	return { removed, warnings, clean: warnings.length === 0 };
+}
+
+/**
+ * What the desktop says handles `pisnip://` right now, or null when there is
+ * no tool to ask (or the desktop names nothing).
+ *
+ * `xdg-mime query default` is the cheap, widely-present form of gio's lookup;
+ * when it is absent the file checks above are the best available answer.
+ */
+export function queryDefaultHandler(env: NodeJS.ProcessEnv = process.env): string | null {
+	try {
+		const out = execFileSync("xdg-mime", ["query", "default", MIME], {
+			// The caller's environment merged over this process's: the XDG
+			// variables pick the files queried, the rest (PATH above all) is
+			// what makes xdg-mime findable at all. A wholesale replacement with
+			// a partial env would drop PATH and silently answer null.
+			env: { ...process.env, ...env },
+			encoding: "utf8",
+			timeout: 10_000,
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		return out.length > 0 ? out : null;
+	} catch {
+		return null;
+	}
 }
 
 export function isInstalled(env: NodeJS.ProcessEnv = process.env): boolean {

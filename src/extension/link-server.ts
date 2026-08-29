@@ -62,7 +62,7 @@ export interface LinkServerOptions {
 	 */
 	token: () => string;
 	/** Resolve a click to the text to insert, or null for a miss. */
-	resolve: (msg: string, kind: "c" | "a", index: number) => string | undefined;
+	resolve: (msg: string, index: number) => string | undefined;
 	onActivate: (text: string) => void;
 	env?: NodeJS.ProcessEnv;
 }
@@ -174,7 +174,7 @@ export class LinkServer {
 	handle(line: string): boolean {
 		const parsed = parseChipPath(line);
 		if (!parsed) return false;
-		const text = this.options.resolve(parsed.msg, parsed.kind, parsed.index);
+		const text = this.options.resolve(parsed.msg, parsed.index);
 		if (text === undefined) return false;
 		try {
 			this.options.onActivate(text);

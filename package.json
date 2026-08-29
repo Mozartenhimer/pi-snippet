@@ -14,9 +14,7 @@
 		"prepare": "npm run build",
 		"check": "tsc --noEmit",
 		"test": "vitest run --exclude '**/e2e-*.test.ts' --exclude '**/node_modules/**'",
-		"test:e2e": "vitest run test/e2e-haiku.test.ts",
-		"gen:widths": "vite-node scripts/gen-char-width.mjs",
-		"check:widths": "vite-node scripts/check-widths.mjs"
+		"test:e2e": "vitest run test/e2e-haiku.test.ts"
 	},
 	"dependencies": {
 		"esbuild": "^0.24.0"

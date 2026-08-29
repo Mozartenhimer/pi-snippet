@@ -15,22 +15,20 @@ import {
 
 describe("chip URLs", () => {
 	it("round-trips what it builds", () => {
-		const url = buildChipUrl("a1b2c3d4", messageKey("hello"), "c", 3);
+		const url = buildChipUrl("a1b2c3d4", messageKey("hello"), 3);
 		expect(parseChipUrl(url)).toEqual({
 			token: "a1b2c3d4",
 			msg: messageKey("hello"),
-			kind: "c",
 			index: 3,
 		});
 	});
 
-	it("distinguishes the two layers", () => {
-		expect(parseChipUrl(buildChipUrl("tok", "0f3e2a91", "a", 2))?.kind).toBe("a");
-		expect(parseChipUrl(buildChipUrl("tok", "0f3e2a91", "c", 2))?.kind).toBe("c");
+	it("carries the chip kind in the path", () => {
+		expect(buildChipUrl("tok", "0f3e2a91", 2)).toBe("pisnip://tok/0f3e2a91/c2");
 	});
 
 	it("reaches two-digit chips, matching what Alt addressing reaches", () => {
-		expect(parseChipUrl(buildChipUrl("tok", "0f3e2a91", "c", 99))?.index).toBe(99);
+		expect(parseChipUrl(buildChipUrl("tok", "0f3e2a91", 99))?.index).toBe(99);
 	});
 });
 
@@ -67,9 +65,9 @@ describe("messageKey", () => {
 
 describe("parsing what arrives on the socket", () => {
 	it("accepts the path the handler forwards, with or without a leading slash", () => {
-		expect(parseChipPath("0f3e2a91/c3")).toEqual({ msg: "0f3e2a91", kind: "c", index: 3 });
-		expect(parseChipPath("/0f3e2a91/c3")).toEqual({ msg: "0f3e2a91", kind: "c", index: 3 });
-		expect(parseChipPath(" 0f3e2a91/c3\n")).toEqual({ msg: "0f3e2a91", kind: "c", index: 3 });
+		expect(parseChipPath("0f3e2a91/c3")).toEqual({ msg: "0f3e2a91", index: 3 });
+		expect(parseChipPath("/0f3e2a91/c3")).toEqual({ msg: "0f3e2a91", index: 3 });
+		expect(parseChipPath(" 0f3e2a91/c3\n")).toEqual({ msg: "0f3e2a91", index: 3 });
 	});
 
 	// Everything here arrives from outside the process. A malformed value has
@@ -81,6 +79,7 @@ describe("parsing what arrives on the socket", () => {
 		["0f3e2a91/c-1", "negative"],
 		["0f3e2a91/c1.5", "not an integer"],
 		["0f3e2a91/x1", "unknown layer"],
+		["0f3e2a91/a1", "inferred-anchor URLs are gone; parse as a miss"],
 		["0f3e2a91/c1/../../etc/passwd", "traversal"],
 		["ZZZZ/c1", "non-hex message key"],
 		["0f3e2a91/c99999", "absurd index"],

@@ -8,39 +8,41 @@
  *   number — `¹rebuild the solution` — via pi's markdown transformer hook.
  *   The hook is display-only: stored messages keep their raw tags, so
  *   sessions stay readable by any other transcript consumer.
- * - Clicking a chip inserts it into the editor. Mouse reporting is
- *   terminal-wide (the wheel stops scrolling the terminal and text selection
- *   needs Shift), so it is engaged only while the latest message actually has
- *   suggestions, and can be toggled off in `/snippets`.
+ * - Ctrl+clicking a chip inserts it into the editor. The click is resolved by
+ *   the terminal itself: the chip's href is a real `pisnip://` URL, the
+ *   terminal dispatches it to a once-registered handler (`link-install.ts`),
+ *   and the handler forwards to this process over a unix socket
+ *   (`link-server.ts`). No terminal-wide mouse mode is ever engaged, so the
+ *   wheel and text selection are never taken away. Where the terminal cannot
+ *   paint a hyperlink (`osc8.ts`) no URL is painted at all and clicking is
+ *   inert — it never falls back to mouse reporting.
  * - Alt+N inserts the Nth suggestion of the most recent assistant message into
  *   the editor. A suggestion becomes addressable the moment its closing tag
  *   arrives, so a chip can be triggered while the model is still writing —
  *   no waiting out the rest of the answer. Holding Alt and typing two digits
  *   reaches 10 and above. Only the latest message is addressable, so a number
  *   never means two different things.
- * - `/snippets` toggles the feature, the hotkeys, or click-to-insert, and each
- *   choice is written to disk so it holds for the next session too; the
- *   `--no-suggestions` flag disables everything for one session without
- *   touching the stored preference.
+ * - `/snippets` toggles the feature or the hotkeys, and registers or removes
+ *   the click handler; each choice is written to disk so it holds for the next
+ *   session too. The `--no-suggestions` flag disables everything for one
+ *   session without touching the stored preference.
  *
  * The transformer stays pure; the addressable set is derived in the message
  * lifecycle handlers (`message_update` while the model writes, `message_end`
  * when it stops) and held in extension state, never built during
  * transformation (PRD §5.2 hard rule).
  */
-import { asksSomething, type InferredSuggestion } from "../shared/inferred.js";
 import { DigitChord } from "../shared/digit-chord.js";
 import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix } from "../shared/suggestions.js";
 import { chipLabel, toTuiMarkdown } from "../shared/tui-markdown.js";
 import { registerPromptSnippet } from "./common.js";
-import { inferenceCandidates, MagicInferrer, MODEL_ENV_VAR, type ModelPin, pickInferenceModel } from "./magic.js";
 import { loadSettings, saveSettings, settingsPath } from "./settings.js";
-import { ClickableText, type TuiLike } from "./tui-mouse.js";
 import { LinkServer } from "./link-server.js";
 import * as linkInstall from "./link-install.js";
 import { terminalSupportsOsc8 } from "./osc8.js";
 import { buildChipUrl, messageKey, sessionToken } from "../shared/link-url.js";
 import { randomBytes } from "node:crypto";
+import type { TuiLike } from "./tui.js";
 
 interface TextBlock {
 	type: string;
@@ -53,7 +55,7 @@ const CLOSE_TAG_PREFIX = `</${SNIPPET_TAG}`;
 export default function piSnippetTui(pi: any): void {
 	/**
 	 * The stored preferences, read once at load. `state` starts from them and is
-	 * written back on every `/snippets` toggle, so the three switches mean the
+	 * written back on every `/snippets` toggle, so the two switches mean the
 	 * same thing in the next session as in this one.
 	 */
 	const settingsFile = settingsPath();
@@ -62,75 +64,12 @@ export default function piSnippetTui(pi: any): void {
 	const state = {
 		enabled: stored.enabled,
 		hotkeysEnabled: stored.hotkeysEnabled,
-		clickEnabled: stored.clickEnabled,
-		/**
-		 * Deliver clicks through the terminal's own hyperlink resolution
-		 * rather than mouse reporting (docs/terminal-resolved-clicks.md).
-		 * Requires a registered handler, so it is only reachable from
-		 * `/snippets` once the install probe has round-tripped.
-		 */
-		linkMode: stored.linkMode,
-		/**
-		 * Layer 2 (PRD §17): infer suggestions for questions the model left
-		 * untagged. Click-only, so it stays inert until clicking is on — no
-		 * message is ever sent to the small model for chips nobody could press.
-		 */
-		magicEnabled: stored.magicEnabled,
 		/**
 		 * Suggestions of the most recent assistant message — the one streaming,
 		 * once it has produced a complete suggestion of its own, otherwise the
 		 * last one that finished.
 		 */
 		addressable: [] as string[],
-		/**
-		 * Inferred anchors for the message at the tip of the branch. Only ever
-		 * populated for a message that carried no tags at all: layer 1 wins
-		 * outright, so a numbered chip and an underline never compete for the
-		 * same sentence.
-		 */
-		inferred: [] as InferredSuggestion[],
-		/**
-		 * Inference model chosen in `/snippets` for this session. Overrides the
-		 * `--snippet-model` flag and `PI_SNIPPET_MODEL`, both of which override
-		 * auto-selection.
-		 */
-		modelOverride: (stored.model ?? undefined) as ModelPin,
-	};
-
-	const magic = new MagicInferrer();
-
-	/**
-	 * Which model reads untagged messages, most specific source first: what was
-	 * picked in `/snippets`, then `--snippet-model`, then `PI_SNIPPET_MODEL`,
-	 * then whatever auto-selection finds. Resolved per call rather than cached,
-	 * so switching models mid-session takes effect on the next message.
-	 */
-	const modelPin = (): ModelPin => {
-		if (state.modelOverride) return state.modelOverride;
-		const flag = pi.getFlag("snippet-model");
-		if (typeof flag === "string" && flag.trim().length > 0) return flag;
-		const env = process.env[MODEL_ENV_VAR];
-		return env && env.trim().length > 0 ? env : undefined;
-	};
-
-	/**
-	 * Anchors to underline, keyed by the exact text they were inferred from.
-	 *
-	 * This is what lets the transformer stay a pure function of its input while
-	 * rendering spans that are not marked up in the text itself (PRD §5.2): it
-	 * looks anchors up by the markdown it was handed, so a message renders its
-	 * own anchors and no others, at any point in the transcript, on every
-	 * repaint and resize, with nothing built during the render pass.
-	 */
-	const anchorsByText = new Map<string, string[]>();
-	const ANCHOR_INDEX_LIMIT = 64;
-	const rememberAnchors = (text: string, anchors: string[]): void => {
-		anchorsByText.set(text, anchors);
-		while (anchorsByText.size > ANCHOR_INDEX_LIMIT) {
-			const oldest = anchorsByText.keys().next();
-			if (oldest.done) break;
-			anchorsByText.delete(oldest.value);
-		}
 	};
 
 	/**
@@ -141,20 +80,6 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	let flagDisabled = false;
 	const isEnabled = () => state.enabled && !flagDisabled;
-
-	/**
-	 * `--snippet-click` is the same shape of override, pointing the other way:
-	 * it turns clicking on for one session without writing that choice to disk.
-	 * Kept out of `state.clickEnabled` for exactly the reason `flagDisabled` is
-	 * kept out of `state.enabled` — the stored value must stay what the user
-	 * chose in `/snippets`, or the next toggle of any switch would persist the
-	 * flag's answer as if it had been chosen.
-	 *
-	 * An explicit toggle in `/snippets` supersedes it: having asked for clicking
-	 * in this session and then turned it off, the user means off.
-	 */
-	let flagClick = false;
-	const clickOn = () => state.clickEnabled || flagClick;
 
 	let tui: TuiLike | null = null;
 
@@ -170,49 +95,28 @@ export default function piSnippetTui(pi: any): void {
 	let linkToken = randomBytes(4).toString("hex");
 
 	/**
-	 * Clicking is on, the terminal is the one resolving it, and the terminal
-	 * can actually render a hyperlink.
-	 *
-	 * That last condition is what keeps the new default safe: where pi-tui
-	 * would fall back to printing the href, no `pisnip://` URL is painted at
-	 * all and chips keep their inert `chip:N` placeholder.
+	 * Clicking is always on, delivered by the terminal — the one delivery path
+	 * since mouse reporting was removed. It is live when suggestions are on,
+	 * the terminal can paint a hyperlink (OSC 8), and the desktop has a
+	 * registered handler to dispatch to.
 	 */
-	const linkOn = () => isEnabled() && clickOn() && state.linkMode && terminalSupportsOsc8();
-
-	/**
-	 * Could a click actually reach a suggestion right now?
-	 *
-	 * `clickOn()` used to answer this, back when "clicking is on" and "clicking
-	 * works" were the same statement. They no longer are: link mode paints
-	 * nothing on a terminal without OSC 8, and never falls back to mouse, so
-	 * clicking can be switched on and still have no way through. That matters
-	 * beyond cosmetics — PRD §17.2 gates the inference layer on "spend nothing
-	 * when nothing could reach the result", and this is that condition.
-	 */
-	const clickActive = () =>
-		isEnabled() && clickOn() && (state.linkMode ? terminalSupportsOsc8() : true);
+	const linkOn = () => isEnabled() && terminalSupportsOsc8();
 
 	/**
 	 * What each rendered message's chips mean, keyed by a hash of the exact
 	 * text they were painted from (`messageKey`).
 	 *
-	 * The mouse path never needed this: it hit-tests the labels currently on
-	 * screen against the current addressable set, so "which message" is
-	 * implicit. A URL has to carry the answer, because it can be clicked long
-	 * after the message scrolled away — and resolving `c3` against whatever is
+	 * A URL has to carry the answer, because it can be clicked long after the
+	 * message scrolled away — and resolving `c3` against whatever is
 	 * addressable *now* would insert some other message's third suggestion,
-	 * silently and wrongly. Bounded for the same reason `anchorsByText` is: old
-	 * entries are worth keeping, but not without limit.
+	 * silently and wrongly. Bounded: old entries are worth keeping, but not
+	 * without limit.
 	 */
-	const linkTargets = new Map<string, { chips: string[]; anchors: InferredSuggestion[] }>();
+	const linkTargets = new Map<string, { chips: string[] }>();
 	const LINK_TARGET_LIMIT = 64;
-	const rememberLinkTargets = (
-		text: string,
-		chips: string[],
-		anchors: InferredSuggestion[],
-	): void => {
+	const rememberLinkTargets = (text: string, chips: string[]): void => {
 		if (text.length === 0) return;
-		linkTargets.set(messageKey(text), { chips, anchors });
+		linkTargets.set(messageKey(text), { chips });
 		while (linkTargets.size > LINK_TARGET_LIMIT) {
 			const oldest = linkTargets.keys().next();
 			if (oldest.done) break;
@@ -246,8 +150,7 @@ export default function piSnippetTui(pi: any): void {
 		for (const form of forms) {
 			if (form.length === 0) continue;
 			const chips = parseSuggestions(form).suggestions;
-			const anchors = state.inferred.filter((a) => form.includes(a.anchor));
-			if (chips.length > 0 || anchors.length > 0) rememberLinkTargets(form, chips, anchors);
+			if (chips.length > 0) rememberLinkTargets(form, chips);
 		}
 	};
 
@@ -264,26 +167,10 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	let lastCtx: any = null;
-	/**
-	 * Target ids carry their layer: `c3` is the third tagged chip, `a2` the
-	 * second inferred anchor. Clicking a chip inserts the chip; clicking an
-	 * anchor inserts the reply that was inferred for it, not the assistant's
-	 * own words that are underlined on screen.
-	 */
-	const clickable = new ClickableText({
-		onActivate: (target) => {
-			if (!lastCtx) return;
-			const index = Number(target.id.slice(1)) - 1;
-			const text =
-				target.id.startsWith("a") ? state.inferred[index]?.reply : state.addressable[index];
-			if (text) insertText(lastCtx, text);
-		},
-	});
 
 	/**
-	 * The far end of a terminal-resolved click. Same lookup the mouse path
-	 * does, reached from a socket instead of an escape sequence — and keyed by
-	 * message, so a chip clicked in old scrollback still means what it meant.
+	 * The far end of a terminal-resolved click. Keyed by message, so a chip
+	 * clicked in old scrollback still means what it meant.
 	 */
 	/** Set while an install probe is in flight; see `installClickHandler`. */
 	let probeArrived: (() => void) | null = null;
@@ -293,14 +180,12 @@ export default function piSnippetTui(pi: any): void {
 
 	const linkServer = new LinkServer({
 		token: () => linkToken,
-		resolve: (msg, kind, index) => {
+		resolve: (msg, index) => {
 			if (msg === PROBE_KEY) {
 				probeArrived?.();
 				return undefined; // a probe proves the path; it inserts nothing
 			}
-			const entry = linkTargets.get(msg);
-			if (!entry) return undefined;
-			return kind === "a" ? entry.anchors[index - 1]?.reply : entry.chips[index - 1];
+			return linkTargets.get(msg)?.chips[index - 1];
 		},
 		onActivate: (text) => {
 			if (!lastCtx) return;
@@ -390,16 +275,15 @@ export default function piSnippetTui(pi: any): void {
 	/**
 	 * Say once, when it would actually help, that the handler is missing.
 	 *
-	 * With link mode on by default, a fresh install paints working hyperlinks
-	 * that the desktop has nothing to dispatch to — Ctrl+click would do
-	 * nothing, with no way to tell why. This is said at most once per session,
-	 * and only when everything *else* is ready, so it is a next step rather
-	 * than a complaint.
+	 * A fresh install paints working hyperlinks that the desktop has nothing to
+	 * dispatch to — Ctrl+click would do nothing, with no way to tell why. This
+	 * is said at most once per session, and only when there is something to
+	 * click, so it is a next step rather than a complaint.
 	 */
 	let unregisteredHintShown = false;
 	const hintIfUnregistered = (ctx: any): void => {
 		if (unregisteredHintShown || process.platform !== "linux") return;
-		if (state.addressable.length === 0 && state.inferred.length === 0) return;
+		if (state.addressable.length === 0) return;
 		if (linkInstall.isInstalled()) return;
 		unregisteredHintShown = true;
 		ctx.ui?.notify?.(
@@ -408,68 +292,30 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/**
-	 * Point clicking at whichever delivery path is selected, and only while
-	 * there is something to click.
+	 * Point clicking at the one delivery path — terminal-resolved — and keep
+	 * the socket listener alive only while it can matter.
 	 *
-	 * The two are mutually exclusive by design. Mouse reporting is a
-	 * terminal-wide mode with real costs (the wheel, shift-less selection), so
-	 * it stays off entirely in link mode — the whole point of letting the
-	 * terminal resolve the click is that none of those costs apply. The link
-	 * server, by contrast, is cheap enough to leave listening: it holds a
-	 * socket, not a terminal mode, so it does not need the "only while there
-	 * are chips" gate that mouse reporting does.
+	 * The link server is cheap enough to leave listening: it holds a socket,
+	 * not a terminal mode, so unlike the old mouse reporting it does not need
+	 * an "only while there are chips" gate. It is stopped when suggestions are
+	 * off or the terminal cannot paint a hyperlink, because then nothing can
+	 * paint a URL that names it.
 	 */
-	const syncMouse = (ctx: any) => {
+	const syncClicks = (ctx: any) => {
 		lastCtx = ctx;
 		const captured = captureTui(ctx);
 		if (captured) watchAltRelease(captured);
-
-		// Link mode means links or nothing. Falling back to mouse reporting
-		// would quietly impose the terminal-wide mode that choosing link mode
-		// was a way of avoiding — so a terminal that cannot paint a hyperlink
-		// gets no clicking, not a surprise change of input mode.
-		if (state.linkMode) {
-			if (clickable.enabled) clickable.detach();
-			if (linkOn()) {
-				if (!linkServer.listening) linkServer.start();
-				hintIfUnregistered(ctx);
-			} else if (linkServer.listening) {
-				linkServer.stop();
-			}
-			return;
-		}
-		if (linkServer.listening) linkServer.stop();
-
-		const want =
-			clickActive() && (state.addressable.length > 0 || state.inferred.length > 0);
-		if (want) {
-			const instance = captured;
-			if (!instance) return;
-			clickable.attach(instance);
-			clickable.setTargets([
-				...state.addressable.map((text, i) => ({ id: `c${i + 1}`, text: chipLabel(i + 1, text) })),
-				...state.inferred.map((s, i) => ({ id: `a${i + 1}`, text: s.anchor })),
-			]);
-		} else if (clickable.enabled) {
-			clickable.detach();
+		if (linkOn()) {
+			if (!linkServer.listening) linkServer.start();
+			hintIfUnregistered(ctx);
+		} else if (linkServer.listening) {
+			linkServer.stop();
 		}
 	};
 
 	pi.registerFlag("no-suggestions", {
 		description: "Disable inline suggestion snippets for this session",
 		type: "boolean",
-	});
-
-	pi.registerFlag("snippet-click", {
-		description:
-			"Turn on click-to-insert at startup (otherwise it starts off and is toggled in /snippets)",
-		type: "boolean",
-	});
-
-	pi.registerFlag("snippet-model", {
-		description:
-			"Model that infers replies for untagged questions, as provider/id (default: the cheapest small model of the session's provider)",
-		type: "string",
 	});
 
 	registerPromptSnippet(pi, () => {
@@ -483,8 +329,6 @@ export default function piSnippetTui(pi: any): void {
 			return toTuiMarkdown(markdown, {
 				isStreaming: ctx.isStreaming,
 				enabled: isEnabled(),
-				// A streaming message has no anchors yet — it hasn't been read.
-				anchors: ctx.isStreaming ? [] : anchorsByText.get(markdown),
 				linkToken: linkOn() ? linkToken : undefined,
 			});
 		},
@@ -515,79 +359,13 @@ export default function piSnippetTui(pi: any): void {
 		return suggestions;
 	};
 
-	/** The message as the small model should read it: its text, in order. */
+	/** The message text, in document order. */
 	const messageText = (message?: { content?: TextBlock[] }): string => {
 		if (!message || !Array.isArray(message.content)) return "";
 		return message.content
 			.filter((block) => block.type === "text")
 			.map((block) => block.text ?? "")
 			.join("\n");
-	};
-
-	/**
-	 * Publish inferred anchors for a message and light them up.
-	 *
-	 * Anchors are indexed under the joined message text *and* under each text
-	 * block that contains one, because pi may hand the transformer either a
-	 * whole message or a single block depending on how the message was built.
-	 */
-	const applyAnchors = (
-		message: { content?: TextBlock[] },
-		joined: string,
-		anchors: InferredSuggestion[],
-		ctx: any,
-	): void => {
-		state.inferred = anchors;
-		const labels = anchors.map((a) => a.anchor);
-		rememberAnchors(joined, labels);
-		for (const block of message.content ?? []) {
-			if (block.type !== "text") continue;
-			const text = block.text ?? "";
-			const here = labels.filter((label) => text.includes(label));
-			if (here.length > 0) rememberAnchors(text, here);
-		}
-		indexMessageForLinks(message);
-		syncMouse(ctx);
-		tui?.requestRender?.();
-	};
-
-	/**
-	 * Ask the small model to fill in the chips this message didn't get.
-	 *
-	 * Four gates before a single token is spent: the feature is on, clicking is
-	 * on (nothing else can activate an anchor), layer 1 produced nothing, and
-	 * the message actually asks something. The answer lands asynchronously, so
-	 * it is dropped unless the branch is still sitting on the same message —
-	 * anchors from a message the user has already moved past would underline
-	 * text that is no longer the question.
-	 */
-	const maybeInfer = (message: { content?: TextBlock[] }, ctx: any): void => {
-		if (!isEnabled() || !state.magicEnabled || !clickActive()) return;
-		if (state.addressable.length > 0) return; // the model tagged it; layer 1 wins
-		const joined = messageText(message);
-		if (joined.trim().length === 0 || !asksSomething(joined)) return;
-
-		const cached = magic.peek(joined);
-		if (cached) {
-			if (cached.length > 0) applyAnchors(message, joined, cached, ctx);
-			return;
-		}
-		void magic.infer(joined, ctx, modelPin()).then((anchors) => {
-			if (anchors.length === 0) return;
-			if (messageText(tipMessage(ctx)) !== joined) return; // the branch moved on
-			applyAnchors(message, joined, anchors, ctx);
-		});
-	};
-
-	/** The assistant message at the tip of the active branch, if any. */
-	const tipMessage = (ctx: any): { role?: string; content?: TextBlock[] } | undefined => {
-		const branch = ctx.sessionManager.getBranch();
-		for (let i = branch.length - 1; i >= 0; i--) {
-			const entry = branch[i];
-			if (entry.type !== "message") continue;
-			return entry.message.role === "assistant" ? entry.message : undefined;
-		}
-		return undefined;
 	};
 
 	/**
@@ -630,7 +408,6 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const hydrateFromBranch = (ctx: any) => {
 		state.addressable = [];
-		state.inferred = [];
 		if (!isEnabled()) return;
 		const branch = ctx.sessionManager.getBranch();
 		// Every assistant message in the branch gets repainted through the
@@ -649,14 +426,6 @@ export default function piSnippetTui(pi: any): void {
 			if (entry.type !== "message") continue;
 			if (entry.message.role === "assistant") {
 				state.addressable = suggestionsFromMessage(entry.message);
-				// A message read once keeps its anchors: walking back to it with
-				// /tree costs nothing, and re-asking would be the same question.
-				const joined = messageText(entry.message);
-				const cached = state.addressable.length === 0 ? magic.peek(joined) : undefined;
-				if (cached && cached.length > 0) {
-					state.inferred = cached;
-					rememberAnchors(joined, cached.map((a) => a.anchor));
-				}
 			}
 			break;
 		}
@@ -672,7 +441,6 @@ export default function piSnippetTui(pi: any): void {
 		} catch {
 			/* keep the random fallback */
 		}
-		if (pi.getFlag("snippet-click") === true) flagClick = true;
 		// "startup" is a real restart too: `pi --session <file>` fires it, not
 		// "resume" — that reason is only for /resume inside a running process.
 		// A restart that skips hydration leaves linkTargets empty, so the chip
@@ -687,29 +455,26 @@ export default function piSnippetTui(pi: any): void {
 		} else {
 			state.addressable = [];
 		}
-		syncMouse(ctx);
+		syncClicks(ctx);
 	});
 
 	pi.on("session_tree", (_event: unknown, ctx: any) => {
 		hydrateFromBranch(ctx);
 		streamCloseTags = 0;
 		chord.reset();
-		syncMouse(ctx);
+		syncClicks(ctx);
 	});
 
 	pi.on("session_shutdown", () => {
 		chord.reset();
 		releaseWatcher?.();
 		releaseWatcher = null;
-		if (clickable.enabled) clickable.detach();
+		linkServer.stop();
 	});
 
 	pi.on("message_start", (event: { message?: { role?: string } }) => {
 		if (event.message?.role !== "assistant") return;
 		streamCloseTags = 0;
-		// Anchors belong to the message they were read from; the new one has
-		// not been read yet.
-		state.inferred = [];
 	});
 
 	/**
@@ -737,7 +502,7 @@ export default function piSnippetTui(pi: any): void {
 		if (suggestions.length === 0) return; // a close tag that resolved to plain text
 		setAddressable(suggestions);
 		indexMessageForLinks(event.message, { streaming: true });
-		syncMouse(ctx);
+		syncClicks(ctx);
 	});
 
 	pi.on("message_end", (event: { message?: { role?: string; content?: TextBlock[] } }, ctx: any) => {
@@ -745,8 +510,7 @@ export default function piSnippetTui(pi: any): void {
 		setAddressable(suggestionsFromMessage(event.message));
 		indexMessageForLinks(event.message);
 		streamCloseTags = 0;
-		syncMouse(ctx);
-		maybeInfer(event.message, ctx);
+		syncClicks(ctx);
 	});
 
 	for (let n = 0; n <= 9; n++) {
@@ -777,99 +541,29 @@ export default function piSnippetTui(pi: any): void {
 		}
 		if (messages === 0) return "Inline suggestions (no assistant messages yet)";
 		const pct = Math.round((messagesWithSuggestions / messages) * 100);
-		const tagged = `Inline suggestions — ${messagesWithSuggestions}/${messages} messages had suggestions (${pct}%), ${totalSuggestions} total`;
-		const { calls, input, output } = magic.usage;
-		if (calls === 0) return tagged;
-		return `${tagged}; inferred ${calls} message${calls === 1 ? "" : "s"} (${input + output} tokens)`;
+		return `Inline suggestions — ${messagesWithSuggestions}/${messages} messages had suggestions (${pct}%), ${totalSuggestions} total`;
 	};
 
 	/**
-	 * Write the preferences back to disk. A failure — read-only home, a full
-	 * disk — is not worth interrupting anyone over, but it does change what the
-	 * toggle means, so the notification says so instead of promising a
-	 * persistence that did not happen.
+	 * How Ctrl+click stands right now — what the menu header reports, so the
+	 * state that used to be a toggle stays visible without being one.
 	 */
-	const persist = (): string => {
-		const ok = saveSettings(
-			{
-				enabled: state.enabled,
-				hotkeysEnabled: state.hotkeysEnabled,
-				clickEnabled: state.clickEnabled,
-				linkMode: state.linkMode,
-				magicEnabled: state.magicEnabled,
-				model: state.modelOverride ?? null,
-			},
-			settingsFile,
-		);
-		return ok ? "" : " (this session only — could not write the settings file)";
-	};
-
-	/** How the inference layer describes itself in `/snippets`. */
-	const magicLabel = (ctx: any): string => {
-		if (!state.magicEnabled) return "off — toggle";
-		const model = pickInferenceModel(ctx, modelPin());
-		const pin = modelPin();
-		if (!model) {
-			return pin
-				? `on, but ${pin} is unusable here — toggle`
-				: "on, but no usable model — toggle";
+	const clickStatusLabel = (): string => {
+		if (process.platform !== "linux") return "Ctrl+click: unavailable off Linux";
+		if (!terminalSupportsOsc8()) {
+			return "Ctrl+click: inert — this terminal paints no hyperlinks (see docs/linux-terminals.md)";
 		}
-		if (magic.stoodDown) return `stood down — ${model.id} kept failing — toggle to retry`;
-		if (!clickActive()) {
-			return state.linkMode && clickOn()
-				? `on via ${model.id}, idle until this terminal can paint hyperlinks — toggle`
-				: `on via ${model.id}, idle until click-to-insert is on — toggle`;
-		}
-		return `on via ${model.id} — toggle`;
-	};
-
-	/**
-	 * How a click reaches the editor, and what changing it would cost.
-	 *
-	 * Phrased as the action rather than the state, because turning link mode on
-	 * is not a toggle — it registers a scheme handler with the desktop, which
-	 * is a thing worth naming before it happens.
-	 */
-	const clickMethodLabel = (): string => {
-		if (process.platform !== "linux") return "mouse reporting (link mode is Linux-only for now)";
-		if (state.linkMode) {
-			return linkInstall.isInstalled()
-				? "Ctrl+click, resolved by the terminal — switch back to mouse"
-				: "Ctrl+click, resolved by the terminal (not registered yet) — switch back to mouse";
-		}
-		return linkInstall.isInstalled()
-			? "mouse reporting — switch to Ctrl+click (handler already registered, will re-verify)"
-			: "mouse reporting — switch to Ctrl+click (registers a handler with your desktop)";
-	};
-
-	/** Let the user name the inference model rather than trusting the guess. */
-	const chooseModel = async (ctx: any): Promise<void> => {
-		const candidates = inferenceCandidates(ctx);
-		if (candidates.length === 0) {
-			ctx.ui.notify("No models with configured auth to infer with", "warning");
-			return;
-		}
-		const AUTO = "Auto — cheapest small model of this provider";
-		const labels = candidates.map((m) => `${m.provider ?? "?"}/${m.id}`);
-		const choice = await ctx.ui.select("Model for inferring untagged questions", [AUTO, ...labels]);
-		if (!choice) return;
-		state.modelOverride = choice === AUTO ? undefined : choice;
-		magic.rearm(); // a new model deserves a fresh chance
-		const saved = persist();
-		const resolved = pickInferenceModel(ctx, modelPin());
-		ctx.ui.notify(
-			(resolved ? `Inferring with ${resolved.id}` : "No usable inference model") + saved,
-			resolved ? "info" : "warning",
-		);
+		if (!linkInstall.isInstalled()) return "Ctrl+click: handler not registered";
+		return "Ctrl+click: on";
 	};
 
 	/**
 	 * Register `pisnip://` with the desktop, then prove it round-trips.
 	 *
-	 * Registration that is not proven is a guess, so link mode is only offered
-	 * after a real URL has travelled the whole path — opener, handler, socket —
-	 * and arrived here. The failure message names the step that broke rather
-	 * than saying it did not work.
+	 * Registration that is not proven is a guess, so Ctrl+click is only offered
+	 * as working after a real URL has travelled the whole path — opener,
+	 * handler, socket — and arrived here. The failure message names the step
+	 * that broke rather than saying it did not work.
 	 */
 	const installClickHandler = async (ctx: any): Promise<void> => {
 		if (process.platform !== "linux") {
@@ -891,7 +585,7 @@ export default function piSnippetTui(pi: any): void {
 			arrived = true;
 		};
 		try {
-			const url = buildChipUrl(linkToken, PROBE_KEY, "c", 1);
+			const url = buildChipUrl(linkToken, PROBE_KEY, 1);
 			const outcome = await linkInstall.probe(url, async () => {
 				// The dispatch is asynchronous all the way through: opener,
 				// handler process, connect. Give it a moment before judging.
@@ -899,7 +593,6 @@ export default function piSnippetTui(pi: any): void {
 				return arrived;
 			});
 			if (outcome.opener) {
-				state.linkMode = true;
 				ctx.ui.notify(
 					`Click handler installed and verified via ${outcome.opener}. ` +
 						`Ctrl+click a chip to insert it — no mouse mode${persist()}`,
@@ -907,97 +600,84 @@ export default function piSnippetTui(pi: any): void {
 			} else {
 				ctx.ui.notify(
 					`Registered, but no opener completed the round trip (${outcome.tried.join(", ")}). ` +
-						"Clicking stays on the mouse path.",
+						"Ctrl+click will not reach pi until that works.",
 					"warning",
 				);
 			}
 		} finally {
 			probeArrived = previous;
 		}
-		syncMouse(ctx);
+		syncClicks(ctx);
+	};
+
+	/**
+	 * Write the preferences back to disk. A failure — read-only home, a full
+	 * disk — is not worth interrupting anyone over, but it does change what the
+	 * toggle means, so the notification says so instead of promising a
+	 * persistence that did not happen.
+	 */
+	const persist = (): string => {
+		const ok = saveSettings(
+			{
+				enabled: state.enabled,
+				hotkeysEnabled: state.hotkeysEnabled,
+			},
+			settingsFile,
+		);
+		return ok ? "" : " (this session only — could not write the settings file)";
 	};
 
 	pi.registerCommand("snippets", {
-		description: "Toggle inline suggestions, their shortcuts, or click-to-insert",
+		description: "Toggle inline suggestions or their shortcuts; register or remove the click handler",
 		handler: async (_args: string, ctx: any) => {
 			if (!ctx.hasUI) return;
 			if (flagDisabled) {
 				ctx.ui.notify("Inline suggestions are off for this session (--no-suggestions)");
 				return;
 			}
-			const choice = await ctx.ui.select(snippetStats(ctx), [
-				`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
-				`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
-				`Click to insert: ${clickOn() ? "on" : "off"} — toggle${
-					clickOn() && !state.linkMode
-						? " (mouse mode costs wheel scrolling while suggestions are shown)"
-						: ""
-				}`,
-				`Click method: ${clickMethodLabel()}`,
-				...(process.platform === "linux" && state.linkMode && !linkInstall.isInstalled()
-					? ["Register click handler — one-time desktop setup, needed before Ctrl+click works"]
-					: []),
-				`Infer untagged questions: ${magicLabel(ctx)}`,
-				"Inference model — choose",
-				...(process.platform === "linux" && linkInstall.isInstalled()
-					? ["Remove click handler — unregister pisnip:// from the desktop"]
-					: []),
-			]);
+			const choice = await ctx.ui.select(
+				`${snippetStats(ctx)} — ${clickStatusLabel()}`,
+				[
+					`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
+					`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
+					...(process.platform === "linux" && !linkInstall.isInstalled()
+						? ["Register click handler — one-time desktop setup, needed before Ctrl+click works"]
+						: []),
+					...(process.platform === "linux" && linkInstall.isInstalled()
+						? ["Remove click handler — unregister pisnip:// from the desktop"]
+						: []),
+				],
+			);
 			if (!choice) return;
 			if (choice.startsWith("Suggestions:")) {
 				state.enabled = !state.enabled;
 				if (!state.enabled) state.addressable = [];
 				ctx.ui.notify(`Inline suggestions ${state.enabled ? "enabled" : "disabled"}${persist()}`);
-			} else if (choice.startsWith("Click to insert:")) {
-				state.clickEnabled = !clickOn();
-				flagClick = false; // an explicit choice supersedes --snippet-click
-				if (!state.clickEnabled) state.inferred = [];
-				ctx.ui.notify(
-					(state.clickEnabled
-						? "Click to insert enabled — while suggestions are on screen, the wheel belongs to pi and selection needs Shift"
-						: "Click to insert disabled — scrolling and selection back to normal") + persist(),
-				);
 			} else if (choice.startsWith("Register click handler")) {
 				await installClickHandler(ctx);
-			} else if (choice.startsWith("Click method:")) {
-				if (!state.linkMode) {
-					// Turning it on is the install: without a registered
-					// handler the URLs would dispatch to nothing.
-					await installClickHandler(ctx);
+			} else if (choice.startsWith("Remove click handler")) {
+				const result = linkInstall.uninstall();
+				const detail =
+					result.removed.length > 0 ? ` (${result.removed.length} files cleaned)` : "";
+				if (result.clean) {
+					ctx.ui.notify(`pisnip:// unregistered${detail}${persist()}`);
 				} else {
-					state.linkMode = false;
+					for (const warning of result.warnings) ctx.ui.notify(warning, "warning");
 					ctx.ui.notify(
-						`Clicks back on mouse reporting — the wheel belongs to pi while suggestions show${persist()}`,
+						`pisnip:// unregistered, but not cleanly${detail}. If Ctrl+click still opens ` +
+							"the old handler, restart the terminal or run " +
+							"`systemctl --user restart xdg-desktop-portal` — desktop daemons cache " +
+							`the handler until then${persist()}`,
+						"warning",
 					);
 				}
-			} else if (choice.startsWith("Remove click handler")) {
-				linkInstall.uninstall();
-				state.linkMode = false;
-				ctx.ui.notify(`Click handler removed from the desktop${persist()}`);
-			} else if (choice.startsWith("Inference model")) {
-				await chooseModel(ctx);
-			} else if (choice.startsWith("Infer untagged questions:")) {
-				state.magicEnabled = !state.magicEnabled;
-				if (!state.magicEnabled) state.inferred = [];
-				else magic.rearm();
-				const saved = persist();
-				const model = state.magicEnabled ? pickInferenceModel(ctx) : undefined;
-				ctx.ui.notify(
-					(!state.magicEnabled
-						? "Inference off — only the suggestions the model tags itself"
-						: !model
-							? "Inference on, but no model with configured auth was found — nothing will be inferred"
-							: !clickOn()
-								? `Inference on via ${model.id} — inferred replies are click-only, so turn on click to insert to reach them`
-								: `Inference on via ${model.id} — untagged questions get underlined replies`) + saved,
-				);
 			} else {
 				state.hotkeysEnabled = !state.hotkeysEnabled;
 				ctx.ui.notify(
 					`Suggestion shortcuts ${state.hotkeysEnabled ? "enabled" : "disabled"}${persist()}`,
 				);
 			}
-			syncMouse(ctx);
+			syncClicks(ctx);
 		},
 	});
 }

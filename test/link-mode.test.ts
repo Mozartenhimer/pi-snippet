@@ -1,17 +1,17 @@
 /**
- * The guards that make click-to-insert safe to default on.
+ * The guards that make always-on Ctrl+click safe.
  *
- * Two properties matter, and neither is obvious from reading either delivery
- * path alone:
+ * Two properties matter, and neither is obvious from reading the link path
+ * alone:
  *
- * **Link mode never falls back to mouse reporting.** Mouse mode takes the
- * wheel away from the terminal and makes selection need Shift. Nobody opted
- * into that by leaving a default alone, so a terminal that cannot paint a
- * hyperlink gets no clicking rather than a surprise change of input mode.
+ * **No mouse reporting, ever.** Mouse mode takes the wheel away from the
+ * terminal and makes selection need Shift. Nobody opted into that by leaving a
+ * default alone, so a terminal that cannot paint a hyperlink gets no clicking
+ * rather than a surprise change of input mode.
  *
- * **Link mode paints no URL where the href would be visible.** pi-tui prints
- * the href in parentheses when the terminal has no OSC 8, so a `pisnip://` URL
- * on such a terminal would trail every chip on screen.
+ * **No URL where the href would be visible.** pi-tui prints the href in
+ * parentheses when the terminal has no OSC 8, so a `pisnip://` URL on such a
+ * terminal would trail every chip on screen.
  */
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +27,6 @@ const MOUSE_ON = "\x1b[?1000h";
 class FakeTui {
 	written: string[] = [];
 	lines: string[] = [];
-	hardwareCursorRow = 0;
 	requestRender(): void {}
 	terminal = { columns: 80, rows: 24, write: (data: string) => this.written.push(data) };
 	render(_width: number): string[] {
@@ -131,14 +130,14 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 
 const CHIPPED = "Want me to <snippet>rebuild the solution</snippet>?";
 
-describe("clicking on by default", () => {
-	it("engages no mouse mode on a terminal that cannot paint hyperlinks", () => {
-		const h = setup({}, { TERM: "xterm-256color" });
+describe("clicking on by default, by the terminal", () => {
+	it("engages no mouse mode, on any terminal", () => {
+		const h = setup({}, { TERM_PROGRAM: "ghostty" });
 		h.say(CHIPPED);
 		expect(h.tui.written.join("")).not.toContain(MOUSE_ON);
 	});
 
-	it("paints no URL there either, so nothing trails the chip on screen", () => {
+	it("paints no URL on a terminal that cannot paint hyperlinks, so nothing trails the chip", () => {
 		const h = setup({}, { TERM: "xterm-256color" });
 		h.say(CHIPPED);
 		expect(h.render(CHIPPED)).toBe("Want me to [¹rebuild the solution](chip:1)?");
@@ -161,33 +160,22 @@ describe("clicking on by default", () => {
 	});
 
 	// The only route to a working Ctrl+click is this row, so its presence is
-	// the feature. Switching the *method* and registering a handler are
-	// different acts: with link mode already on by default, offering only the
-	// method toggle would leave no way to install at all.
-	it("offers registration while link mode is on and the handler is missing", async () => {
+	// the feature.
+	it("offers registration while the handler is missing", async () => {
 		process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
 		const h = setup({}, { TERM_PROGRAM: "ghostty" });
 		const choices = await h.menu();
 		expect(choices).toContainEqual(expect.stringContaining("Register click handler"));
-		expect(choices).toContainEqual(expect.stringContaining("not registered yet"));
 	});
 
-	it("does not offer registration to someone who chose the mouse path", async () => {
+	it("offers removal to someone with a handler, instead", async () => {
 		process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
-		const h = setup({ linkMode: false }, { TERM: "xterm-256color" });
-		const choices = await h.menu();
-		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
-	});
-
-	it("still engages mouse reporting for anyone who chose that path", () => {
-		const h = setup({ linkMode: false }, { TERM: "xterm-256color" });
-		h.say(CHIPPED);
-		expect(h.tui.written.join("")).toContain(MOUSE_ON);
-	});
-
-	it("engages no mouse mode in link mode even where hyperlinks do work", () => {
 		const h = setup({}, { TERM_PROGRAM: "ghostty" });
-		h.say(CHIPPED);
-		expect(h.tui.written.join("")).not.toContain(MOUSE_ON);
+		// Install by hand: the menu only offers the row when files are present.
+		const { install } = await import("../src/extension/link-install.js");
+		install();
+		const choices = await h.menu();
+		expect(choices).toContainEqual(expect.stringContaining("Remove click handler"));
+		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
 	});
 });

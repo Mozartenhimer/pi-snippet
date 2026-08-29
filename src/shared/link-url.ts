@@ -2,8 +2,9 @@
  * The URL a chip carries when the terminal is the one resolving the click
  * (docs/terminal-resolved-clicks.md §4).
  *
- * In mouse mode a chip's href is inert — `chip:1` exists only because markdown
- * link syntax requires a URL. In link mode it becomes load-bearing: pi-tui
+ * Where the terminal cannot resolve clicks (no OSC 8, or the handler is not
+ * registered) the href is inert — `chip:1` exists only because markdown link
+ * syntax requires a URL. Where it can, the href becomes load-bearing: pi-tui
  * paints it into an OSC 8 hyperlink (measured verbatim, §9a), the terminal
  * resolves Ctrl+click against it, and the OS hands it to our registered
  * handler. The href is the whole channel, so its shape is a contract between
@@ -27,13 +28,10 @@
 
 export const LINK_SCHEME = "pisnip";
 
-/** Layer tags, matching the ids `ClickableText` already uses for hit-testing. */
-export type LinkKind = "c" | "a";
-
+/** The one layer: a numbered chip. (`c1`..; kept in the URL for future kinds.) */
 export interface ChipLink {
 	token: string;
 	msg: string;
-	kind: LinkKind;
 	/** One-based, as painted. */
 	index: number;
 }
@@ -80,8 +78,8 @@ export function sessionToken(sessionId: string): string {
 }
 
 /** `pisnip://a1b2c3d4/0f3e2a91/c3` */
-export function buildChipUrl(token: string, msg: string, kind: LinkKind, index: number): string {
-	return `${LINK_SCHEME}://${token}/${msg}/${kind}${index}`;
+export function buildChipUrl(token: string, msg: string, index: number): string {
+	return `${LINK_SCHEME}://${token}/${msg}/c${index}`;
 }
 
 /**
@@ -92,12 +90,12 @@ export function buildChipUrl(token: string, msg: string, kind: LinkKind, index: 
  * negative, or a float would all index into `undefined` eventually, but only
  * by luck.
  */
-export function parseChipPath(path: string): { msg: string; kind: LinkKind; index: number } | null {
-	const match = /^\/?([0-9a-f]{1,16})\/([ca])([0-9]{1,3})$/.exec(path.trim());
+export function parseChipPath(path: string): { msg: string; index: number } | null {
+	const match = /^\/?([0-9a-f]{1,16})\/c([0-9]{1,3})$/.exec(path.trim());
 	if (!match) return null;
-	const index = Number(match[3]);
+	const index = Number(match[2]);
 	if (!Number.isSafeInteger(index) || index < 1) return null;
-	return { msg: match[1] as string, kind: match[2] as LinkKind, index };
+	return { msg: match[1] as string, index };
 }
 
 /** The whole URL, for the handler and for tests. */

@@ -40,10 +40,10 @@ We want the affordance to be *ambient*: visible where the suggestion was made, i
 - G1. Model can mark suggested replies inline, mid-sentence, in its own prose.
 - G2. User can insert a suggestion into the composer with one click.
 - G3. Typing freely is always the default state. No mode, no focus steal, no forced choice.
-- G4. Suggestions never block the agent turn or add a round-trip *to it*. The inference layer of §17 is a separate call that no one waits on: it starts after the turn ends and never delays a keystroke, a click, or the agent.
+- G4. Suggestions never block the agent turn or add a round-trip *to it*. (The inference layer of §17, which once made its own model calls after the turn ended, was removed — see §17.)
 - G5. Raw markup is never visible to the user in any web surface.
 - G6. Degrades cleanly when the model misbehaves (unclosed tags, tags in code, no tags at all).
-- G7. A question the model never tagged still gets suggested replies (§17). The primary model's cooperation is an optimization, not a requirement.
+- G7. ~~A question the model never tagged still gets suggested replies~~ *(was served by the §17 inference layer; removed — a question that gets no tags simply gets no chips, and fixing the tagging belongs to the prompt contract, §6)*.
 
 ### Non-Goals
 
@@ -51,7 +51,7 @@ We want the affordance to be *ambient*: visible where the suggestion was made, i
 - NG2. **Not** a permission or confirmation mechanism. Those stay with `ctx.ui.confirm`.
 - NG3. **Not** a structured action system. A suggestion is plain text destined for the composer, nothing more. It cannot call tools, set flags, or change modes.
 - NG4. **Not** required for the model to function. An agent that never emits a suggestion tag works exactly as it does today.
-- NG5. ~~Terminal click support~~ *(originally descoped; since implemented via terminal mouse reporting — see §12)*. The TUI keeps the keyboard-addressable variant as the default affordance.
+- NG5. ~~Terminal click support~~ *(originally descoped; implemented first via terminal mouse reporting, then re-implemented as terminal-resolved Ctrl+click, which replaced mouse reporting outright — see §12.1)*.
 
 ---
 
@@ -65,7 +65,7 @@ Two designs were considered and rejected before landing here.
 
 **Inline markup in the assistant text** (this PRD) has neither problem. There is no tool call, so there is no round-trip and no control-flow risk. The suggestion sits exactly where the model made it.
 
-The web client is the right surface because a rendered message is already a tree of DOM nodes. Attaching a click handler to a span is free. The terminal has no such tree: pi-tui parses input into keys and routes them to the focused component. Clicking there requires terminal mouse reporting plus hit-testing the rendered screen — possible (§12), but with real costs the web surface doesn't pay.
+The web client is the right surface because a rendered message is already a tree of DOM nodes. Attaching a click handler to a span is free. The terminal has no such tree: pi-tui parses input into keys and routes them to the focused component. Clicking there was first built with terminal mouse reporting plus hit-testing (§12.1, since removed), and now rides the terminal's own hyperlink resolution (§12.1a) instead.
 
 ---
 
@@ -92,11 +92,9 @@ The inserted text is always exactly the element's text content — what you see 
 | **Web renderer** | Renders suggestion nodes as `<button>` chips inside the message body. |
 | **Composer integration** | Insert-at-cursor, focus management, undo. |
 | **Suggestion state store** | Tracks which message is "live" for keyboard addressing. Fed by the message lifecycle — updated as suggestions complete mid-stream, and again when the message finalizes. |
-| **Inference layer** (§17) | Reads a finished, untagged message with a small model and returns anchor/reply pairs. Runs only when the primary model tagged nothing. Its answers feed the same state store. |
 
 **Hard rule: the parser is pure and the renderer is stateless.** Rendering may run many times per message — on stream ticks, on resize, on theme change, on scroll virtualization. Any state built during render will drift out of sync with what the user sees. The set of addressable suggestions is derived in the message lifecycle handlers (`message_update` while the model writes, `message_end` when it stops) and stored outside the render path — never built during rendering.
 
-The inference layer (§17) does not weaken this. Its anchors are not marked up in the message text, so the renderer cannot find them by parsing — but it is handed them as an *input*, keyed by the exact text being rendered. Rendering stays a pure function of `(markdown, anchors)`: same inputs, same output, on every tick and every resize, with nothing accumulated during the pass.
 
 ### 5.3 Sanitization rules
 
@@ -323,8 +321,8 @@ A suggestion, once accepted, keeps its number for the life of the message — la
 **H3.** As an operator, I want to swap the tag name for a rebranded distribution.
 *Accept:* Tag name is configurable; parser and prompt snippet read from the same constant.
 
-**H4.** As a user, I want the choices I make in `/snippets` to still hold the next time I start pi, so I am not turning click-to-insert back on every session.
-*Accept:* All three toggles are written to `~/.pi/agent/pi-snippet.json` — pi's agent directory, resolved as pi resolves it (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`), overridable outright with `PI_SNIPPET_SETTINGS` — as they are changed, and read back at load. pi exposes no settings or key-value API to extensions (`ExtensionAPI` has only `appendEntry()`, which is session-scoped and branch-aware, so it is the wrong shape for a preference); a JSON file beside pi's own `settings.json` is the convention its shipped `preset.ts` example follows. The file lives outside the session store — these are preferences about the tool, not state of one conversation, so a fork or a resume finds the same answer as a fresh start. A missing, malformed, or unreadable file falls back to defaults rather than failing to load; a write that fails leaves the toggle in force for the session and says so in the notification. `--no-suggestions` is a session override and never rewrites the stored preference. Global only, deliberately: a project-local override would have to decide which file a toggle writes back to, and picking wrong reproduces exactly the bug this story fixes.
+**H4.** As a user, I want the choices I make in `/snippets` to still hold the next time I start pi.
+*Accept:* The toggles (suggestions, hotkeys — click-to-insert stopped being a preference when clicking became always-on and terminal-resolved, and the inference toggle and model pin went with §17's removal) are written to `~/.pi/agent/pi-snippet.json` — pi's agent directory, resolved as pi resolves it (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`), overridable outright with `PI_SNIPPET_SETTINGS` — as they are changed, and read back at load. pi exposes no settings or key-value API to extensions (`ExtensionAPI` has only `appendEntry()`, which is session-scoped and branch-aware, so it is the wrong shape for a preference); a JSON file beside pi's own `settings.json` is the convention its shipped `preset.ts` example follows. The file lives outside the session store — these are preferences about the tool, not state of one conversation, so a fork or a resume finds the same answer as a fresh start. A missing, malformed, or unreadable file falls back to defaults rather than failing to load; a write that fails leaves the toggle in force for the session and says so in the notification. `--no-suggestions` is a session override and never rewrites the stored preference. Global only, deliberately: a project-local override would have to decide which file a toggle writes back to, and picking wrong reproduces exactly the bug this story fixes.
 
 ---
 
@@ -571,18 +569,14 @@ path hands the click back to it:
   terminal that cannot paint a hyperlink gets no clicking, rather than a
   terminal-wide mode nobody asked for. `H4` still applies: the choice persists.
 - Registration is a `/snippets` action and is only believed when a probe URL
-  completes the whole round trip; a failure leaves clicking on the mouse path.
-  Because dispatch needs that one-time registration, a fresh install says so
-  once, when chips first appear and everything else is ready.
+  completes the whole round trip; until then, Ctrl+click fails openly. A fresh
+  install says so once, when chips first appear and everything else is ready.
   Linux only for now — on macOS Ghostty routes OSC 8 through a safe-open policy
   that puts a confirmation dialog in front of every custom-scheme click.
 
-The inference layer's cost gate (§17.2) follows this rather than the toggle:
-it spends nothing unless a click could actually reach the result, which on a
-terminal without hyperlinks and link mode selected means nothing is spent even
-though click-to-insert reads as on.
-
-Design, measurements and open items: `docs/terminal-resolved-clicks.md`.
+Support on terminals other than Ghostty — gnome-terminal in particular — is
+catalogued in `docs/linux-terminals.md`. Design, measurements and open items:
+`docs/terminal-resolved-clicks.md`.
 
 ### 12.2 Addressing more than ten suggestions
 
@@ -600,7 +594,12 @@ Web and TUI share: the parser, the tag constant, the prompt snippet, the cap, th
 
 ### 12.3 Agreeing with the terminal about glyph widths
 
-Click hit-testing turns a character index into a screen column, so our width table has to match the terminal's exactly — a glyph measured as one cell and drawn as two puts every later chip on that line one column off. A hand-written table was wrong for over a thousand codepoints, including emoji outside `U+1F300..1F9FF` (⌚, ⏩, ⚡ are all double-width) and combining marks outside Latin. `src/extension/char-width.ts` is therefore **generated** from Ghostty's own table (`ghostty::CodepointWidth` in libghostty-vt) by `npm run gen:widths`, and `npm run check:widths` verifies it still agrees.
+*Vacated.* This section existed for mouse hit-testing, which turned a character
+index into a screen column and needed a glyph-width table matching the
+terminal's exactly (a hand-written one was wrong for 1171 codepoints). With
+terminal-resolved clicks the terminal does the hit-testing, the table is gone,
+and nothing in the extension needs to agree with the terminal about widths.
+History in git.
 
 ---
 
@@ -647,79 +646,31 @@ Click hit-testing turns a character index into a screen column, so our width tab
 | Non-blocking tool + widget tray | Extra model round-trip; suggestions detached from their sentence |
 | `<option>` as the tag name | Collides with real HTML that a coding agent handles constantly |
 | Auto-send on click | Removes the edit step, which is where most of the value is; one misclick sends a wrong instruction to an agent with write access |
-| Client-side suggestion generation (second model call), *as a replacement for inline tags* | Latency and cost for something the primary model already knows. **Reversed in part** — see §17: rejected as the primary mechanism, adopted as the fallback for messages the primary model did not tag, where the premise "the primary model already knows" is exactly what does not hold. |
+| Client-side suggestion generation (second model call), *as a replacement for inline tags* | Latency and cost for something the primary model already knows. **Reversed in part, then reversed back** — adopted as the §17 fallback for untagged messages, and finally removed with §17: the fallback's cost was ongoing and its product second-class (§17). |
 | Structured JSON sidecar instead of inline tags | Loses inline position, which is the whole point |
 
 ---
+## 17. Inferred suggestions (layer 2) — REMOVED
 
-## 17. Inferred suggestions (layer 2)
+Layer 2 inferred suggestions for questions the primary model left untagged: a
+small model read the finished message and returned anchor/reply pairs, rendered
+as unnumbered underlines that only the mouse could activate. It was removed
+outright (extension, tests, and the `/snippets` toggle and model picker that
+managed it), for reasons worth keeping visible:
 
-Layer 1 — `<snippet>` tags — needs the primary model to cooperate: to notice it has asked something, and to wrap the answer as it writes. It often doesn't. A provider bridge that rebuilds the system prompt may never have shown it the contract at all, and no prompt makes a model tag reliably enough to depend on. Measured emission is what `/snippets` reports, and it is not 100%.
+- **The cost was ongoing and the value was marginal.** Every question-bearing
+  untagged message paid a model call, gated on clicking being able to reach the
+  result — and what it bought was a second-class chip: no number, no keyboard
+  path, dependent on a paraphrasing small model getting a span exactly right.
+- **Layer 1's fix is better.** A model that does not tag is best fixed by the
+  prompt contract (§6) and by measured emission rates (§14), not by a second
+  model guessing after the fact.
+- **Removal simplified the hard invariants.** The parser/renderer purity rule
+  (§5.2) had to accommodate anchors that were not marked up in the text at all;
+  with layer 2 gone, everything addressable comes from the parser.
 
-Layer 2 covers the gap. When a message finishes, asks something, and carries no tags, a small fast model reads it and returns the spans that invite a reply together with what the user would say back.
-
-### 17.1 What the user sees
-
-The assistant writes, untagged:
-
-> I'm done the model, do you want to see it?
-
-The question clause is underlined — link-styled, no number. Clicking it puts **`Show me the model.`** in the composer. Insertion never sends (NG1), so it can be edited or cleared like any other suggestion.
-
-The two layers are deliberately distinguishable:
-
-| | Layer 1 — tagged | Layer 2 — inferred |
-|---|---|---|
-| Source | the primary model, inline, as it writes | a small model, after the message ends |
-| Marker | superscript number, link-styled | link-styled, no number |
-| Addressing | click **and** `Alt+N` | click only |
-| Live | the moment the closing tag arrives, mid-stream | once the message is finished and read |
-| Cost | none — already in the turn | one small-model call per untagged question |
-
-Layer 2 carries no number because nothing addresses it by number: a digit that sometimes means a tagged chip and sometimes an inferred one would make `Alt+N` ambiguous, and the numbering is worth more than the second affordance.
-
-### 17.2 Rules
-
-1. **Layer 1 wins outright.** A message with even one tag is never sent for inference. The layers never compete for the same sentence.
-2. **No question, no call.** A message with no question mark outside code is never sent. This is the cost control.
-3. **Click-only means click-gated.** With click-to-insert off, nothing could activate an inferred anchor, so nothing is inferred and nothing is spent. `--snippet-click` turns clicking on for one session without changing the stored preference, the mirror of what `--no-suggestions` does.
-4. **Never off-provider.** Inference uses the session's own provider. An assistant message can contain file contents; this layer must not become a route for them to reach somewhere the session wasn't already talking to.
-5. **Anchors are verbatim or dropped.** An anchor that is not literally present in the message's non-code text is discarded, never repaired. A small model that paraphrases produces a missing chip, never a wrong one.
-6. **Failures are silent.** No auth, no small model, a timeout, a refusal, malformed JSON: the message simply has no anchors, exactly as if the layer were off.
-7. **Answers are cached by message text.** A resize, a repaint, a `/tree` walk back to a message, or a fork never pays twice. An empty answer is cached too.
-8. **A dead provider stands the layer down.** `hasConfiguredAuth()` answers whether credentials are *configured*, not whether they work — an expired key passes it and then 403s on every call. Three consecutive failures stop the layer for the session; `/snippets` re-arms it.
-
-### 17.3 Choosing the model
-
-Most specific source wins:
-
-1. the model picked in `/snippets` — persisted with the toggles, so it is chosen once, not once per session
-2. `--snippet-model <provider/id>`
-3. `PI_SNIPPET_MODEL`
-4. auto-selection
-
-Auto-selection takes the session provider's own small models — matched on id (`haiku`, `mini`, `flash`, `lite`, `micro`, `nano`, `8b` …) — and prefers a known-good family before falling back to price. The cheapest small model in a large catalogue is frequently a 3B that paraphrases the anchor, and a paraphrased anchor is a dropped chip (rule 5), so quality is ranked ahead of cost. With nothing small available it falls back to the active model rather than doing nothing, which is why `/snippets` always names whatever it picked: an expensive fallback should never be a surprise.
-
-A pinned model is obeyed even when it is neither small nor cheap — it was asked for by name. It is not obeyed when it has no configured auth, which would spend every message on a call that cannot succeed.
-
-### 17.4 Failure matrix
-
-| Situation | Behaviour |
-|---|---|
-| No provider auth | No anchors. After three tries, layer stands down for the session. |
-| Model returns prose, not JSON | No anchors. |
-| Model invents or paraphrases an anchor | That entry dropped; the others kept. |
-| Anchor occurs only inside code | Dropped. |
-| Two anchors overlap | The first is kept, the second dropped — a span is never underlined twice. |
-| Reply empty, multi-line, or over the length cap | That entry dropped. |
-| More than four entries | The first four are kept. |
-| Answer arrives after the branch moved on | Discarded — anchors belong to the message they were read from. |
-| Call exceeds its deadline | Abandoned, no anchors; not cached, so a later visit may retry. |
-| User aborts the turn | Abandoned; not counted against the provider. |
-
-### 17.5 Open questions
-
-- **OQ7.** Should layer 2 also run on a message that *did* tag, to catch a question the model tagged only partially? Leaning no: it doubles cost for a case that is already served, and two sources on one sentence is exactly what rule 1 exists to prevent.
-- **OQ8.** Should an inferred anchor be addressable by keyboard at all — say a separate chord that never collides with `Alt+N`? Deferred until clicking proves the interaction is worth keeping.
-- **OQ9.** Should inferred replies be cached to disk across sessions? The answers are a pure function of the message text, so the cache is safe to persist — but a session store carrying UI ephemera is what OQ2 already leaned against.
-- **OQ10.** The prompt asks for JSON in prose. Constrained sampling (`constrainedSampling: { type: "json_schema" }`, supported by pi-ai) would make malformed output structurally impossible on providers that offer it. Worth measuring once there is a take-rate to measure against.
+The design is preserved in git history (PRD §17 as of before the removal, plus
+`src/extension/magic.ts` and `src/shared/inferred.ts`); the rules it
+established — verbatim anchors or nothing, cache by message text, stand down on
+dead credentials — are patterns worth reusing if a client-side inference layer
+is ever wanted again.

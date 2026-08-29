@@ -1,24 +1,28 @@
 /**
  * The `/snippets` toggles, persisted across sessions.
  *
- * Click-to-insert is the toggle that most needs this: it is off by default
- * (mouse reporting costs wheel scrolling, see tui-mouse.ts), so anyone who
- * wants it wants it every session — turning it back on after each restart is
- * the whole friction. Suggestions and the Alt shortcuts ride along, so all
- * three switches behave the same way. The inference layer (PRD §17) rides
- * along too, together with the model it was told to use: picking a small model
- * once and re-picking it every session would be the same friction again.
+ * Two switches remain: suggestions on/off and the Alt+digit shortcuts. They
+ * need this file for the same reason as before — a preference about the tool,
+ * not state of one conversation, so a fork or a resume must not carry a
+ * different answer than a fresh start.
  *
- * The file lives outside the session store on purpose: these are preferences
- * about the tool, not state of one conversation, so a fork or a resume must
- * not carry a different answer than a fresh start.
+ * Clicking is no longer a preference. It is always on, delivered by the
+ * terminal's own Ctrl+click (`link-url.ts`), which has no terminal-wide costs
+ * to opt out of: the wheel and selection are never taken away, so there is
+ * nothing to toggle and nothing to persist. Where the terminal cannot paint a
+ * hyperlink (`osc8.ts`) no URL is painted and clicking is simply inert.
  *
- * pi has no settings or key-value API for extensions — `ExtensionAPI` offers
- * only `appendEntry()`, which is session-scoped and branch-aware, so it is the
- * wrong shape for a preference. Its own shipped extensions (`preset.ts`) keep
- * their config in a JSON file of their own next to pi's, and that is what this
- * does: `~/.pi/agent/pi-snippet.json`, beside `settings.json` and
- * `presets.json`.
+ * The inference layer (former PRD §17) is gone entirely, along with its model
+ * pin, so this file shrank accordingly. Older settings files may still carry
+ * `clickEnabled`, `linkMode`, `magicEnabled` or `model` keys; `merge` reads
+ * only the keys it knows and ignores the rest, so a stale file costs nothing.
+ *
+ * The file lives outside the session store on purpose. pi has no settings or
+ * key-value API for extensions — `ExtensionAPI` offers only `appendEntry()`,
+ * which is session-scoped and branch-aware — so it is the wrong shape for a
+ * preference. pi's own shipped extensions (`preset.ts`) keep their config in a
+ * JSON file of their own next to pi's, and that is what this does:
+ * `~/.pi/agent/pi-snippet.json`, beside `settings.json` and `presets.json`.
  *
  * Nothing here is allowed to be fatal. A missing file, an unreadable one, a
  * half-written one, a read-only home directory — each degrades to "defaults,
@@ -31,61 +35,11 @@ import { dirname, join } from "node:path";
 export interface SnippetSettings {
 	enabled: boolean;
 	hotkeysEnabled: boolean;
-	clickEnabled: boolean;
-	/**
-	 * *How* a click is delivered, not whether clicking is on.
-	 *
-	 * False is mouse reporting (`tui-mouse.ts`), which costs the wheel and
-	 * shift-less selection while suggestions are on screen. True is
-	 * terminal-resolved: the chip's href becomes a real URL, the terminal
-	 * dispatches Ctrl+click to a registered handler, and none of those costs
-	 * apply. It rides beside `clickEnabled` rather than replacing it because
-	 * the two answer different questions, and because a machine that loses its
-	 * handler registration should fall back to mouse rather than to nothing.
-	 */
-	linkMode: boolean;
-	/** Layer 2 — infer replies for questions the model left untagged (PRD §17). */
-	magicEnabled: boolean;
-	/**
-	 * Model pinned for inference, as `provider/id`, or null to auto-select.
-	 *
-	 * The one non-boolean here, and worth persisting for the same reason as the
-	 * toggles: someone who picked a model in `/snippets` picked it about the
-	 * tool, not about one conversation. `--snippet-model` and
-	 * `PI_SNIPPET_MODEL` still override it, so a pin stored here is the
-	 * least-specific source rather than a sticky trap.
-	 */
-	model: string | null;
 }
 
-/**
- * Clicking starts **on**, delivered by the terminal.
- *
- * It used to start off, and the reason was entirely about mouse reporting:
- * that path takes the wheel away from the terminal's own scrollback and makes
- * text selection need Shift, which is a bad trade for anyone who scrolls more
- * than they click. Link mode has none of those costs — the terminal resolves
- * the click itself — so the reason to default off went away with it, and what
- * is left is a feature that costs nothing until someone Ctrl+clicks.
- *
- * Two things keep that honest rather than presumptuous. Link mode paints no
- * URL at all where the terminal cannot render a hyperlink (`osc8.ts`), so it
- * can never leave `(pisnip://…)` sitting after every chip. And it never
- * silently falls back to mouse reporting: choosing link mode means links or
- * nothing, because a terminal-wide mode is precisely the thing nobody opted
- * into.
- *
- * Dispatch still needs a handler registered with the desktop, which is a
- * one-time `/snippets` action — a scheme handler is a change to the user's
- * system and is not something to do behind their back.
- */
 export const DEFAULT_SETTINGS: SnippetSettings = {
 	enabled: true,
 	hotkeysEnabled: true,
-	clickEnabled: true,
-	linkMode: true,
-	magicEnabled: true,
-	model: null,
 };
 
 /**
@@ -93,7 +47,7 @@ export const DEFAULT_SETTINGS: SnippetSettings = {
  * its `config.ts`): `PI_CODING_AGENT_DIR` if set, `~/.pi/agent` otherwise.
  *
  * Deliberately re-derived in three lines rather than imported from
- * `@mariozechner/pi-coding-agent`: this extension bundles standalone and has
+ * `@earendil-works/pi-coding-agent`: this extension bundles standalone and has
  * no runtime dependency on pi, and one import for one path is not worth
  * pinning ourselves to a pi version. The cost is a rebranded distribution
  * (PRD H3), where pi renames both the directory and this variable — such a
@@ -133,13 +87,6 @@ function merge(raw: unknown): SnippetSettings {
 	const source = raw as Record<string, unknown>;
 	for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof SnippetSettings)[]) {
 		const value = source[key];
-		if (key === "model") {
-			// Empty string means "no pin", same as absent — it would resolve to
-			// nothing anyway, and storing it would look like a broken model id.
-			if (typeof value === "string" && value.trim() !== "") settings.model = value;
-			else if (value === null) settings.model = null;
-			continue;
-		}
 		if (typeof value === "boolean") settings[key] = value;
 	}
 	return settings;
@@ -173,10 +120,6 @@ export function saveSettings(settings: SnippetSettings, path: string = settingsP
 		const body: SnippetSettings = {
 			enabled: settings.enabled,
 			hotkeysEnabled: settings.hotkeysEnabled,
-			clickEnabled: settings.clickEnabled,
-			linkMode: settings.linkMode,
-			magicEnabled: settings.magicEnabled,
-			model: settings.model,
 		};
 		writeFileSync(temp, `${JSON.stringify(body, null, "\t")}\n`, "utf8");
 		renameSync(temp, path);

@@ -3,8 +3,8 @@
 #
 # Ghostty ships libghostty-vt with its snap (and with a source build's
 # zig-out). Sourcing this script sets GHOSTTY_PREFIX; running it builds
-# scripts/ghostty-keys and scripts/ghostty-width into $BUILD_DIR (default
-# scripts/.build). Exits 1 if no install is found, so callers can skip.
+# scripts/ghostty-keys into $BUILD_DIR (default scripts/.build). Exits 1 if
+# no install is found, so callers can skip.
 set -euo pipefail
 
 find_prefix() {
@@ -54,5 +54,4 @@ build() {
 }
 
 build ghostty-keys c
-build ghostty-width cc
 echo "GHOSTTY_PREFIX=$GHOSTTY_PREFIX"

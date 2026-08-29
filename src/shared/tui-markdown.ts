@@ -1,32 +1,23 @@
 /**
  * TUI rendering of suggestion nodes (PRD §12).
  *
- * Two layers render here, and they look deliberately different.
+ * Tagged chips — what the model wrapped in `<snippet>` — render as markdown
+ * links led by a superscript number: `[¹rebuild](chip:1)` renders in the
+ * theme's link color, and the number is what `Alt+N` addresses.
  *
- * **Tagged chips** — what the model wrapped in `<snippet>` — render as
- * markdown links led by a superscript number: `[¹rebuild](chip:1)` renders in
- * the theme's link color, and the number is what `Alt+N` addresses.
- *
- * **Inferred anchors** — spans a small model picked out of a message the
- * primary model never tagged (PRD §17) — render as the same inert link
- * *without* a number: link-styled, so the span reads as live, but carrying no
- * digit, because nothing addresses them but the mouse.
- *
- * The URL in both cases is inert (never navigated); it exists only because
- * link syntax requires one. pi's renderer consumes the markdown markers, and
- * consumes the URL too wherever the terminal supports OSC 8 hyperlinks; where
- * it does not (tmux and screen, unless the client advertises `hyperlinks`)
- * pi-tui falls back to printing the URL in parentheses after the label. Either
- * way the *label* is what appears on screen, which is what mouse hit-testing
- * matches — so the fallback is cosmetic and clicking is unaffected.
+ * The URL is inert in the inert case (`chip:1`, never navigated); it exists
+ * only because link syntax requires one. When terminal-resolved clicking is
+ * active the href becomes a real `pisnip://` URL instead (`link-url.ts`). pi's
+ * renderer consumes the markdown markers, and consumes the URL too wherever
+ * the terminal supports OSC 8 hyperlinks; where it does not (tmux and screen,
+ * unless the client advertises `hyperlinks`) pi-tui falls back to printing the
+ * URL in parentheses after the label. Either way the *label* is what appears
+ * on screen, which is what clicking resolves against — so the fallback is
+ * cosmetic.
  *
  * Pure function: feeds pi's markdown transformer hook, which is display-only
- * (the stored message keeps its raw tags, and never gains markup for an
- * inferred anchor). `anchors` is an input, not state read from the extension:
- * rendering stays a pure function of (text, anchors), which is what keeps the
- * PRD §5.2 rule intact for a layer whose spans are not in the text itself.
+ * (the stored message keeps its raw tags and never gains markup).
  */
-import { codeRegions } from "./inferred.js";
 import { buildChipUrl, messageKey } from "./link-url.js";
 import { parseSuggestions, type SuggestOptions, visibleStreamingPrefix } from "./suggestions.js";
 
@@ -41,16 +32,9 @@ export interface TuiRenderOptions {
 	 */
 	parse?: SuggestOptions;
 	/**
-	 * Inferred anchor spans for *this* text, verbatim. Rendered as unnumbered
-	 * links. Anchors that don't occur outside code are simply not found and so
-	 * change nothing.
-	 */
-	anchors?: string[];
-	/**
 	 * Session token for terminal-resolved clicking. When set, a chip's href
 	 * stops being inert and becomes the channel the terminal dispatches on
-	 * (`link-url.ts`); when absent, chips keep the `chip:N` placeholder and the
-	 * mouse path hit-tests the label as before.
+	 * (`link-url.ts`); when absent, chips keep the `chip:N` placeholder.
 	 *
 	 * Passed in rather than read from module state so the function stays pure:
 	 * the message key is derived from the very text being rendered, so the same
@@ -79,71 +63,17 @@ function escapeLinkLabel(text: string): string {
 	return text.replace(/[\\[\]]/g, (c) => "\\" + c);
 }
 
-/** Who to address a link to, when the terminal is resolving the click. */
-export interface LinkContext {
-	token: string;
-	msg: string;
-}
-
-function inAnyRegion(regions: Array<{ start: number; end: number }>, pos: number): boolean {
-	return regions.some((r) => pos >= r.start && pos < r.end);
-}
-
-/**
- * Wrap each anchor occurrence in an inert, unnumbered link.
- *
- * Scans left to right taking the earliest match, so anchors never overlap and
- * an anchor that contains another still renders once. Occurrences inside code
- * are skipped — the same rule the tag parser follows.
- */
-export function linkifyAnchors(text: string, anchors: string[], link?: LinkContext): string {
-	const wanted = anchors.filter((a) => a.length > 0);
-	if (wanted.length === 0) return text;
-	const regions = codeRegions(text);
-
-	let out = "";
-	let i = 0;
-	while (i < text.length) {
-		let bestAt = -1;
-		let bestAnchor = "";
-		for (const anchor of wanted) {
-			for (let at = text.indexOf(anchor, i); at !== -1; at = text.indexOf(anchor, at + 1)) {
-				if (inAnyRegion(regions, at)) continue;
-				// Earliest wins; on a tie the longer span wins, so a nested
-				// anchor never truncates the one containing it.
-				if (bestAt === -1 || at < bestAt || (at === bestAt && anchor.length > bestAnchor.length)) {
-					bestAt = at;
-					bestAnchor = anchor;
-				}
-				break;
-			}
-		}
-		if (bestAt === -1) {
-			out += text.slice(i);
-			break;
-		}
-		const n = wanted.indexOf(bestAnchor) + 1;
-		out += text.slice(i, bestAt);
-		const href = link ? buildChipUrl(link.token, link.msg, "a", n) : `infer:${n}`;
-		out += `[${escapeLinkLabel(bestAnchor)}](${href})`;
-		i = bestAt + bestAnchor.length;
-	}
-	return out;
-}
-
 export function toTuiMarkdown(rawText: string, opts: TuiRenderOptions): string {
 	const text = opts.isStreaming ? visibleStreamingPrefix(rawText, opts.parse) : rawText;
 	const { nodes } = parseSuggestions(text, opts.parse);
-	const anchors = opts.enabled ? (opts.anchors ?? []) : [];
-	const link = opts.linkToken ? { token: opts.linkToken, msg: messageKey(text) } : undefined;
 	let out = "";
 	for (const node of nodes) {
 		if (node.type === "text" || !opts.enabled) {
-			out += node.type === "text" ? linkifyAnchors(node.text, anchors, link) : node.text;
+			out += node.text;
 		} else {
 			const oneBased = node.index + 1;
 			const href = opts.linkToken
-				? buildChipUrl(opts.linkToken, messageKey(text), "c", oneBased)
+				? buildChipUrl(opts.linkToken, messageKey(text), oneBased)
 				: `chip:${oneBased}`;
 			out += `[${escapeLinkLabel(chipLabel(oneBased, node.text))}](${href})`;
 		}

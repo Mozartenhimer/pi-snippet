@@ -251,22 +251,68 @@ def status() -> int:
 
 
 def uninstall() -> int:
+	"""Unregister pisnip:// everywhere gio looks, then ask the desktop.
+
+	The first cut of this removed the two files and the config mimeapps.list and
+	claimed success — and did not work: gio also consults the legacy
+	~/.local/share/applications/mimeapps.list, and a stale mimeinfo.cache still
+	recommended the deleted desktop file where update-desktop-database is
+	absent. Mirrors uninstall() in src/extension/link-install.ts.
+	"""
 	for path in (desktop_path(), handler_path()):
 		if os.path.exists(path):
 			os.unlink(path)
 			print(f"removed {path}")
-	path = mimeapps_path()
-	if os.path.exists(path):
-		key = f"x-scheme-handler/{SCHEME}="
+
+	key = f"x-scheme-handler/{SCHEME}="
+	locations = [mimeapps_path(), os.path.join(data_home(), "applications", "mimeapps.list")]
+	for path in locations:
+		if not os.path.exists(path):
+			continue
 		with open(path) as f:
-			kept = [l for l in f.read().splitlines() if not l.startswith(key)]
-		with open(path, "w") as f:
-			f.write("\n".join(kept) + "\n")
-		print(f"cleaned {path}")
+			lines = f.read().splitlines()
+		kept, changed = [], False
+		for line in lines:
+			if not line.startswith(key):
+				kept.append(line)
+				continue
+			changed = True
+			# The value is a ';'-separated handler list: drop ours, keep theirs.
+			rest = [i for i in line[len(key):].split(";") if i and i != DESKTOP_ID]
+			if rest:
+				kept.append(key + ";".join(rest))
+		if changed:
+			try:
+				with open(path, "w") as f:
+					f.write("\n".join(kept) + "\n")
+				print(f"cleaned {path}")
+			except OSError as e:
+				print(f"could not clean {path}: {e}", file=sys.stderr)
+
 	if shutil.which("update-desktop-database"):
 		subprocess.run(
 			["update-desktop-database", os.path.dirname(desktop_path())], check=False
 		)
+	cache = os.path.join(data_home(), "applications", "mimeinfo.cache")
+	if os.path.exists(cache):
+		with open(cache) as f:
+			lines = f.read().splitlines()
+		kept = [l for l in lines if not l.startswith(key)]
+		if kept != lines:
+			with open(cache, "w") as f:
+				f.write("\n".join(kept) + "\n")
+			print(f"scrubbed {cache}")
+
+	if shutil.which("xdg-mime"):
+		default = subprocess.run(
+			["xdg-mime", "query", "default", f"x-scheme-handler/{SCHEME}"],
+			capture_output=True, text=True,
+		).stdout.strip()
+		if default == DESKTOP_ID:
+			print("the desktop still reports our handler; a location above may be unwritable",
+				  file=sys.stderr)
+			return 1
+		print(f"desktop reports no pi-snippet handler (default: {default or '(none)'})")
 	return 0
 
 
