@@ -1,11 +1,12 @@
 # Human generated content
- The idea here is that the questionaire type things are too limited, and I found myself copy and pasting content into my answer. Why can't the LLM make that a bit easier by suggesting snippets that might be good replies? See Human Compatible by Stuart Russell. 
+ The idea here is that the questionaire tools type things are too limited and rail roading. I've found myself copy and pasting content into my answer, and that's too much work. I'm extremely lazy.
+ Why can't the LLM make that a bit easier by suggesting snippets that might be good replies? This is very much inspired by *Human Compatible* by Stuart Russell. 
 
-So that's what this does.
+So that's what this attempts to do.
 
 An earlier version also had a web UI, but the best interface is the TUI for me at the moment. Mostly since it doesn't change my workflow now.
 
-Below is what the machine created. Fable 5 did the initial design costing about 93 $ in credits, refinement with opus 5 and sonnet 5.
+Below is what the machine created. Fable 5 did the initial design costing about 93 $ in credits, refinement with opus 5 and sonnet 5, and now glm 5.3-flash.
 
 # pi-snippet
 
@@ -18,26 +19,25 @@ What the model writes:
 ```
 Want me to <snippet>rebuild the solution</snippet> or <snippet>run the tests</snippet>?
 ```
+And it renders as 
+> Want me to [¹rebuild the solution](#1) or [²run the tests](#2)?
 
 What you see in the terminal — link-styled text led by a small superscript number. The transformer's actual output is a markdown link (`[¹rebuild the solution](#1)`-shaped) whose URL is either the inert `chip:1` placeholder or — once clicking is registered — a real `pisnip://…` URL the terminal resolves on Ctrl+click. Whether a URL is *visible* is the terminal's call, not ours: pi-tui emits an OSC 8 hyperlink when the terminal supports one (Ghostty does) and the URL stays hidden, but where OSC 8 is unavailable — under tmux or screen, unless the client advertises `hyperlinks` — pi-tui falls back to printing the URL after the label. The extension paints no URL on such a terminal, so the fallback never appears; the chip is simply not clickable there.
 
-GitHub's sanitizer strips the `href` from that `chip:` scheme entirely, so the examples below use plain `#N` anchors instead, purely so this page renders them link-styled the way the terminal does:
-
-Want me to [¹rebuild the solution](#1) or [²run the tests](#2)?
 
 More than ten in one message still each get their own number, and `Alt` addresses all of them (see below):
 
-- [¹check the logs](#1)
-- [²clear the cache](#2)
-- [³restart the server](#3)
-- [⁴roll back the deploy](#4)
-- [⁵grep the error](#5)
-- [⁶bump the version](#6)
-- [⁷open a ticket](#7)
-- [⁸ping the on-call](#8)
-- [⁹skip for now](#9)
-- [¹⁰rerun the pipeline](#10)
-- [¹¹diff the config](#11)
+> - [¹check the logs](#1)
+> - [²clear the cache](#2)
+> - [³restart the server](#3)
+> - [⁴roll back the deploy](#4)
+> - [⁵grep the error](#5)
+> - [⁶bump the version](#6)
+> - [⁷open a ticket](#7)
+> - [⁸ping the on-call](#8)
+> - [⁹skip for now](#9)
+> - [¹⁰rerun the pipeline](#10)
+> - [¹¹diff the config](#11)
 
 ## Build
 
