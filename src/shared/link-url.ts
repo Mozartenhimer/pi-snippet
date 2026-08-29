@@ -48,7 +48,7 @@ export interface ChipLink {
  * thing in parentheses after the label, so every character is one the user
  * might have to read.
  */
-export function messageKey(text: string): string {
+function fnv1a(text: string): string {
 	let hash = 0x811c9dc5;
 	for (let i = 0; i < text.length; i++) {
 		hash ^= text.charCodeAt(i);
@@ -56,6 +56,27 @@ export function messageKey(text: string): string {
 		hash = Math.imul(hash, 0x01000193) >>> 0;
 	}
 	return hash.toString(16).padStart(8, "0");
+}
+
+export function messageKey(text: string): string {
+	return fnv1a(text);
+}
+
+/**
+ * The socket's name, derived from pi's own session id rather than drawn
+ * fresh per launch.
+ *
+ * A random token disambiguates concurrent sessions but dies with the process
+ * that drew it, so a chip painted before a restart names a socket nothing
+ * will ever bind again. The session id survives a resume (it is the `id`
+ * field of the session file), so hashing it down to the same shape the random
+ * token used — the handler script requires `isalnum()`, which a raw UUID's
+ * hyphens fail — lets a resumed session rebind the very socket path its own
+ * old scrollback already points to, while still keying two *different*
+ * sessions in the same directory apart.
+ */
+export function sessionToken(sessionId: string): string {
+	return fnv1a(sessionId);
 }
 
 /** `pisnip://a1b2c3d4/0f3e2a91/c3` */

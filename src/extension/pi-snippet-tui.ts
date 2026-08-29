@@ -39,7 +39,7 @@ import { ClickableText, type TuiLike } from "./tui-mouse.js";
 import { LinkServer } from "./link-server.js";
 import * as linkInstall from "./link-install.js";
 import { terminalSupportsOsc8 } from "./osc8.js";
-import { buildChipUrl, messageKey } from "../shared/link-url.js";
+import { buildChipUrl, messageKey, sessionToken } from "../shared/link-url.js";
 import { randomBytes } from "node:crypto";
 
 interface TextBlock {
@@ -160,12 +160,14 @@ export default function piSnippetTui(pi: any): void {
 
 	/**
 	 * Names this session in every chip URL it paints, so a click dispatched by
-	 * the desktop reaches the pi that painted it and no other. Four random
-	 * bytes: it addresses a socket in the user's own runtime directory, and its
-	 * job is to disambiguate concurrent sessions, not to withstand an attacker
-	 * who can already read that directory.
+	 * the desktop reaches the pi that painted it and no other. Random four
+	 * bytes until `session_start` supplies the real session id (`sessionToken`
+	 * below) — not to withstand an attacker who can already read the runtime
+	 * directory, but so a resumed session rebinds the same socket path its own
+	 * old scrollback already points to, rather than a fresh one nothing can
+	 * reach.
 	 */
-	const linkToken = randomBytes(4).toString("hex");
+	let linkToken = randomBytes(4).toString("hex");
 
 	/**
 	 * Clicking is on, the terminal is the one resolving it, and the terminal
@@ -290,7 +292,7 @@ export default function piSnippetTui(pi: any): void {
 	const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 	const linkServer = new LinkServer({
-		token: linkToken,
+		token: () => linkToken,
 		resolve: (msg, kind, index) => {
 			if (msg === PROBE_KEY) {
 				probeArrived?.();
@@ -650,6 +652,15 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	pi.on("session_start", (event: { reason?: string }, ctx: any) => {
+		// Falls back to the random token from setup if the session has no id
+		// (a trust-limited or otherwise degraded ctx); a socket that dies with
+		// the process is the same behavior this extension always had.
+		try {
+			const id = ctx.sessionManager?.getSessionId?.();
+			if (id) linkToken = sessionToken(id);
+		} catch {
+			/* keep the random fallback */
+		}
 		if (pi.getFlag("snippet-click") === true) flagClick = true;
 		if (event.reason === "resume" || event.reason === "fork" || event.reason === "reload") {
 			hydrateFromBranch(ctx);

@@ -55,7 +55,12 @@ export function socketDirCandidates(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 export interface LinkServerOptions {
-	token: string;
+	/**
+	 * Read lazily, not captured at construction: the extension doesn't know
+	 * its session id until `session_start`, which fires after this object is
+	 * built, so the value behind the getter changes once, in place.
+	 */
+	token: () => string;
 	/** Resolve a click to the text to insert, or null for a miss. */
 	resolve: (msg: string, kind: "c" | "a", index: number) => string | undefined;
 	onActivate: (text: string) => void;
@@ -84,7 +89,7 @@ export class LinkServer {
 	start(): string | null {
 		if (this.server) return this.path;
 		for (const dir of socketDirCandidates(this.options.env)) {
-			const path = join(dir, `${this.options.token}.sock`);
+			const path = join(dir, `${this.options.token()}.sock`);
 			try {
 				mkdirSync(dir, { recursive: true, mode: 0o700 });
 				// The directory is the real guard. `listen()` binds

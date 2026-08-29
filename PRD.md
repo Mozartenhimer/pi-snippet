@@ -537,6 +537,15 @@ path hands the click back to it:
   (`ctrlOrSuper`, no other modifier), and the desktop dispatches the URL to a
   handler registered once per machine, which forwards it to a per-session unix
   socket the extension listens on.
+- `<token>` is pi's own session id (hashed to the socket-safe shape the
+  handler's `isalnum()` check requires), not a value drawn fresh per launch.
+  A session id survives `/resume`, so a chip painted before a restart still
+  names a socket the resumed process rebinds — falling back to a random
+  token disambiguates a session with no id, at the old cost: that chip dies
+  with the process. Keying on the working directory instead was considered
+  and rejected: two sessions open in the same project is an ordinary thing to
+  do, and directory-keying would make the second one's clicks land in the
+  first one's composer instead of failing openly.
 - **No terminal-wide mode.** The wheel keeps scrolling the terminal's own
   scrollback and selection needs no Shift, which is the entire cost this
   removes. The mouse path stays as the fallback for terminals without OSC 8,

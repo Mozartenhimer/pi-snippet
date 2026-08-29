@@ -42,7 +42,7 @@ function serverFor(options: {
 	inserted: string[];
 }): LinkServer {
 	return new LinkServer({
-		token: "a1b2c3d4",
+		token: () => "a1b2c3d4",
 		env: { PI_SNIPPET_SOCKET_DIR: dir },
 		resolve: options.resolve ?? ((msg, kind, index) => (msg === "0f3e2a91" && kind === "c" ? `chip ${index}` : undefined)),
 		onActivate: (text) => options.inserted.push(text),

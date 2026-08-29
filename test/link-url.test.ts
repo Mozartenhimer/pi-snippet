@@ -10,6 +10,7 @@ import {
 	messageKey,
 	parseChipPath,
 	parseChipUrl,
+	sessionToken,
 } from "../src/shared/link-url.js";
 
 describe("chip URLs", () => {
@@ -30,6 +31,21 @@ describe("chip URLs", () => {
 
 	it("reaches two-digit chips, matching what Alt addressing reaches", () => {
 		expect(parseChipUrl(buildChipUrl("tok", "0f3e2a91", "c", 99))?.index).toBe(99);
+	});
+});
+
+describe("sessionToken", () => {
+	it("is stable across a resume, unlike a fresh random token", () => {
+		const id = "3fae1c2e-9b7c-4b8b-8f2a-1a2b3c4d5e6f";
+		expect(sessionToken(id)).toBe(sessionToken(id));
+	});
+
+	it("separates two sessions the same way messageKey separates two messages", () => {
+		expect(sessionToken("session-a")).not.toBe(sessionToken("session-b"));
+	});
+
+	it("is alnum, satisfying the handler's isalnum() check a raw UUID would fail", () => {
+		expect(sessionToken("3fae1c2e-9b7c-4b8b-8f2a-1a2b3c4d5e6f")).toMatch(/^[0-9a-f]{8}$/);
 	});
 });
 
