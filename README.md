@@ -11,6 +11,8 @@ Below is what the machine created. Fable 5 did the initial design costing about 
 
 Inline suggestion snippets for [pi](https://github.com/earendil-works/pi-mono). The model marks spans of its own prose as *suggested user replies* by wrapping them in `<snippet>…</snippet>`; the extension renders those spans in pi's terminal UI so you can insert them into the composer with a click or a keystroke. Inserting never sends — you can edit the text, add to it, or ignore it.
 
+Suggestions come from two layers, painted as one. Layer 1 is the model's own tags. Layer 2 is a second, small model — OpenRouter's `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` by default, `PI_SNIPPET_MODEL` to override — which reads each finished message (tags included, told to keep them and add more) and returns it with additional tags. Its chips are indistinguishable from layer-1 chips: numbered, `Alt+N` addressable, click-to-insert. It only runs on messages that ask something, caches its answers, stands down after three consecutive failures, and never surfaces an error — a message it cannot process simply has no extra chips. A question the primary model failed to tag still gets its chips; a message that asks nothing costs nothing.
+
 What the model writes:
 
 ```
@@ -63,10 +65,12 @@ Suggestions render through pi's markdown transformer hook, which is **display-on
 
 | Piece | File | Role |
 |---|---|---|
-| Parser | `src/shared/suggestions.ts` | Pure function: raw assistant markdown → text/suggestion token stream. Holds every sanitization rule (code fences, inline code, unclosed and nested tags, blank-line spans, the 120-character length cap, the per-message cap) plus `visibleStreamingPrefix()`, so a partial tag is never painted mid-stream. |
+| Parser | `src/shared/suggestions.ts` | Pure function: raw assistant markdown → text/suggestion token stream. Holds every sanitization rule (code fences, inline code, unclosed and nested tags, blank-line spans, the 120-character length cap, the per-message cap) plus `visibleStreamingPrefix()`, so a partial tag is never painted mid-stream. Nodes carry offsets, which is what lets inferred anchors merge into the numbering. |
 | Prompt snippet | `src/shared/prompt-snippet.ts` | The model-side contract: when to emit a tag, with worked good and bad examples. |
+| Second-model contract | `src/shared/inferred.ts` | Pure: whether a message is worth a model call (`asksSomething` — a question mark outside code), the instruction sent to the second model, and validation of its reply — an anchor not verbatim in the message's non-code text is dropped, not repaired, and a tag echoing what layer 1 already painted drops too. |
+| Second-model engine | `src/extension/infer.ts` | The call itself: fixed OpenRouter model (`PI_SNIPPET_MODEL` overrides), streamed via the provider's `streamSimple` so each anchor becomes a chip as its closing tag arrives, cached by message text, stand-down after three consecutive failures. Every failure is silent. |
 | Digit addressing | `src/shared/digit-chord.ts` | Pure rules for turning typed digits into a suggestion number. |
-| TUI markdown | `src/shared/tui-markdown.ts` | Suggestion nodes → `[¹text](chip:N)`, which pi paints as link-colored text; the `chip:N` URL is inert and never navigated. |
+| TUI markdown | `src/shared/tui-markdown.ts` | `mergeSuggestions()` — the single source of truth for what a message's chips are and how they are numbered: layer-1 tags and layer-2 anchors merged into one document-ordered stream of `[¹text](chip:N)` nodes. The `chip:N` URL is inert and never navigated. |
 | Extension | `src/extension/pi-snippet-tui.ts`, `common.ts` | Injects the prompt snippet, installs the markdown transformer, and wires up the `Alt+N` shortcuts and click handling. Injection goes through both the chained `systemPrompt` return (direct providers) and `systemPromptOptions.appendSystemPrompt` (bridges like pi-claude-bridge, which rebuild their own prompt and ignore the former). |
 | Chip URLs | `src/shared/link-url.ts` | The `pisnip://<token>/<msg>/cN` URL a clickable chip carries: an index and a message key, never text. |
 | OSC 8 detection | `src/extension/osc8.ts` | Mirrors pi-tui's own capability table, so no URL is painted where the terminal would print it in parentheses. |
@@ -74,11 +78,13 @@ Suggestions render through pi's markdown transformer hook, which is **display-on
 | Click socket | `src/extension/link-server.ts` | The per-session unix socket the handler forwards clicks to, keyed by the session id so a resumed session rebinds the same path. |
 | Settings | `src/extension/settings.ts` | The two `/snippets` toggles in `~/.pi/agent/pi-snippet.json`, outside the session store: preferences about the tool, not state of one conversation. pi gives extensions no settings API — only session-scoped `appendEntry()` — so this follows the convention of pi's own `preset.ts` example and keeps a JSON file beside pi's. A missing or malformed file falls back to defaults, and a failed write is reported rather than silently promised. |
 
-The parser is pure and the transformer is stateless: the set of addressable suggestions is derived in the message lifecycle handlers — `message_update` as the model writes, `message_end` when it stops — and kept outside the render path. Rendering runs on every stream tick and resize, so anything stateful built there would drift from what you see. The streaming path parses only on the ticks that actually carry a closing tag, and parses the same prefix the transformer paints, so what is addressable is exactly what is on screen.
+The parser is pure and the transformer is stateless: the set of addressable suggestions is derived in the message lifecycle handlers — `message_update` as the model writes, `message_end` when it stops, plus the second model's async results as they stream in — and kept outside the render path, which only ever *looks up* what was derived. Rendering runs on every stream tick and resize, so anything stateful built there would drift from what you see. The streaming path parses only on the ticks that actually carry a closing tag, and parses the same prefix the transformer paints, so what is addressable is exactly what is on screen.
+
+Layer-2 chips appear after `message_end`, while the second model writes, and are session-ephemeral: the stored transcript keeps only the raw layer-1 tags and is never rewritten, so a resume repaints with layer-1 chips alone.
 
 ### Caps
 
-`MAX_SUGGESTION_LENGTH` (120 characters) and `MAX_SUGGESTIONS_PER_MESSAGE` (99) are runaway guards, not style rules — 99 is simply what two-digit `Alt` addressing can reach. Over-cap suggestions degrade to plain text rather than disappearing.
+`MAX_SUGGESTION_LENGTH` (120 characters) and `MAX_SUGGESTIONS_PER_MESSAGE` (99) are runaway guards, not style rules — 99 is simply what two-digit `Alt` addressing can reach. Over-cap suggestions degrade to plain text rather than disappearing. The second model has no cap of its own — more options are better than fewer; the 99 total per message across both layers is the only ceiling.
 
 ## Ground truth from a real terminal
 
@@ -107,7 +113,7 @@ npm run check     # tsc --noEmit
 npm run test:e2e  # live, against a real model through pi RPC
 ```
 
-The unit suite covers the parser edge-case matrix, the TUI transformer, digit addressing, the chip-URL contract, the click socket against a real `AF_UNIX` socket, and scheme registration/unregistration against a private XDG home — the uninstall removes the handler and desktop file, both `mimeapps.list` locations gio consults, the mimeinfo cache, and no one else's handler entries.
+The unit suite covers the parser edge-case matrix, the TUI transformer (including the layer-2 merge), digit addressing, the chip-URL contract, the second model's contract and engine — against fixed strings through a fake registry; no test makes a live model call — the click socket against a real `AF_UNIX` socket, and scheme registration/unregistration against a private XDG home — the uninstall removes the handler and desktop file, both `mimeapps.list` locations gio consults, the mimeinfo cache, and no one else's handler entries.
 
 The e2e test spawns pi in RPC mode with the extension loaded, asks a question with two obvious answers, and asserts the model emits well-formed tags the parser accepts — and that a plain informational question draws none. Configure with `PI_SNIPPET_TEST_PROVIDER` and `PI_SNIPPET_TEST_MODEL` (defaults `claude-bridge` and `claude-haiku-4-5`).
 
@@ -116,3 +122,4 @@ The e2e test spawns pi in RPC mode with the extension loaded, asks a question wi
 - `pi -p` (print mode) with the claude-bridge provider hangs on this machine and has to be killed. RPC mode, which the e2e test uses, is unaffected.
 - Not implemented from PRD Phase 3: surfacing suggestions in export/JSON modes.
 - Clicking needs a terminal that paints OSC 8 hyperlinks and a registered handler; on anything else the chips are inert rather than falling back to another input mode. Per-terminal support: `docs/linux-terminals.md`.
+- The second model needs OpenRouter auth configured in pi (`PI_SNIPPET_MODEL` points it elsewhere); without it, or if it errors, messages just get no layer-2 chips — nothing is reported, nothing blocks.
