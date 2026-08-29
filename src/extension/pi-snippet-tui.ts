@@ -13,9 +13,9 @@
  *   terminal dispatches it to a once-registered handler (`link-install.ts`),
  *   and the handler forwards to this process over a unix socket
  *   (`link-server.ts`). No terminal-wide mouse mode is ever engaged, so the
- *   wheel and text selection are never taken away. Where the terminal cannot
- *   paint a hyperlink (`osc8.ts`) no URL is painted at all and clicking is
- *   inert — it never falls back to mouse reporting.
+ *   wheel and text selection are never taken away. Where pi-tui reports the
+ *   terminal cannot paint a hyperlink no URL is painted at all and clicking
+ *   is inert — it never falls back to mouse reporting.
  * - Alt+N inserts the Nth suggestion of the most recent assistant message into
  *   the editor. A suggestion becomes addressable the moment its closing tag
  *   arrives, so a chip can be triggered while the model is still writing —
@@ -49,7 +49,7 @@ import { registerPromptSnippet } from "./common.js";
 import { loadSettings, saveSettings, settingsPath, SNIPPET_MODES, type SnippetMode } from "./settings.js";
 import { LinkServer } from "./link-server.js";
 import * as linkInstall from "./link-install.js";
-import { terminalSupportsOsc8 } from "./osc8.js";
+import { getCapabilities } from "@earendil-works/pi-tui";
 import { buildChipUrl, messageKey, sessionToken } from "../shared/link-url.js";
 import { randomBytes } from "node:crypto";
 import type { TuiLike } from "./tui.js";
@@ -220,8 +220,13 @@ export default function piSnippetTui(pi: any): void {
 	 * since mouse reporting was removed. It is live when suggestions are on,
 	 * the terminal can paint a hyperlink (OSC 8), and the desktop has a
 	 * registered handler to dispatch to.
+	 *
+	 * The OSC 8 question is asked of pi-tui rather than answered here, because
+	 * the renderer that would fall back to printing the href is pi-tui's own:
+	 * disagree with it and every chip trails a visible
+	 * `(pisnip://a1b2c3d4/ff2ee691/c1)`.
 	 */
-	const linkOn = () => isEnabled() && terminalSupportsOsc8();
+	const linkOn = () => isEnabled() && getCapabilities().hyperlinks;
 
 	/**
 	 * What each rendered message's chips mean, keyed by a hash of the exact
@@ -826,7 +831,7 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const clickStatusLabel = (): string => {
 		if (process.platform !== "linux") return "Ctrl+click: unavailable off Linux";
-		if (!terminalSupportsOsc8()) {
+		if (!getCapabilities().hyperlinks) {
 			return "Ctrl+click: inert — this terminal paints no hyperlinks (see docs/linux-terminals.md)";
 		}
 		if (!linkInstall.isInstalled()) return "Ctrl+click: handler not registered";

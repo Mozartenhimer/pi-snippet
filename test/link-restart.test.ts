@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import piSnippetTui from "../src/extension/pi-snippet-tui.js";
 import { DEFAULT_SETTINGS } from "../src/extension/settings.js";
-import { resetOsc8Cache } from "../src/extension/osc8.js";
+import { resetCapabilitiesCache } from "@earendil-works/pi-tui";
 
 class FakeTui {
 	written: string[] = [];
@@ -31,7 +31,7 @@ const original = { ...process.env };
 
 afterEach(() => {
 	process.env = { ...original };
-	resetOsc8Cache();
+	resetCapabilitiesCache();
 });
 
 /** One simulated pi process, for the same session id, loading its own extension instance. */
@@ -93,6 +93,7 @@ function setup(env: Record<string, string>) {
 	for (const key of [
 		"TERM",
 		"TERM_PROGRAM",
+		"TERMINAL_EMULATOR",
 		"TMUX",
 		"KITTY_WINDOW_ID",
 		"GHOSTTY_RESOURCES_DIR",
@@ -101,12 +102,13 @@ function setup(env: Record<string, string>) {
 		"WARP_TERMINAL_SESSION_UUID",
 		"ITERM_SESSION_ID",
 		"WT_SESSION",
+		"PI_HYPERLINKS",
 	]) {
 		delete process.env[key];
 	}
 	process.env.XDG_DATA_HOME ??= mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
 	Object.assign(process.env, env);
-	resetOsc8Cache();
+	resetCapabilitiesCache();
 }
 
 const CHIPPED = "Want me to <snippet>rebuild the solution</snippet>?";

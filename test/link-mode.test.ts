@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import piSnippetTui from "../src/extension/pi-snippet-tui.js";
 import { DEFAULT_SETTINGS } from "../src/extension/settings.js";
-import { resetOsc8Cache } from "../src/extension/osc8.js";
+import { resetCapabilitiesCache } from "@earendil-works/pi-tui";
 
 /** DECSET 1000 — the byte that means "the wheel now belongs to pi". */
 const MOUSE_ON = "\x1b[?1000h";
@@ -41,7 +41,7 @@ const original = { ...process.env };
 
 afterEach(() => {
 	process.env = { ...original };
-	resetOsc8Cache();
+	resetCapabilitiesCache();
 });
 
 function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, string>) {
@@ -50,12 +50,14 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 		JSON.stringify({ ...DEFAULT_SETTINGS, ...settings }),
 		"utf8",
 	);
-	// Every env var detectOsc8() checks, so a test never inherits the host
-	// terminal's own identity (this suite failed under real Ghostty, which
-	// left GHOSTTY_RESOURCES_DIR set, before this list grew to match).
+	// Every env var pi-tui's capability detection reads, so a test never
+	// inherits the host terminal's own identity (this suite failed under real
+	// Ghostty, which left GHOSTTY_RESOURCES_DIR set, before this list grew to
+	// match). PI_HYPERLINKS is pi-tui's explicit override and outranks them all.
 	for (const key of [
 		"TERM",
 		"TERM_PROGRAM",
+		"TERMINAL_EMULATOR",
 		"TMUX",
 		"KITTY_WINDOW_ID",
 		"GHOSTTY_RESOURCES_DIR",
@@ -64,13 +66,14 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 		"WARP_TERMINAL_SESSION_UUID",
 		"ITERM_SESSION_ID",
 		"WT_SESSION",
+		"PI_HYPERLINKS",
 	]) {
 		delete process.env[key];
 	}
 	// Keep `isInstalled()` off the developer's real ~/.local/share.
 	process.env.XDG_DATA_HOME ??= mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
 	Object.assign(process.env, env);
-	resetOsc8Cache();
+	resetCapabilitiesCache();
 
 	const handlers = new Map<string, (event: any, ctx: any) => void>();
 	let transformer: ((md: string, c: any) => string) | undefined;

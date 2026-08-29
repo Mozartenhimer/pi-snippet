@@ -167,20 +167,21 @@ appears, something is off from what was measured).
   8 support). If you touch the gate, check `docs/terminal-resolved-clicks.md`'s
   "Things already decided" note under §17 and `pi-snippet-tui.ts`'s comment
   on `clickActive()` before changing which one anything reads.
-- **`osc8.ts`'s terminal list deliberately mirrors pi-tui's own
-  `getCapabilities()` detection**, not a superset. Guessing more generously
-  than the renderer means a chip visibly trails `(pisnip://...)` on a
-  terminal pi-tui itself doesn't consider hyperlink-capable. If a terminal is
-  missing from the list, check what pi-tui does first
-  (`@earendil-works/pi-tui`'s `terminal-image.js`) before adding it here.
+- **The OSC 8 gate calls pi-tui's `getCapabilities().hyperlinks` directly.**
+  It used to be a hand-copied mirror of that table in `osc8.ts`; the copy
+  drifted (it never learned pi-tui's `PI_HYPERLINKS` override) and was
+  deleted. Guessing more generously than the renderer means a chip visibly
+  trails `(pisnip://...)` on a terminal pi-tui itself doesn't consider
+  hyperlink-capable, so the gate has to be the renderer's own answer. If a
+  terminal is missing, fix it upstream in `@earendil-works/pi-tui`'s
+  `terminal-image.js` — there is no longer a second table to add it to.
 
 ## Recently touched files, if you need the map
 
 New: `src/shared/link-url.ts`, `src/extension/link-server.ts`,
-`src/extension/link-install.ts`, `src/extension/osc8.ts`,
-`scripts/link-register.py`, `scripts/osc8-probe.py`,
-`scripts/link-click-live.py`, plus matching tests
-(`test/link-url.test.ts`, `test/link-server.test.ts`, `test/osc8.test.ts`,
+`src/extension/link-install.ts`, `scripts/link-register.py`,
+`scripts/osc8-probe.py`, `scripts/link-click-live.py`, plus matching tests
+(`test/link-url.test.ts`, `test/link-server.test.ts`,
 `test/link-mode.test.ts`).
 
 Modified: `src/extension/pi-snippet-tui.ts` (wiring: token, message-keyed

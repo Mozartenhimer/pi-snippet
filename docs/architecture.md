@@ -36,7 +36,7 @@ These are the rules the layout exists to enforce. Breaking any of them has histo
 2. **The parser is pure; renderers are stateless.** Rendering runs on every stream tick and resize, so any state built during a render pass drifts from what the user sees. The addressable set is derived in `message_update`/`message_end` handlers and held in extension state, never in the transformer (PRD §5.2).
 3. **The transformer is display-only.** Stored messages keep their raw `<snippet>` tags. Never rewrite stored message text in a lifecycle handler — an earlier version did, and corrupted transcripts for every other consumer.
 4. **One source of suggestions.** The only chips come from `<snippet>` tags in the message. A client-side inference layer (a second model reading untagged questions) existed and was removed (PRD §17) — fix tagging via the prompt contract, not a second model.
-5. **One click delivery path.** Terminal-resolved clicks, always on, no toggle. Mouse reporting was removed; do not reintroduce a fallback. A terminal that cannot paint a hyperlink gets inert chips, never mouse reporting, and never a painted URL (see `osc8.ts`).
+5. **One click delivery path.** Terminal-resolved clicks, always on, no toggle. Mouse reporting was removed; do not reintroduce a fallback. A terminal that cannot paint a hyperlink gets inert chips, never mouse reporting, and never a painted URL (pi-tui's `getCapabilities().hyperlinks`).
 6. **Nothing outside the process puts text in the composer.** Chip URLs carry an index and a message key, never text; the text is resolved against a bounded map of messages this process itself indexed.
 7. **Nothing is fatal.** Settings, sockets, registrations — every failure degrades to "feature off this session," never to a dead extension.
 
@@ -54,7 +54,6 @@ src/
     pi-snippet-tui.ts     entry point: state, lifecycle handlers, /snippets
     common.ts             prompt injection (two guarded delivery paths)
     settings.ts           persisted toggles (~/.pi/agent/pi-snippet.json)
-    osc8.ts               does this terminal paint OSC 8 hyperlinks?
     link-url.ts → link-server.ts   the far end of a click (unix socket)
     link-install.ts       register/unregister the desktop scheme handler
     tui.ts                the TuiLike interface (the sliver of pi-tui we touch)
@@ -90,7 +89,7 @@ Pure: raw markdown in, token stream out. Sanitization rules (PRD §5.3, §11): n
 
 The chord (`digit-chord.ts`) is pure decision logic; timers and key events belong to callers. One digit commits instantly when no longer number could exist (`Alt+3` with four suggestions); two-digit numbers settle on a 350 ms timeout or on a modifier-release event. **Ghostty sends no bytes for standalone Alt press/release** at the Kitty flags pi requests (7), so the release watcher (`ALT_RELEASE`) is dormant by design — kept because it costs one regex while a chord is pending and starts working for free if pi ever raises its flags. Superscript digits (the chip labels) span Latin-1 (`\u00B9\u00B2\u00B3`) and U+2070–2079, so regexes over rendered text must enumerate all ten — `[⁰-⁹]` is a broken class.
 
-### Click delivery (`shared/link-url.ts`, `extension/link-server.ts`, `extension/link-install.ts`, `extension/osc8.ts`)
+### Click delivery (`shared/link-url.ts`, `extension/link-server.ts`, `extension/link-install.ts`)
 
 The chain, described in depth in `docs/terminal-resolved-clicks.md`:
 
@@ -100,7 +99,7 @@ The chain, described in depth in `docs/terminal-resolved-clicks.md`:
 4. `LinkServer` listens on a unix socket named after the session token. `sessionToken()` hashes pi's session id, so a resumed session rebinds the socket its old scrollback already points at (a fresh random value would name a dead socket after restart). Socket directory candidates, in order: `PI_SNIPPET_SOCKET_DIR`, `$XDG_RUNTIME_DIR/pi-snippet`, `/tmp/pi-snippet-<uid>` — both sides walk the same list, because a confined snap's runtime dir is not the desktop's.
 5. The path is strictly parsed (`parseChipPath`: malformed means miss, never coerced) and resolved against `linkTargets`, a bounded (64-entry) map keyed by message hash — which is what lets a chip in old scrollback still mean what it meant.
 
-Gating: the server listens while suggestions are on and the terminal can paint a hyperlink (`terminalSupportsOsc8()`, which mirrors pi-tui's own detection — under tmux it asks tmux whether the client advertised `hyperlinks`). Guessing more generously than the renderer would paint a visible `(pisnip://…)` after every chip; the check exists to prevent exactly that. Insertion from the socket callback calls `tui.requestRender()`, because a socket callback sits outside pi's render pass — without it the text is invisible until the next keypress. The TUI instance itself is captured by borrowing the footer factory (`captureTui`) and restoring it immediately.
+Gating: the server listens while suggestions are on and the terminal can paint a hyperlink — pi-tui's own `getCapabilities().hyperlinks`, which under tmux asks tmux whether the client advertised `hyperlinks`, and which honours the `PI_HYPERLINKS` override. The question goes to pi-tui rather than to a local copy of its table because pi-tui is the renderer that would print the parens: disagree with it in the generous direction and a visible `(pisnip://…)` trails every chip, in the stingy direction and a terminal that would have worked gets nothing. A copy of the table lived here until it drifted (it never learned `PI_HYPERLINKS`); don't reintroduce one. Insertion from the socket callback calls `tui.requestRender()`, because a socket callback sits outside pi's render pass — without it the text is invisible until the next keypress. The TUI instance itself is captured by borrowing the footer factory (`captureTui`) and restoring it immediately.
 
 Linux only. `/snippets` registers the handler and probes it honestly (`PROBE_KEY`, a message key no real message can collide with, proves the round trip without inserting anything).
 

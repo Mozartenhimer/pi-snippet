@@ -9,8 +9,8 @@
  * Clicking is no longer a preference. It is always on, delivered by the
  * terminal's own Ctrl+click (`link-url.ts`), which has no terminal-wide costs
  * to opt out of: the wheel and selection are never taken away, so there is
- * nothing to toggle and nothing to persist. Where the terminal cannot paint a
- * hyperlink (`osc8.ts`) no URL is painted and clicking is simply inert.
+ * nothing to toggle and nothing to persist. Where pi-tui reports the terminal
+ * cannot paint a hyperlink no URL is painted and clicking is simply inert.
  *
  * Older settings files may still carry `clickEnabled`, `linkMode`,
  * `magicEnabled` or `model` keys, from switches and from a removed inference
