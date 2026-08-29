@@ -25,7 +25,7 @@ afterEach(() => {
 describe("settings file", () => {
 	it("round-trips every preference", () => {
 		const settings: SnippetSettings = {
-			enabled: false,
+			mode: "infer",
 			hotkeysEnabled: false,
 			inferModel: "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
 		};
@@ -42,8 +42,8 @@ describe("settings file", () => {
 
 	it("creates the directory it writes into", () => {
 		const nested = join(dir, "deep", "deeper", "settings.json");
-		expect(saveSettings({ ...DEFAULT_SETTINGS, enabled: false }, nested)).toBe(true);
-		expect(loadSettings(nested).enabled).toBe(false);
+		expect(saveSettings({ ...DEFAULT_SETTINGS, mode: "off" }, nested)).toBe(true);
+		expect(loadSettings(nested).mode).toBe("off");
 	});
 
 	it("defaults when there is no file at all", () => {
@@ -55,13 +55,35 @@ describe("settings file", () => {
 		expect(loadSettings(file)).toEqual(DEFAULT_SETTINGS);
 	});
 
-	it("keeps known booleans and defaults the rest", () => {
-		writeFileSync(file, JSON.stringify({ enabled: false, hotkeysEnabled: "yes", junk: 1 }), "utf8");
+	it("keeps what it recognises and defaults the rest", () => {
+		writeFileSync(file, JSON.stringify({ mode: "tags", hotkeysEnabled: "yes", junk: 1 }), "utf8");
 		expect(loadSettings(file)).toEqual({
 			...DEFAULT_SETTINGS,
-			enabled: false,
+			mode: "tags",
 			hotkeysEnabled: true, // present but not a boolean
 		});
+	});
+
+	it("defaults a mode it does not recognise", () => {
+		writeFileSync(file, JSON.stringify({ mode: "sideways" }), "utf8");
+		expect(loadSettings(file).mode).toBe(DEFAULT_SETTINGS.mode);
+	});
+
+	it("reads a boolean `enabled: false` from before the modes as `off`", () => {
+		// The one legacy key worth carrying across: silently turning suggestions
+		// back on for someone who had switched them off is the wrong default.
+		writeFileSync(file, JSON.stringify({ enabled: false, hotkeysEnabled: false }), "utf8");
+		expect(loadSettings(file)).toEqual({ ...DEFAULT_SETTINGS, mode: "off", hotkeysEnabled: false });
+	});
+
+	it("lets a real mode win over a stale `enabled`", () => {
+		writeFileSync(file, JSON.stringify({ enabled: false, mode: "tags" }), "utf8");
+		expect(loadSettings(file).mode).toBe("tags");
+	});
+
+	it("ignores a legacy `enabled: true`, which says nothing about which layers run", () => {
+		writeFileSync(file, JSON.stringify({ enabled: true }), "utf8");
+		expect(loadSettings(file).mode).toBe(DEFAULT_SETTINGS.mode);
 	});
 
 	it("ignores keys from settings written by older versions", () => {
@@ -80,8 +102,8 @@ describe("settings file", () => {
 	it("writes only the keys it owns", () => {
 		saveSettings(DEFAULT_SETTINGS, file);
 		expect(Object.keys(JSON.parse(readFileSync(file, "utf8"))).sort()).toEqual([
-			"enabled",
 			"hotkeysEnabled",
+			"mode",
 		]);
 	});
 
@@ -91,10 +113,10 @@ describe("settings file", () => {
 	});
 
 	it("leaves the previous settings in place when a write fails", () => {
-		saveSettings({ ...DEFAULT_SETTINGS, enabled: false }, file);
+		saveSettings({ ...DEFAULT_SETTINGS, mode: "off" }, file);
 		// A directory where the temp file wants to go: the rename never happens.
 		expect(saveSettings(DEFAULT_SETTINGS, join(file, "nope"))).toBe(false);
-		expect(loadSettings(file).enabled).toBe(false);
+		expect(loadSettings(file).mode).toBe("off");
 	});
 });
 

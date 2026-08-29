@@ -22,10 +22,11 @@
  *   no waiting out the rest of the answer. Holding Alt and typing two digits
  *   reaches 10 and above. Only the latest message is addressable, so a number
  *   never means two different things.
- * - `/snippets` toggles the feature or the hotkeys, and registers or removes
- *   the click handler; each choice is written to disk so it holds for the next
- *   session too. The `--no-suggestions` flag disables everything for one
- *   session without touching the stored preference.
+ * - `/snippets` chooses where chips come from — off, the primary model's own
+ *   tags, a second model's, or both — toggles the hotkeys, and registers or
+ *   removes the click handler; each choice is written to disk so it holds for
+ *   the next session too. The `--no-suggestions` flag disables everything for
+ *   one session without touching the stored preference.
  *
  * The transformer stays pure; the addressable set is derived in the message
  * lifecycle handlers (`message_update` while the model writes, `message_end`
@@ -45,7 +46,7 @@ import {
 	type PiModel,
 } from "./infer.js";
 import { registerPromptSnippet } from "./common.js";
-import { loadSettings, saveSettings, settingsPath } from "./settings.js";
+import { loadSettings, saveSettings, settingsPath, SNIPPET_MODES, type SnippetMode } from "./settings.js";
 import { LinkServer } from "./link-server.js";
 import * as linkInstall from "./link-install.js";
 import { terminalSupportsOsc8 } from "./osc8.js";
@@ -61,6 +62,22 @@ interface TextBlock {
 /** What a closing tag starts with; `</snippet   >` is legal, so match the head. */
 const CLOSE_TAG_PREFIX = `</${SNIPPET_TAG}`;
 
+/** How the mode picker names each mode, and what the label promises. */
+const MODE_LABEL: Record<SnippetMode, string> = {
+	off: "off — no chips at all",
+	tags: "tags only — chips from the tags the model writes itself",
+	both: "tags + second model — also chips a second model infers",
+	infer: "second model only — the primary model is never asked for tags",
+};
+
+/** The same four, short enough to sit in the `/snippets` menu line. */
+const MODE_SUMMARY: Record<SnippetMode, string> = {
+	off: "off",
+	tags: "tags only",
+	both: "tags + second model",
+	infer: "second model only",
+};
+
 export default function piSnippetTui(pi: any): void {
 	/**
 	 * The stored preferences, read once at load. `state` starts from them and is
@@ -71,7 +88,12 @@ export default function piSnippetTui(pi: any): void {
 	const stored = loadSettings(settingsFile);
 
 	const state = {
-		enabled: stored.enabled,
+		/**
+		 * Which layers run: `off`, `tags` (layer 1 only), `both`, or `infer`
+		 * (layer 2 only, so the primary model's prompt stays untouched). The
+		 * gates below are the only readers; nothing else branches on it.
+		 */
+		mode: stored.mode,
 		/**
 		 * The second model, as chosen in `/snippets`. Undefined means the
 		 * built-in default; `PI_SNIPPET_MODEL` overrides both for a session.
@@ -137,7 +159,12 @@ export default function piSnippetTui(pi: any): void {
 	 * with `off` the next time any toggle is saved.
 	 */
 	let flagDisabled = false;
-	const isEnabled = () => state.enabled && !flagDisabled;
+	/** Anything at all: chips painted, addressable, clickable. */
+	const isEnabled = () => state.mode !== "off" && !flagDisabled;
+	/** Layer 1: ask the primary model to tag its own replies. */
+	const tagsOn = () => isEnabled() && state.mode !== "infer";
+	/** Layer 2: hand finished messages to the second model. */
+	const inferOn = () => isEnabled() && state.mode !== "tags";
 
 	/**
 	 * The footer's line about the second model, in the three states it can
@@ -163,7 +190,7 @@ export default function piSnippetTui(pi: any): void {
 		if (!c) return;
 		lastStatusCtx = c;
 		if (c.mode !== "tui") return;
-		if (!isEnabled()) inferStatus = "off";
+		if (!inferOn()) inferStatus = "off";
 		let text: string | undefined;
 		if (inferStatus === "idle") text = "snippet: not sent";
 		else if (inferStatus === "waiting") text = "snippet: sent (waiting)";
@@ -434,7 +461,9 @@ export default function piSnippetTui(pi: any): void {
 
 	registerPromptSnippet(pi, () => {
 		if (pi.getFlag("no-suggestions") === true) flagDisabled = true;
-		return isEnabled();
+		// Layer 1 is the injection: in `infer` mode the primary model is never
+		// told about the tag, and the second model does all the tagging.
+		return tagsOn();
 	});
 
 	pi.registerMarkdownTransformer(
@@ -613,7 +642,7 @@ export default function piSnippetTui(pi: any): void {
 		if (event.message?.role !== "assistant") return;
 		streamCloseTags = 0;
 		appliedChips = 0;
-		inferStatus = isEnabled() ? "idle" : "off";
+		inferStatus = inferOn() ? "idle" : "off";
 		assistantSeq++;
 		latestAssistantSeq = assistantSeq;
 		syncInferStatus(ctx);
@@ -645,7 +674,7 @@ export default function piSnippetTui(pi: any): void {
 	 * is silent.
 	 */
 	const queueInference = (message: { role?: string; content?: TextBlock[] }, ctx: any): void => {
-		if (!isEnabled()) return;
+		if (!inferOn()) return;
 		const raw = messageText(message);
 		if (!asksSomething(raw)) return;
 		const existing = parseSuggestions(raw).suggestions;
@@ -866,7 +895,7 @@ export default function piSnippetTui(pi: any): void {
 	const persist = (): string => {
 		const ok = saveSettings(
 			{
-				enabled: state.enabled,
+				mode: state.mode,
 				hotkeysEnabled: state.hotkeysEnabled,
 				...(state.inferModel ? { inferModel: state.inferModel } : {}),
 			},
@@ -912,6 +941,35 @@ export default function piSnippetTui(pi: any): void {
 		state.inferModel = pin;
 		infer.rearm();
 		ctx.ui.notify(`Second model set to ${pin}${persist()}`);
+	};
+
+	/**
+	 * Pick which layers run.
+	 *
+	 * Four options rather than a toggle and a sub-toggle, because the two
+	 * layers are independent and each costs something different: layer 1 costs
+	 * a system-prompt injection, layer 2 costs a request per question-bearing
+	 * message. A second `select` rather than four entries in the first one —
+	 * they are one choice, and cycling blind through four states on a single
+	 * "toggle" entry is worse than being shown them.
+	 */
+	const pickMode = async (ctx: any): Promise<void> => {
+		// Parenthetical, not another em dash: every label already has one.
+		const options = SNIPPET_MODES.map(
+			(mode) => `${MODE_LABEL[mode]}${mode === state.mode ? " (current)" : ""}`,
+		);
+		const choice = await ctx.ui.select("Where chips come from", options);
+		if (!choice) return;
+		const picked = SNIPPET_MODES.find((mode) => choice.startsWith(MODE_LABEL[mode]));
+		if (picked === undefined || picked === state.mode) return;
+		state.mode = picked;
+		if (!isEnabled()) state.addressable = [];
+		// Turning the layer back on is an explicit ask; a breaker tripped by a
+		// credential that may since have been fixed must not outlive it.
+		if (inferOn()) infer.rearm();
+		syncInferStatus(ctx);
+		syncClicks(ctx);
+		ctx.ui.notify(`Suggestions: ${MODE_SUMMARY[picked]}${persist()}`);
 	};
 
 	/**
@@ -984,7 +1042,7 @@ export default function piSnippetTui(pi: any): void {
 			const choice = await ctx.ui.select(
 				`${snippetStats(ctx)} — ${clickStatusLabel()}`,
 				[
-					`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
+					`Suggestions: ${MODE_SUMMARY[state.mode]} — change`,
 					`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
 					`Second model: ${effectiveModel().id}${effectiveModel().fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
 					...(process.platform === "linux" && !linkInstall.isInstalled()
@@ -997,10 +1055,7 @@ export default function piSnippetTui(pi: any): void {
 			);
 			if (!choice) return;
 			if (choice.startsWith("Suggestions:")) {
-				state.enabled = !state.enabled;
-				if (!state.enabled) state.addressable = [];
-				syncInferStatus(ctx);
-				ctx.ui.notify(`Inline suggestions ${state.enabled ? "enabled" : "disabled"}${persist()}`);
+				await pickMode(ctx);
 			} else if (choice.startsWith("Second model:")) {
 				await pickModel(ctx);
 			} else if (choice.startsWith("Register click handler")) {

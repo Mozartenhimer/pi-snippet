@@ -1,9 +1,9 @@
 /**
  * The `/snippets` toggles, persisted across sessions.
  *
- * Two switches remain: suggestions on/off and the Alt+digit shortcuts. They
- * need this file for the same reason as before — a preference about the tool,
- * not state of one conversation, so a fork or a resume must not carry a
+ * Two settings: where chips come from (`mode`) and the Alt+digit shortcuts.
+ * They need this file for the same reason as before — a preference about the
+ * tool, not state of one conversation, so a fork or a resume must not carry a
  * different answer than a fresh start.
  *
  * Clicking is no longer a preference. It is always on, delivered by the
@@ -12,10 +12,10 @@
  * nothing to toggle and nothing to persist. Where the terminal cannot paint a
  * hyperlink (`osc8.ts`) no URL is painted and clicking is simply inert.
  *
- * The inference layer (former PRD §17) is gone entirely, along with its model
- * pin, so this file shrank accordingly. Older settings files may still carry
- * `clickEnabled`, `linkMode`, `magicEnabled` or `model` keys; `merge` reads
- * only the keys it knows and ignores the rest, so a stale file costs nothing.
+ * Older settings files may still carry `clickEnabled`, `linkMode`,
+ * `magicEnabled` or `model` keys, from switches and from a removed inference
+ * layer that no longer exist; `merge` reads only the keys it knows and ignores
+ * the rest, so a stale file costs nothing.
  *
  * The file lives outside the session store on purpose. pi has no settings or
  * key-value API for extensions — `ExtensionAPI` offers only `appendEntry()`,
@@ -32,19 +32,44 @@ import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+/**
+ * Which of the two suggestion layers run.
+ *
+ * They are independent, so the setting is the four combinations rather than
+ * an on/off plus a sub-switch: layer 1 is the primary model tagging its own
+ * replies (which costs a system-prompt injection), layer 2 is a second model
+ * tagging them afterwards (which costs a request per question-bearing
+ * message). Wanting exactly one of those is an ordinary preference — `infer`
+ * in particular is the way to get chips without putting anything in the
+ * primary model's prompt.
+ */
+export type SnippetMode =
+	/** No chips, no prompt injection, nothing sent to a second model. */
+	| "off"
+	/** Layer 1 only: the `<snippet>` tags the primary model writes itself. */
+	| "tags"
+	/** Both layers, the default. */
+	| "both"
+	/** Layer 2 only: the primary model is never asked to tag anything. */
+	| "infer";
+
+export const SNIPPET_MODES: readonly SnippetMode[] = ["off", "tags", "both", "infer"];
+
 export interface SnippetSettings {
-	enabled: boolean;
+	mode: SnippetMode;
 	hotkeysEnabled: boolean;
 	/**
 	 * The second model (`provider/id`), as chosen in `/snippets`. Undefined
 	 * means the built-in default; `PI_SNIPPET_MODEL` overrides both for a
-	 * session. Typed into the same `/snippets` prompt that sets it.
+	 * session. Typed into the same `/snippets` prompt that sets it. Kept
+	 * separate from `mode` so a mode that stands the layer down and back up
+	 * remembers which model it was pointed at.
 	 */
 	inferModel?: string;
 }
 
 export const DEFAULT_SETTINGS: SnippetSettings = {
-	enabled: true,
+	mode: "both",
 	hotkeysEnabled: true,
 	inferModel: undefined,
 };
@@ -92,10 +117,12 @@ function merge(raw: unknown): SnippetSettings {
 	const settings = { ...DEFAULT_SETTINGS };
 	if (typeof raw !== "object" || raw === null) return settings;
 	const source = raw as Record<string, unknown>;
-	for (const key of ["enabled", "hotkeysEnabled"] as const) {
-		const value = source[key];
-		if (typeof value === "boolean") settings[key] = value;
-	}
+	if (typeof source.hotkeysEnabled === "boolean") settings.hotkeysEnabled = source.hotkeysEnabled;
+	if (SNIPPET_MODES.includes(source.mode as SnippetMode)) settings.mode = source.mode as SnippetMode;
+	// `mode` replaced a boolean `enabled`. Someone who had turned suggestions
+	// off is the one case where dropping the old key silently does the wrong
+	// thing, so that one is read across; every other dead key stays dead.
+	else if (source.enabled === false) settings.mode = "off";
 	if (typeof source.inferModel === "string" && source.inferModel.trim() !== "") settings.inferModel = source.inferModel;
 	return settings;
 }
@@ -126,7 +153,7 @@ export function saveSettings(settings: SnippetSettings, path: string = settingsP
 	try {
 		mkdirSync(dirname(path), { recursive: true });
 		const body: SnippetSettings = {
-			enabled: settings.enabled,
+			mode: settings.mode,
 			hotkeysEnabled: settings.hotkeysEnabled,
 			...(settings.inferModel ? { inferModel: settings.inferModel } : {}),
 		};

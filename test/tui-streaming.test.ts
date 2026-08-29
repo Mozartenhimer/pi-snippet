@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import piSnippetTui from "../src/extension/pi-snippet-tui.js";
 
@@ -467,6 +468,44 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			.filter(([key]) => key === "pi-snippet")
 			.at(-1)?.[1];
 		expect(raw).toBe("\x1b[2msnippet: not sent\x1b[0m");
+	});
+
+	it.each([
+		["tags", false],
+		["infer", true],
+	] as const)("mode %s asks the second model: %s", async (mode, asked) => {
+		writeFileSync(process.env.PI_SNIPPET_SETTINGS!, JSON.stringify({ mode }), "utf8");
+		let calls = 0;
+		const { registry } = makeInferRegistry([MESSAGE]);
+		const counting = {
+			...registry,
+			getProvider: (provider: string) => {
+				calls++;
+				return registry.getProvider(provider);
+			},
+		};
+		const { pi, handlers } = makeFakePi();
+		piSnippetTui(pi);
+		const ctx = makeTuiCtx();
+		(ctx as any).modelRegistry = counting;
+		process.env.PI_SNIPPET_MODEL = "testmock/infer-model";
+		try {
+			handlers.get("session_start")!({ reason: "new" }, ctx);
+			handlers.get("message_start")!({ message: partial("") }, ctx);
+			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			if (asked) {
+				await vi.waitFor(() => {
+					expect(statusLine(ctx).at(-1)).toBe("snippet: 0 new chips");
+				});
+			} else {
+				// Layer 2 off means no line at all, not "not sent": there is
+				// nothing pending for the footer to report on.
+				expect(statusLine(ctx).at(-1)).toBeUndefined();
+			}
+			expect(calls > 0).toBe(asked);
+		} finally {
+			delete process.env.PI_SNIPPET_MODEL;
+		}
 	});
 
 	it("keeps a statement at not sent — the gate never asks the second model", () => {

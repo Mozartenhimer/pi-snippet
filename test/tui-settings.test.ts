@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import piSnippetTui from "../src/extension/pi-snippet-tui.js";
 import { DEFAULT_SETTINGS, loadSettings } from "../src/extension/settings.js";
+import { SNIPPET_TAG } from "../src/shared/suggestions.js";
 
 /**
  * The `/snippets` toggles are preferences, not session state: a choice made in
@@ -27,10 +28,18 @@ function makeFakePi(flag?: string) {
 	return { pi, handlers, commands };
 }
 
-/** A ctx whose `select` picks the first option starting with `pick`. */
-function makeCtx(pick?: string) {
+/**
+ * A ctx whose `select` picks the first option starting with the next `pick`.
+ *
+ * A list, not one string: choosing where chips come from opens a second
+ * `select` from inside the first one's handler, so a test needs to answer each
+ * in turn. `options()` reports the last menu rendered, which is the mode
+ * picker once one has been opened.
+ */
+function makeCtx(...picks: string[]) {
 	const notices: string[] = [];
 	let menu: string[] = [];
+	const pending = [...picks];
 	return {
 		notices,
 		options: () => menu,
@@ -46,6 +55,7 @@ function makeCtx(pick?: string) {
 				setFooter: () => {},
 				select: async (_title: string, options: string[]) => {
 					menu = options;
+					const pick = pending.shift();
 					return pick === undefined ? undefined : options.find((o) => o.startsWith(pick));
 				},
 			},
@@ -79,10 +89,43 @@ describe("pi-snippet-tui: /snippets choices persist", () => {
 	it("turning suggestions off persists across a restart", async () => {
 		const first = makeFakePi();
 		piSnippetTui(first.pi);
-		await first.commands.get("snippets")!("", makeCtx("Suggestions:").ctx);
+		await first.commands.get("snippets")!("", makeCtx("Suggestions:", "off").ctx);
 
-		expect(loadSettings(file).enabled).toBe(false);
+		expect(loadSettings(file).mode).toBe("off");
 		expect(await readMenu(file)).toContainEqual(expect.stringContaining("Suggestions: off"));
+	});
+
+	it.each([
+		["tags only", "tags"],
+		["tags + second model", "both"],
+		["second model only", "infer"],
+		["off", "off"],
+	] as const)("stores %s as mode %s", async (label, mode) => {
+		// From a mode nothing else picks, so a stored default cannot pass for a
+		// choice that never landed.
+		writeFileSync(file, JSON.stringify({ mode: "off" }), "utf8");
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		await commands.get("snippets")!("", makeCtx("Suggestions:", label).ctx);
+
+		expect(loadSettings(file).mode).toBe(mode);
+		expect(await readMenu(file)).toContainEqual(expect.stringContaining(`Suggestions: ${label}`));
+	});
+
+	it("offers all four modes and marks the one in force", async () => {
+		writeFileSync(file, JSON.stringify({ mode: "infer" }), "utf8");
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx("Suggestions:"); // opens the picker, then dismisses it
+		await commands.get("snippets")!("", seen.ctx);
+
+		expect(seen.options()).toEqual([
+			"off — no chips at all",
+			"tags only — chips from the tags the model writes itself",
+			"tags + second model — also chips a second model infers",
+			"second model only — the primary model is never asked for tags (current)",
+		]);
+		expect(loadSettings(file).mode).toBe("infer"); // dismissed, so nothing changed
 	});
 
 	it("carries the shortcut toggle as well", async () => {
@@ -103,7 +146,7 @@ describe("pi-snippet-tui: /snippets choices persist", () => {
 		process.env.PI_SNIPPET_SETTINGS = join(dir, "blocked", "settings.json");
 		const { pi, commands } = makeFakePi();
 		piSnippetTui(pi);
-		const seen = makeCtx("Suggestions:");
+		const seen = makeCtx("Suggestions:", "off");
 		await commands.get("snippets")!("", seen.ctx);
 		expect(seen.notices[0]).toContain("this session only");
 	});
@@ -113,7 +156,7 @@ describe("pi-snippet-tui: /snippets choices persist", () => {
 		// stored choice to stay clear of.
 		const first = makeFakePi();
 		piSnippetTui(first.pi);
-		await first.commands.get("snippets")!("", makeCtx("Suggestions:").ctx);
+		await first.commands.get("snippets")!("", makeCtx("Suggestions:", "off").ctx);
 
 		// Restart with the flag: the extension latches it on `before_agent_start`.
 		const flagged = makeFakePi("no-suggestions");
@@ -126,8 +169,29 @@ describe("pi-snippet-tui: /snippets choices persist", () => {
 		await flagged.commands.get("snippets")!("", seen.ctx);
 		expect(seen.notices[0]).toContain("--no-suggestions");
 
-		expect(loadSettings(file).enabled).toBe(false);
+		expect(loadSettings(file).mode).toBe("off");
 		expect(await readMenu(file)).toContainEqual(expect.stringContaining("Suggestions: off"));
+	});
+
+	/**
+	 * The prompt injection *is* layer 1: `infer` mode's whole point is chips
+	 * without anything added to the primary model's system prompt, and `off`
+	 * adds nothing either. `tags` and `both` both ask for the tags.
+	 */
+	it.each([
+		["both", true],
+		["tags", true],
+		["infer", false],
+		["off", false],
+	] as const)("mode %s injects the prompt contract: %s", async (mode, injected) => {
+		writeFileSync(file, JSON.stringify({ mode }), "utf8");
+		const { pi, handlers } = makeFakePi();
+		piSnippetTui(pi);
+		const event = { systemPrompt: "base", systemPromptOptions: {} as { appendSystemPrompt?: string } };
+		const result = handlers.get("before_agent_start")!(event, makeCtx().ctx);
+
+		expect(result?.systemPrompt?.includes(SNIPPET_TAG) ?? false).toBe(injected);
+		expect(event.systemPromptOptions.appendSystemPrompt?.includes(SNIPPET_TAG) ?? false).toBe(injected);
 	});
 
 	it("offers no click toggles — clicking is always on, by the terminal", async () => {
