@@ -85,7 +85,7 @@ describe("InferenceEngine", () => {
 		const h = host({
 			stream: (_model, _context) => eventStream(deltas(REPLY, 10)),
 		});
-		const anchors = await engine.infer(MESSAGE, h, (anchor) => seen.push(anchor));
+		const anchors = await engine.infer(MESSAGE, h, [], (anchor) => seen.push(anchor));
 		expect(anchors).toEqual(["rebuild", "commit"]);
 		expect(seen).toEqual(["rebuild", "commit"]);
 	});
@@ -104,7 +104,7 @@ describe("InferenceEngine", () => {
 					}
 				})(),
 		});
-		await engine.infer(MESSAGE, h, (anchor) => {
+		await engine.infer(MESSAGE, h, [], (anchor) => {
 			at.push({ anchor, afterChunk: chunkCount });
 		});
 		// The first anchor can only be complete once the streamed prefix
@@ -117,6 +117,16 @@ describe("InferenceEngine", () => {
 		expect(rebuild!.afterChunk).toBeGreaterThanOrEqual(firstClose + 1);
 	});
 
+	it("passes the existing chips down, so an echoed tag is not re-emitted", async () => {
+		// The message already carries layer 1's tag; the second model's reply
+		// keeps it and adds one.
+		const tagged = "Do you want to <snippet>rebuild</snippet> or commit?";
+		const added = "Do you want to <snippet>rebuild</snippet> or <snippet>commit</snippet>?";
+		const engine = new InferenceEngine();
+		const h = host({ stream: () => eventStream(deltas(added)) });
+		expect(await engine.infer(tagged, h, ["rebuild"])).toEqual(["commit"]);
+	});
+
 	it("caches by message text: a second ask pays nothing and still reports the anchors", async () => {
 		let calls = 0;
 		const engine = new InferenceEngine();
@@ -127,8 +137,8 @@ describe("InferenceEngine", () => {
 			},
 		});
 		const seen: string[] = [];
-		await engine.infer(MESSAGE, h);
-		const again = await engine.infer(MESSAGE, h, (a) => seen.push(a));
+		await engine.infer(MESSAGE, h, []);
+		const again = await engine.infer(MESSAGE, h, [], (a) => seen.push(a));
 		expect(calls).toBe(1);
 		expect(again).toEqual(["rebuild", "commit"]);
 		expect(seen).toEqual(["rebuild", "commit"]);
@@ -142,7 +152,7 @@ describe("InferenceEngine", () => {
 				stopReason: "stop",
 			}),
 		});
-		expect(await engine.infer(MESSAGE, h)).toEqual(["rebuild", "commit"]);
+		expect(await engine.infer(MESSAGE, h, [])).toEqual(["rebuild", "commit"]);
 	});
 
 	it("reads the reply from the system prompt's contract, not the session's", async () => {
@@ -154,7 +164,7 @@ describe("InferenceEngine", () => {
 				return eventStream([]);
 			},
 		});
-		await engine.infer(MESSAGE, h);
+		await engine.infer(MESSAGE, h, []);
 		expect(seen).toBeDefined();
 		expect(seen).not.toContain("<snippet>rebuild the solution");
 	});
@@ -168,8 +178,8 @@ describe("InferenceEngine", () => {
 				return eventStream(deltas("Pushed the branch, CI is green."));
 			},
 		});
-		expect(await engine.infer("Pushed the branch, CI is green.", h)).toEqual([]);
-		expect(await engine.infer("Pushed the branch, CI is green.", h)).toEqual([]);
+		expect(await engine.infer("Pushed the branch, CI is green.", h, [])).toEqual([]);
+		expect(await engine.infer("Pushed the branch, CI is green.", h, [])).toEqual([]);
 		expect(calls).toBe(1);
 	});
 
@@ -183,14 +193,14 @@ describe("InferenceEngine", () => {
 			},
 		});
 		for (let i = 0; i < 3; i++) {
-			expect(await engine.infer(`question ${i}?`, h)).toEqual([]);
+			expect(await engine.infer(`question ${i}?`, h, [])).toEqual([]);
 		}
 		expect(calls).toBe(3);
 		expect(engine.stoodDown).toBe(true);
-		expect(await engine.infer("question more?", h)).toEqual([]);
+		expect(await engine.infer("question more?", h, [])).toEqual([]);
 		expect(calls).toBe(3); // stood down: nothing fired
 		engine.rearm();
-		expect(await engine.infer("question more?", h)).toEqual([]);
+		expect(await engine.infer("question more?", h, [])).toEqual([]);
 		expect(calls).toBe(4);
 	});
 
@@ -199,7 +209,7 @@ describe("InferenceEngine", () => {
 		const h = host({
 			complete: async () => ({ content: [], stopReason: "error" }),
 		});
-		expect(await engine.infer("still asking?", h)).toEqual([]);
+		expect(await engine.infer("still asking?", h, [])).toEqual([]);
 		expect(engine.stoodDown).toBe(false); // one strike of three
 	});
 });

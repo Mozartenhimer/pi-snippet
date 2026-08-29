@@ -33,7 +33,7 @@
  * transformation (PRD §5.2 hard rule).
  */
 import { DigitChord } from "../shared/digit-chord.js";
-import { asksSomething, stripSnippetTags } from "../shared/inferred.js";
+import { asksSomething } from "../shared/inferred.js";
 import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix, MAX_SUGGESTIONS_PER_MESSAGE } from "../shared/suggestions.js";
 import { mergeSuggestions, toTuiMarkdown } from "../shared/tui-markdown.js";
 import { InferenceEngine } from "./infer.js";
@@ -94,7 +94,7 @@ export default function piSnippetTui(pi: any): void {
 	/** Anchors inferred for a message so far, by its stripped text. */
 	const inferredFor = (message?: { content?: TextBlock[] }): string[] => {
 		if (!message) return [];
-		return inferred.get(stripSnippetTags(messageText(message))) ?? [];
+		return inferred.get(messageText(message)) ?? [];
 	};
 	/**
 	 * How many assistant messages have started this session. An inference
@@ -549,20 +549,27 @@ export default function piSnippetTui(pi: any): void {
 	/**
 	 * Send a finished assistant message to the second model.
 	 *
-	 * The tags are stripped first — the second model must not see the primary
-	 * model's choices, or it would echo them and every one of its tags would
-	 * duplicate a chip that already exists. The gate is the old one: a message
-	 * that asks nothing pays nothing. Every failure inside is silent.
+	 * The message goes as stored, layer-1 tags included: the second model sees
+	 * what is already covered and is asked to add more, not to repeat it — and
+	 * anything it echoes anyway is dropped at validation time. The gate is the
+	 * old one: a message that asks nothing pays nothing. Every failure inside
+	 * is silent.
 	 */
 	const queueInference = (message: { role?: string; content?: TextBlock[] }, ctx: any): void => {
 		if (!isEnabled()) return;
-		const stripped = stripSnippetTags(messageText(message));
-		if (!asksSomething(stripped)) return;
+		const raw = messageText(message);
+		if (!asksSomething(raw)) return;
+		const existing = parseSuggestions(raw).suggestions;
 		const seq = latestAssistantSeq;
 		void infer
-			.infer(stripped, { modelRegistry: ctx.modelRegistry, signal: ctx.signal }, (anchor) => {
-				applyInferredAnchor(seq, message, stripped, anchor, ctx);
-			})
+			.infer(
+				raw,
+				{ modelRegistry: ctx.modelRegistry, signal: ctx.signal },
+				existing,
+				(anchor) => {
+					applyInferredAnchor(seq, message, raw, anchor, ctx);
+				},
+			)
 			.catch(() => {
 				/* the engine resolves to [] on failure; a floating rejection
 				   must never crash the session either */
@@ -577,19 +584,19 @@ export default function piSnippetTui(pi: any): void {
 	const applyInferredAnchor = (
 		seq: number,
 		message: { role?: string; content?: TextBlock[] },
-		stripped: string,
+		raw: string,
 		anchor: string,
 		ctx: any,
 	): void => {
 		if (!isEnabled()) return;
-		const known = inferred.get(stripped) ?? [];
+		const known = inferred.get(raw) ?? [];
 		if (known.includes(anchor)) return;
 		if (seq !== latestAssistantSeq) return; // a newer message owns the numbering now
 		// Keep two-digit addressing meaningful: layer 1 has first claim on the
 		// numbers, and the runaway guard caps what the keyboard can reach.
 		const layer1 = parseSuggestions(messageText(message)).suggestions.length;
 		if (layer1 + known.length >= MAX_SUGGESTIONS_PER_MESSAGE) return;
-		inferred.set(stripped, [...known, anchor]);
+		inferred.set(raw, [...known, anchor]);
 		while (inferred.size > INFERRED_LIMIT) {
 			const oldest = inferred.keys().next();
 			if (oldest.done) break;

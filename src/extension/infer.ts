@@ -40,7 +40,6 @@ import {
 	buildInferPrompt,
 	extractAnchors,
 	INFER_SYSTEM_PROMPT,
-	stripSnippetTags,
 } from "../shared/inferred.js";
 
 /** The model this layer uses unless `PI_SNIPPET_MODEL` says otherwise. */
@@ -136,9 +135,10 @@ export function resolveInferenceModel(host: InferHost): PiModel | undefined {
 /**
  * Runs inferences and remembers their answers.
  *
- * Keyed by the stripped message text rather than by a message id: the same
- * text re-rendered after a resize, a fork, or a `/tree` walk is the same
- * question, and a session that comes back to it should not pay again.
+ * Keyed by the exact message text (tags included — they are part of what the
+ * model sees) rather than by a message id: the same text re-rendered after a
+ * resize, a fork, or a `/tree` walk is the same question, and a session that
+ * comes back to it should not pay again.
  */
 export class InferenceEngine {
 	private readonly cache = new Map<string, string[]>();
@@ -156,8 +156,8 @@ export class InferenceEngine {
 	}
 
 	/** Cached answer for a message, without asking. */
-	peek(strippedText: string): string[] | undefined {
-		return this.cache.get(strippedText);
+	peek(messageText: string): string[] | undefined {
+		return this.cache.get(messageText);
 	}
 
 	private remember(key: string, value: string[]): void {
@@ -172,23 +172,26 @@ export class InferenceEngine {
 	/**
 	 * Infer chips for a message, reusing a cached or in-flight answer.
 	 *
-	 * `strippedText` is the message with layer-1 tags removed
-	 * (`stripSnippetTags`). `onChip` fires once per newly completed anchor as
-	 * the reply streams in — and, on the cache path, once per anchor
-	 * immediately, so a caller can treat the two paths alike. Resolves to the
-	 * full anchor list, `[]` on every failure path.
+	 * `messageText` is the message as stored, layer-1 tags included — the
+	 * second model sees them so it can add to them rather than duplicate
+	 * them. `existing` names what layer 1 already painted, so its duplicates
+	 * are dropped at validation time. `onChip` fires once per newly completed
+	 * anchor as the reply streams in — and, on the cache path, once per
+	 * anchor immediately, so a caller can treat the two paths alike. Resolves
+	 * to the full anchor list, `[]` on every failure path.
 	 */
 	async infer(
-		strippedText: string,
+		messageText: string,
 		host: InferHost,
+		existing: readonly string[],
 		onChip?: (anchor: string) => void,
 	): Promise<string[]> {
-		const cached = this.cache.get(strippedText);
+		const cached = this.cache.get(messageText);
 		if (cached) {
 			for (const anchor of cached) onChip?.(anchor);
 			return cached;
 		}
-		const pending = this.inFlight.get(strippedText);
+		const pending = this.inFlight.get(messageText);
 		if (pending) return pending;
 		if (this.stoodDown) return [];
 
@@ -202,9 +205,9 @@ export class InferenceEngine {
 			host.signal?.addEventListener("abort", () => controller.abort());
 			const context = {
 				systemPrompt: INFER_SYSTEM_PROMPT,
-				messages: [{ role: "user", content: buildInferPrompt(strippedText) }],
+				messages: [{ role: "user", content: buildInferPrompt(messageText) }],
 			};
-			const options = { maxTokens: maxTokensFor(strippedText), signal: controller.signal };
+			const options = { maxTokens: maxTokensFor(messageText), signal: controller.signal };
 			try {
 				const seen = new Set<string>();
 				const finalText = await streamOrComplete(
@@ -213,7 +216,7 @@ export class InferenceEngine {
 					context,
 					options,
 					(partial) => {
-						for (const anchor of extractAnchors(partial, strippedText)) {
+						for (const anchor of extractAnchors(partial, messageText, existing)) {
 							if (!seen.has(anchor)) {
 								seen.add(anchor);
 								onChip?.(anchor);
@@ -221,9 +224,9 @@ export class InferenceEngine {
 						}
 					},
 				);
-				const anchors = extractAnchors(finalText, strippedText);
+				const anchors = extractAnchors(finalText, messageText, existing);
 				this.failures = 0;
-				this.remember(strippedText, anchors);
+				this.remember(messageText, anchors);
 				return anchors;
 			} catch {
 				// Timeout, transport failure, a provider that rejected the
@@ -232,11 +235,11 @@ export class InferenceEngine {
 				return [];
 			} finally {
 				clearTimeout(timer);
-				this.inFlight.delete(strippedText);
+				this.inFlight.delete(messageText);
 			}
 		})();
 
-		this.inFlight.set(strippedText, run);
+		this.inFlight.set(messageText, run);
 		return run;
 	}
 }

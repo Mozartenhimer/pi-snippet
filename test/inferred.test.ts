@@ -5,7 +5,6 @@ import {
 	extractAnchors,
 	INFER_SYSTEM_PROMPT,
 	locateAnchors,
-	stripSnippetTags,
 	unfence,
 } from "../src/shared/inferred.js";
 import { mergeSuggestions, toTuiMarkdown } from "../src/shared/tui-markdown.js";
@@ -27,27 +26,16 @@ describe("asksSomething", () => {
 	});
 });
 
-describe("stripSnippetTags", () => {
-	it("removes the primary model's tags but keeps their text", () => {
-		expect(stripSnippetTags("Do you want to <snippet>rebuild</snippet> or <snippet>commit</snippet>?")).toBe(
-			"Do you want to rebuild or commit?",
-		);
-	});
-
-	it("leaves a message without tags untouched", () => {
-		expect(stripSnippetTags("Plain text, no tags.")).toBe("Plain text, no tags.");
-	});
-});
-
 describe("buildInferPrompt", () => {
-	it("wraps the message, tagged form stripped away from the wire", () => {
-		const wire = buildInferPrompt(stripSnippetTags("<snippet>Yes</snippet>, done."));
+	it("sends the message as stored, layer-1 tags included", () => {
+		const wire = buildInferPrompt("<snippet>Yes</snippet>, done.");
 		expect(wire).toContain("<assistant_message>");
-		expect(wire).toContain("Yes, done.");
+		expect(wire).toContain("<snippet>Yes</snippet>, done.");
 	});
 
-	it("asks the model to tag freely — more is better", () => {
+	it("asks the model to add to existing tags, freely — more is better", () => {
 		expect(INFER_SYSTEM_PROMPT).toMatch(/no limit on the number of tags/);
+		expect(INFER_SYSTEM_PROMPT).toMatch(/Never remove, move, or alter an existing <snippet> tag/);
 	});
 });
 
@@ -66,6 +54,12 @@ describe("extractAnchors", () => {
 		expect(extractAnchors(reply, message)).toEqual(["rebuild", "commit"]);
 	});
 
+	it("drops the tags the model echoed back from the tagged message", () => {
+		const tagged = "Do you want to <snippet>rebuild</snippet> or commit?";
+		const added = "Do you want to <snippet>rebuild</snippet> or <snippet>commit</snippet>?";
+		expect(extractAnchors(added, tagged, ["rebuild"])).toEqual(["commit"]);
+	});
+
 	it("drops an anchor the model paraphrased or invented", () => {
 		const bad = "Do you want to <snippet>rebuild the project</snippet> or <snippet>commit</snippet>?";
 		expect(extractAnchors(bad, message)).toEqual(["commit"]);
@@ -79,9 +73,9 @@ describe("extractAnchors", () => {
 	});
 
 	it("drops an anchor that duplicates a chip the primary model already tagged", () => {
-		expect(extractAnchors(reply, "<snippet>rebuild</snippet> or commit?".replace("commit?", "commit?"), [
-			"rebuild",
-		])).toEqual(["commit"]);
+		expect(extractAnchors(reply, "<snippet>rebuild</snippet> or commit?", ["rebuild"])).toEqual([
+			"commit",
+		]);
 	});
 
 	it("drops overlapping anchors rather than doubling a span", () => {

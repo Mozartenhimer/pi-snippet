@@ -658,10 +658,12 @@ no longer hold: the model is free, and its chips are no longer second-class.
 
 **What it does.** When an assistant message ends, a small fixed model —
 OpenRouter's `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, pinned in
-`shared/inferred.ts`; `PI_SNIPPET_MODEL` overrides — receives the message with
-its layer-1 tags *stripped*, and re-emits it character-for-character with
-`<snippet>` tags added around the spans the user could plausibly send back. The
-wrapped text itself is the reply, exactly as in layer 1.
+`shared/inferred.ts`; `PI_SNIPPET_MODEL` overrides — receives the message as
+stored, layer-1 tags included, and re-emits it character-for-character with
+more `<snippet>` tags added around the spans the user could plausibly send
+back. It is told to leave the tags it received exactly where they are; any tag
+it echoes anyway matches a chip layer 1 already paints and is dropped at
+validation time. The wrapped text itself is the reply, exactly as in layer 1.
 
 **What the user sees.** Nothing new. The anchors are located verbatim in the
 stored message and painted as ordinary chips — numbered, Alt+N addressable,
@@ -686,8 +688,8 @@ settings key — the UI is unaltered); there is no per-message cap on its tags
 (more options are better than fewer; only the runaway guard of 99 total per
 message applies); its chips are first-class, so no anchor/reply JSON — the tag
 re-emit is the whole protocol; and it runs on every question-bearing message,
-layer-1 tags stripped first, with duplicates of already-painted chips dropped
-at merge time rather than by refusing to run.
+seeing the tags layer 1 already painted so it adds to them rather than
+restarting from a blind position.
 
 **Cost control.** The gate is a question mark outside code (`asksSomething`):
 a status update pays nothing. The call goes out at `message_end`, streams via

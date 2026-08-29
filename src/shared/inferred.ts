@@ -4,11 +4,12 @@
  *
  * Layer 1 needs the primary model to notice it has asked something and wrap
  * the answer as it writes. When it doesn't, a small fixed model reads the
- * finished message and returns the same message re-emitted with `<snippet>`
- * tags around the spans the user could plausibly send back. The wrapped text
- * itself is the reply — no anchor/reply JSON like the removed §17 layer had —
- * so a layer-2 chip is the same shape as a layer-1 chip: numbered, Alt+N
- * addressable, click-to-insert. Nothing in the UI distinguishes them.
+ * finished message — tags included, so it can see what is already covered —
+ * and returns it with more `<snippet>` tags added around the spans the user
+ * could plausibly send back. The wrapped text itself is the reply — no
+ * anchor/reply JSON like the removed §17 layer had — so a layer-2 chip is the
+ * same shape as a layer-1 chip: numbered, Alt+N addressable,
+ * click-to-insert. Nothing in the UI distinguishes them.
  *
  * Everything here is pure. The model call lives in `extension/infer.ts`; this
  * module decides what is worth asking about, what to ask, and — the part that
@@ -58,22 +59,10 @@ export function asksSomething(text: string): boolean {
 	return false;
 }
 
-/**
- * The stored message with layer-1 tags removed — what the second model sees.
- *
- * The second model must not see the primary model's choices, or it would
- * simply echo them (and every one of its tags would duplicate a chip layer 1
- * already painted). Stripping the tags leaves the prose intact, which is what
- * it is asked to re-emit.
- */
-export function stripSnippetTags(text: string): string {
-	return text.replace(/<\/?snippet(?:\s[^<>]*)?>/g, "");
-}
-
 /** Instruction for the second model. Kept separate so it can be tuned alone. */
-export const INFER_SYSTEM_PROMPT = `You mark up an AI coding assistant's message for its user.
+export const INFER_SYSTEM_PROMPT = `You add to an AI coding assistant's message the replies its user could plausibly send back.
 
-You are given the assistant's message. Return it again, character-for-character identical, except that spans the user could plausibly send back as their next message are wrapped in <snippet></snippet> tags. The text you wrap is exactly what the user sends when they pick it, so wrap the shortest span that reads as a complete reply on its own.
+You are given the assistant's message. Some spans may already be wrapped in <snippet></snippet> tags — leave those exactly as they are. Add <snippet></snippet> tags around every other span the user could plausibly send back as their next message. The text you wrap is exactly what the user sends when they pick it, so wrap the shortest span that reads as a complete reply on its own.
 
 What to wrap:
 - Each branch of an either/or question: "Do you want to rebuild or commit?" -> rebuild, commit.
@@ -81,26 +70,26 @@ What to wrap:
 - The bare name of an option in a list, when the name alone is a complete reply.
 - A binary question's affirmative: "Shall I proceed?" -> proceed.
 
-Tag freely: there is no limit on the number of tags — more options are better than fewer. But never wrap a noun, a filename, or a fragment that only makes sense inside the assistant's own sentence; the wrapped text must stand alone as the user's words. A message that invites nothing — a status update, a finished answer — comes back unchanged.
+Tag freely: there is no limit on the number of tags — more options are better than fewer. But never wrap a noun, a filename, or a fragment that only makes sense inside the assistant's own sentence; the wrapped text must stand alone as the user's words. A message that invites nothing new comes back exactly as you received it.
 
 Hard rules:
-- Copy the message exactly. The ONLY change is inserting <snippet> and </snippet> around spans. No paraphrasing, no added or dropped words, no punctuation fixes, nothing.
+- Copy the message exactly. The ONLY change is adding <snippet> and </snippet> around new spans. No paraphrasing, no added or dropped words, no punctuation fixes, nothing.
+- Never remove, move, or alter an existing <snippet> tag, and never wrap text that is already inside one.
 - Never wrap text inside a code block or code span.
 - Reply with the marked-up message and nothing else: no prose, no code fence, no quotes.
 
 Example message:
-The build failed in three places. Want me to fix them one at a time, or show you all three errors first?
+The build failed in three places. Want me to <snippet>fix them one at a time</snippet>, or show you all three errors first?
 
 Example reply:
 The build failed in three places. Want me to <snippet>fix them one at a time</snippet>, or <snippet>show you all three errors first</snippet>?
 
 Example message:
-Do you want to rebuild or commit?
+I've pushed the branch and CI is green.
 
 Example reply:
-Do you want to <snippet>rebuild</snippet> or <snippet>commit</snippet>?`;
+I've pushed the branch and CI is green.`;
 
-/** The user turn for the second model's call: just the message being read. */
 export function buildInferPrompt(messageText: string): string {
 	return `<assistant_message>\n${messageText}\n</assistant_message>`;
 }
@@ -166,44 +155,45 @@ export function locateAnchors(
 /**
  * Validate a second model's answer and return the anchors worth painting.
  *
- * `existing` names the chips layer 1 already painted for this message, so the
- * second model's duplicates are dropped here rather than at render time. Tags
- * are read out of the reply with the same parser the TUI uses — a tag inside
- * the model's own code fence, a tag crossing a blank line, an empty one — all
- * drop, exactly as they would for a primary model's message. There is no
- * per-message limit beyond the runaway guard the parser itself applies: more
- * tags are better than fewer, and the cap exists only so a stuck model
- * emitting tag soup cannot fill the keyboard's numbering.
+ * `messageText` is the original message *with* its layer-1 tags — the exact
+ * text the second model received. The tags it was asked to preserve come back
+ * in its reply and parse as suggestions like any other; each one matches a
+ * chip in `existing` (the texts layer 1 already painted) and is dropped here,
+ * so only genuinely new spans survive. A new tag must still be verbatim in
+ * the message's non-code text and must not overlap a chip that exists.
+ *
+ * There is no per-message limit beyond the runaway guard the parser itself
+ * applies: more tags are better than fewer, and the cap exists only so a
+ * stuck model emitting tag soup cannot fill the keyboard's numbering.
  */
 export function extractAnchors(
 	raw: string,
 	messageText: string,
 	existing: readonly string[] = [],
 ): string[] {
-	const stripped = stripSnippetTags(messageText);
-	const layer1 = locateAnchors(
-		stripped,
-		existing,
-		[],
-	).map((a) => ({ text: a.text, start: a.start, end: a.end }));
+	const layer1Nodes = parseSuggestions(messageText).nodes.filter((n) => n.type === "suggestion");
+	const accepted: Array<{ text: string; start: number; end: number }> = layer1Nodes.map((n) => ({
+		text: n.text,
+		start: n.start,
+		end: n.start + n.text.length,
+	}));
 
 	const reply = unfence(raw);
 	const { nodes } = parseSuggestions(reply);
-	const spans = nodes
-		.filter((n) => n.type === "suggestion")
-		.map((n) => ({ text: n.text, start: n.start, end: n.start + n.text.length }));
 
-	const accepted: Array<{ text: string; start: number; end: number }> = [...layer1];
 	const anchors: string[] = [];
-	for (const span of spans) {
+	for (const node of nodes) {
+		if (node.type !== "suggestion") continue;
 		if (accepted.length >= MAX_SUGGESTIONS_PER_MESSAGE) break;
-		// A duplicate of a chip layer 1 (or an earlier anchor) already paints
-		// is noise, not a second option — the same words cannot be two replies.
-		if (accepted.some((a) => a.text === span.text)) continue;
-		const located = locateAnchors(stripped, [span.text], accepted);
+		// The tags the model was told to preserve come back as suggestions of
+		// their own; they match a chip layer 1 already paints and end here.
+		// So does any re-wrap of the same words — the same words cannot be two
+		// replies.
+		if (accepted.some((a) => a.text === node.text)) continue;
+		const located = locateAnchors(messageText, [node.text], accepted);
 		if (located.length === 0) continue; // invented or paraphrased: drop it
 		accepted.push(located[0]!);
-		anchors.push(span.text);
+		anchors.push(node.text);
 	}
 	return anchors;
 }
