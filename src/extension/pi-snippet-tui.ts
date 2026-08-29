@@ -36,7 +36,7 @@ import { DigitChord } from "../shared/digit-chord.js";
 import { asksSomething } from "../shared/inferred.js";
 import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix, MAX_SUGGESTIONS_PER_MESSAGE } from "../shared/suggestions.js";
 import { mergeSuggestions, toTuiMarkdown } from "../shared/tui-markdown.js";
-import { InferenceEngine } from "./infer.js";
+import { DEFAULT_INFER_MODEL, InferenceEngine, inferenceCandidates, MODEL_ENV_VAR } from "./infer.js";
 import { registerPromptSnippet } from "./common.js";
 import { loadSettings, saveSettings, settingsPath } from "./settings.js";
 import { LinkServer } from "./link-server.js";
@@ -65,6 +65,14 @@ export default function piSnippetTui(pi: any): void {
 
 	const state = {
 		enabled: stored.enabled,
+		/**
+		 * The second model, as chosen in `/snippets`. Undefined means the
+		 * built-in default; `PI_SNIPPET_MODEL` overrides both for a session.
+		 * Named `inferModel`, not `model` — that key belonged to the removed
+		 * 2026 layer, and a stale pin from it must stay dead, not hijack this
+		 * one.
+		 */
+		inferModel: stored.inferModel,
 		hotkeysEnabled: stored.hotkeysEnabled,
 		/**
 		 * Suggestions of the most recent assistant message — the one streaming,
@@ -88,7 +96,7 @@ export default function piSnippetTui(pi: any): void {
 	 * transcript (raw tags only, never rewritten) repaints with layer-1 chips
 	 * alone. Anchors are answers, not part of the message.
 	 */
-	const infer = new InferenceEngine();
+	const infer = new InferenceEngine(() => state.inferModel);
 	const inferred = new Map<string, string[]>();
 	const INFERRED_LIMIT = 64;
 	/** Anchors inferred for a message so far, by its stripped text. */
@@ -737,10 +745,55 @@ export default function piSnippetTui(pi: any): void {
 			{
 				enabled: state.enabled,
 				hotkeysEnabled: state.hotkeysEnabled,
+				...(state.inferModel ? { inferModel: state.inferModel } : {}),
 			},
 			settingsFile,
 		);
 		return ok ? "" : " (this session only — could not write the settings file)";
+	};
+
+	/**
+	 * The model the second layer would use right now, for the menu to show:
+	 * the stored choice, else the session's environment override, else the
+	 * built-in default.
+	 */
+	const effectiveModel = (): { id: string; fromEnv: boolean } => {
+		if (process.env[MODEL_ENV_VAR]) return { id: process.env[MODEL_ENV_VAR]!, fromEnv: true };
+		return { id: state.inferModel ?? DEFAULT_INFER_MODEL, fromEnv: false };
+	};
+
+	/**
+	 * Pick the second model. The candidates are everything the registry has
+	 * auth for, the current choice first and small cheap models next, so a
+	 * sensible option is at the top of a long catalogue. Resetting to the
+	 * default is always offered, even when the default *is* current, so the
+	 * way back is never a scroll hunt.
+	 */
+	const pickModel = async (ctx: any): Promise<void> => {
+		const current = effectiveModel();
+		const candidates = inferenceCandidates({ modelRegistry: ctx.modelRegistry }, current.id);
+		const choices = [
+			...candidates.map((m) => {
+				const id = `${m.provider ?? ""}/${m.id}`;
+				return id.toLowerCase() === current.id.toLowerCase() ? `${id} — current` : id;
+			}),
+			...(current.id.toLowerCase() !== DEFAULT_INFER_MODEL.toLowerCase()
+				? [`Default (${DEFAULT_INFER_MODEL})`]
+				: [`Default (${DEFAULT_INFER_MODEL}) — current`]),
+		];
+		const pick = await ctx.ui.select(
+			`Second model (tags the primary model didn't add)${current.fromEnv ? " — PI_SNIPPET_MODEL is overriding it this session" : ""}`,
+			choices,
+		);
+		if (!pick) return;
+		if (pick.startsWith(`Default (`)) {
+			state.inferModel = undefined;
+			ctx.ui.notify(`Second model reset to the default${persist()}`);
+			return;
+		}
+		state.inferModel = pick.replace(" — current", "");
+		infer.rearm(); // a dead credential on the old model says nothing about this one
+		ctx.ui.notify(`Second model set to ${state.inferModel}${persist()}`);
 	};
 
 	pi.registerCommand("snippets", {
@@ -756,6 +809,7 @@ export default function piSnippetTui(pi: any): void {
 				[
 					`Suggestions: ${state.enabled ? "on" : "off"} — toggle`,
 					`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
+					`Second model: ${effectiveModel().id}${effectiveModel().fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
 					...(process.platform === "linux" && !linkInstall.isInstalled()
 						? ["Register click handler — one-time desktop setup, needed before Ctrl+click works"]
 						: []),
@@ -769,6 +823,8 @@ export default function piSnippetTui(pi: any): void {
 				state.enabled = !state.enabled;
 				if (!state.enabled) state.addressable = [];
 				ctx.ui.notify(`Inline suggestions ${state.enabled ? "enabled" : "disabled"}${persist()}`);
+			} else if (choice.startsWith("Second model:")) {
+				await pickModel(ctx);
 			} else if (choice.startsWith("Register click handler")) {
 				await installClickHandler(ctx);
 			} else if (choice.startsWith("Remove click handler")) {

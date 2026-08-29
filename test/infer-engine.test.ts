@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	InferenceEngine,
+	inferenceCandidates,
 	MODEL_ENV_VAR,
 	DEFAULT_INFER_MODEL,
 	resolveInferenceModel,
@@ -72,9 +73,39 @@ describe("resolveInferenceModel", () => {
 		expect(resolveInferenceModel(host({ auth: (m) => m.provider !== "openrouter" }))).toBeUndefined();
 	});
 
-	it("obeys PI_SNIPPET_MODEL over the default", () => {
+	it("the stored /snippets choice beats the built-in default", () => {
+		expect(resolveInferenceModel(host(), "anthropic/claude-sonnet-5")?.id).toBe("claude-sonnet-5");
+	});
+
+	it("PI_SNIPPET_MODEL beats the stored choice, for one session", () => {
 		process.env[MODEL_ENV_VAR] = "anthropic/claude-sonnet-5";
-		expect(resolveInferenceModel(host())?.id).toBe("claude-sonnet-5");
+		expect(resolveInferenceModel(host(), "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")?.id).toBe(
+			"claude-sonnet-5",
+		);
+	});
+
+	it("an unresolvable stored choice falls back to the default", () => {
+		expect(resolveInferenceModel(host(), "gpt-9000")?.id).toBe(MODEL.id);
+	});
+
+	it("a stored choice with no auth is refused rather than substituted", () => {
+		expect(
+			resolveInferenceModel(host({ auth: (m) => m.provider !== "anthropic" }), "anthropic/claude-sonnet-5"),
+		).toBeUndefined();
+	});
+});
+
+describe("inferenceCandidates", () => {
+	const opus: PiModel = { id: "claude-opus-5", provider: "anthropic" };
+
+	it("puts the current choice first, then small models ahead of the rest", () => {
+		const list = inferenceCandidates(host({ available: [SONNET, opus, MODEL] }), "anthropic/claude-sonnet-5");
+		expect(list.map((m) => m.id)).toEqual(["claude-sonnet-5", MODEL.id, "claude-opus-5"]);
+	});
+
+	it("handles a current choice the registry no longer knows", () => {
+		const list = inferenceCandidates(host({ available: [SONNET, MODEL] }), "gone/vanished");
+		expect(list.map((m) => m.id)).toEqual([MODEL.id, "claude-sonnet-5"]);
 	});
 });
 
@@ -181,6 +212,19 @@ describe("InferenceEngine", () => {
 		expect(await engine.infer("Pushed the branch, CI is green.", h, [])).toEqual([]);
 		expect(await engine.infer("Pushed the branch, CI is green.", h, [])).toEqual([]);
 		expect(calls).toBe(1);
+	});
+
+	it("uses the stored /snippets choice supplied by the constructor", async () => {
+		const seen: PiModel[] = [];
+		const engine = new InferenceEngine(() => "anthropic/claude-sonnet-5");
+		const h = host({
+			complete: async (model) => {
+				seen.push(model);
+				return { content: [{ type: "text", text: REPLY }], stopReason: "stop" };
+			},
+		});
+		expect(await engine.infer(MESSAGE, h, [])).toEqual(["rebuild", "commit"]);
+		expect(seen[0]!.id).toBe("claude-sonnet-5");
 	});
 
 	it("stands down after three consecutive failures and re-arms on demand", async () => {

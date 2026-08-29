@@ -42,7 +42,7 @@ import {
 	INFER_SYSTEM_PROMPT,
 } from "../shared/inferred.js";
 
-/** The model this layer uses unless `PI_SNIPPET_MODEL` says otherwise. */
+/** The model this layer uses unless `PI_SNIPPET_MODEL` or `/snippets` say otherwise. */
 export const DEFAULT_INFER_MODEL = "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free";
 
 /** Environment override, for harnesses and for pinning without a flag. */
@@ -50,6 +50,12 @@ export const MODEL_ENV_VAR = "PI_SNIPPET_MODEL";
 
 /** How long a single inference may take before it is abandoned. */
 const INFER_TIMEOUT_MS = 30_000;
+
+/**
+ * Model ids that read as small and fast. Only shapes the `/snippets` picker's
+ * ordering; the model itself is chosen, not guessed.
+ */
+const SMALL_MODEL_PATTERN = /haiku|mini|flash|lite|small|nano|micro|8b|7b/i;
 
 /**
  * Consecutive failures before this layer stands down for the session.
@@ -109,11 +115,14 @@ export function resolvePin(pin: string, available: PiModel[]): PiModel | undefin
 /**
  * The model this layer would use, or undefined when there is nothing to use.
  *
- * The default is obeyed only when the registry knows it and has auth for it —
- * a model that is not configured must cost nothing, not one failed request
- * per message. `PI_SNIPPET_MODEL` overrides it outright.
+ * Sources, in order: `PI_SNIPPET_MODEL` (a session-level override, the same
+ * role `--no-suggestions` plays), the stored `/snippets` choice
+ * (`explicitPin`), the built-in default. A pin the registry knows is obeyed —
+ * or refused outright when it has no auth, never substituted. A pin it does
+ * not know (a model removed from the catalogue) falls through to the next
+ * source rather than silently switching the layer off.
  */
-export function resolveInferenceModel(host: InferHost): PiModel | undefined {
+export function resolveInferenceModel(host: InferHost, explicitPin?: string): PiModel | undefined {
 	const registry = host.modelRegistry;
 	if (!registry) return undefined;
 	let available: PiModel[] = [];
@@ -122,14 +131,43 @@ export function resolveInferenceModel(host: InferHost): PiModel | undefined {
 	} catch {
 		return undefined;
 	}
-	const pin = process.env[MODEL_ENV_VAR] ?? DEFAULT_INFER_MODEL;
-	const model = resolvePin(pin, available);
-	if (!model) return undefined;
-	try {
-		return registry.hasConfiguredAuth?.(model) ?? false ? model : undefined;
-	} catch {
-		return undefined;
+	const sources = [process.env[MODEL_ENV_VAR], explicitPin, DEFAULT_INFER_MODEL]
+		.map((pin) => pin?.trim())
+		.filter((pin): pin is string => typeof pin === "string" && pin.length > 0);
+	for (const pin of sources) {
+		const model = resolvePin(pin, available);
+		if (!model) continue; // unknown: try the next source
+		try {
+			if (registry.hasConfiguredAuth?.(model) ?? false) return model;
+		} catch {
+			/* fall through */
+		}
+		return undefined; // known but unusable: refuse, never substitute
 	}
+	return undefined;
+}
+
+/**
+ * Models worth offering in the `/snippets` picker: everything the registry
+ * has, with the current choice first and small cheap models ahead of the
+ * rest, so the sensible options are at the top of a long catalogue.
+ */
+export function inferenceCandidates(host: InferHost, current?: string): PiModel[] {
+	const registry = host.modelRegistry;
+	if (!registry) return [];
+	let available: PiModel[] = [];
+	try {
+		available = registry.getAvailable?.() ?? [];
+	} catch {
+		return [];
+	}
+	const rank = (m: PiModel): number =>
+		`${m.provider ?? ""}/${m.id}`.toLowerCase() === current?.toLowerCase()
+			? 0
+			: SMALL_MODEL_PATTERN.test(m.id)
+				? 1
+				: 2;
+	return [...available].sort((a, b) => rank(a) - rank(b));
 }
 
 /**
@@ -144,6 +182,16 @@ export class InferenceEngine {
 	private readonly cache = new Map<string, string[]>();
 	private readonly inFlight = new Map<string, Promise<string[]>>();
 	private failures = 0;
+
+	/**
+	 * The stored `/snippets` choice, read per call so a model change in the
+	 * menu applies to the next message without a reload.
+	 */
+	private readonly getPin: () => string | undefined;
+
+	constructor(getPin: () => string | undefined = () => undefined) {
+		this.getPin = getPin;
+	}
 
 	/** True once the layer has given up for the session. */
 	get stoodDown(): boolean {
@@ -195,7 +243,7 @@ export class InferenceEngine {
 		if (pending) return pending;
 		if (this.stoodDown) return [];
 
-		const model = resolveInferenceModel(host);
+		const model = resolveInferenceModel(host, this.getPin());
 		const registry = host.modelRegistry;
 		if (!model || !registry) return [];
 
