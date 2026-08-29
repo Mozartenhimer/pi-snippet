@@ -518,13 +518,12 @@ Consequences of that hook returning *markdown* rather than components:
 
 ### 12.1 Click to insert
 
-The TUI also supports real clicking, via terminal mouse reporting (DECSET 1000 + SGR 1006):
-
-- Hit testing matches the *rendered text* of each `ⁿlabel` span on the visible screen — no position markers are embedded in the message, so the session file and the model's context stay clean. Both halves of a span wrapped across lines are clickable.
-- Mouse reporting is terminal-wide: while on, the wheel is delivered to the application (terminal scrollback stops responding) and click-drag selection needs Shift. To keep that cost small, reporting is engaged only while the latest message actually has suggestions — which now includes one still streaming, from the frame its first chip is painted — and can be toggled off entirely in `/snippets`. The toggle is persisted (H4): click-to-insert is off by default, so anyone who wants it wants it every session.
-- Clicking mid-stream is hit-tested against the lines drawn at click time, and the screen is moving underneath it. A click resolves through a DSR round trip (well under a frame in practice); if the message scrolls in that window the click misses rather than inserting something else, because hit testing matches the chip's rendered text and not a stored coordinate.
-- Wheel, right-button, motion, and release events are swallowed while reporting is on, so no escape sequences leak into the editor as typed garbage.
-- Screen-to-buffer mapping is anchored with a cursor-position report (DSR, `ESC[6n`) issued at click time: pi never clears the screen and draws with relative cursor moves only, so when pi is launched below an existing shell prompt its first buffer line is not screen row 0. The DSR answer, correlated with pi-tui's buffer-relative cursor bookkeeping, gives the exact offset; a terminal that never answers falls back to a bottom-aligned mapping. After an insertion the TUI is asked to repaint — consumed input bypasses pi's own render pass.
+*Vacated in this form.* Clicking was first built here with terminal mouse
+reporting (DECSET 1000 + SGR 1006) plus text hit-testing — DSR-anchored
+screen-to-buffer mapping, a glyph-width table, a `/snippets` toggle because
+mouse mode took the wheel and selection hostage. All of it went with the mode:
+the terminal that paints a chip already knows which cells belong to it, so
+§12.1a hands hit-testing back and keeps nothing.
 
 ### 12.1a Click without mouse mode (Linux)
 
@@ -553,11 +552,13 @@ path hands the click back to it:
   inside a running process — so hydration runs on both, and it indexes every
   assistant message in the branch, since pi repaints them all and each carries
   the URL it had before (messageKey and the token are both deterministic).
-- **No terminal-wide mode.** The wheel keeps scrolling the terminal's own
-  scrollback and selection needs no Shift, which is the entire cost this
-  removes. The mouse path stays as the fallback for terminals without OSC 8,
-  for SSH (the terminal would dispatch on the wrong machine), and for anyone
-  who does not want a scheme handler registered.
+- **No terminal-wide mode, and no fallback.** The wheel keeps scrolling the
+  terminal's own scrollback and selection needs no Shift, which is the entire
+  cost this removes. There is exactly one delivery path: a terminal that
+  cannot paint hyperlinks gets the bare label and no clicking, and over SSH
+  the click is dispatched on the local desktop, where no socket for the remote
+  session exists — so it fails openly rather than inserting into the wrong
+  composer.
 - **The URL carries an index, never text**, so nothing reaching the socket can
   put words in the composer that the model did not write; and it is **keyed by
   message**, so a chip clicked in old scrollback still resolves to what it
@@ -704,8 +705,10 @@ rebuilds the message component on every `message_update` while streaming.)
   message never pays twice.
 - **Stand down on dead credentials.** `hasConfiguredAuth()` says configured,
   not working; three consecutive failures stop the layer for the session.
-- **Never surface a failure.** No auth, a timeout, tag soup — the message has
-  no extra chips, exactly as if the layer were off.
+- **Never surface a failure in the message.** No auth, a timeout, tag soup —
+  the message gains no error markup and no wrong chips, exactly as if the
+  layer were off. The one visible trace is the footer status (below), which
+  exists precisely because the message cannot carry the news.
 
 **What changed from the removed layer:** the model defaults to a fixed choice
 but is a preference now — `inferModel` in the settings file, typed as a
@@ -759,20 +762,19 @@ chip and never says why.
 message on screen: `snippet: not sent` while the primary streams or the gate
 said no, `snippet: sent (waiting)` while the reply streams, and then the
 report — `snippet: 2 new chips` — counted live as the anchors land, zero
-included when a reply genuinely arrived and added nothing. A failed request
-reverts to `not sent` rather than reporting zero, which would claim a reply
-arrived when none did.
+included when a reply genuinely arrived and added nothing. A request that got
+no answer says `snippet: second model failed` — it was asked; "not sent"
+would credit the layer with a decision it never made.
 
 When there is no second model to call at all — nothing resolves, the model
 that does resolve has no configured auth, or three consecutive failures have
 stood the layer down — the line says `snippet: second model unavailable`
 instead, checked before the question-mark gate because it is a condition of
-the session rather than of the message. That state is why it exists: silence
-and `not sent` are indistinguishable from outside, so a session whose second
-model has no credentials (the default is an OpenRouter model most sessions
-have no key for) would otherwise report `not sent` after every question it
-ever asked, reading as a working layer that keeps declining. Beyond that one
-line a failure is still never surfaced.
+the session rather than of the message. The two failure lines exist because
+all three otherwise look identical from outside: a session whose second model
+cannot run would report `not sent` after every question it ever asked,
+reading as a working layer that keeps declining. The reason itself is still
+never shown — only that there wasn't one.
 
 **Testing.** Fixed strings only: the engine and the contract are tested
 against canned replies through a fake registry (`test/inferred.test.ts`,
