@@ -208,7 +208,7 @@ A suggestion, once accepted, keeps its number for the life of the message — la
 *Accept:* Ctrl+Z removes the whole inserted string.
 
 **A7.** As a user, I want to click a suggestion from a message three turns back, so that I can return to an option I passed on.
-*Accept:* Chips in scrolled history remain live and clickable for the whole session.
+*Accept:* Chips in scrolled history remain live and clickable for the whole session — and across a restart of the pi process (`pi --session <file>` or `/resume`), not just within one. This takes two things, and the token alone is not enough: the socket path must be reproducible (the session-id token, §12.2), and the table the URL resolves against must be rebuilt for every repainted message when the session loads, not only for messages seen live.
 
 ### Epic B — Reading and comprehension
 
@@ -546,6 +546,12 @@ path hands the click back to it:
   and rejected: two sessions open in the same project is an ordinary thing to
   do, and directory-keying would make the second one's clicks land in the
   first one's composer instead of failing openly.
+  A reproducible socket path is necessary but not sufficient: the restart
+  must also rebuild the resolver table. `pi --session <file>` fires
+  `session_start` with `reason: "startup"` — `"resume"` is only for /resume
+  inside a running process — so hydration runs on both, and it indexes every
+  assistant message in the branch, since pi repaints them all and each carries
+  the URL it had before (messageKey and the token are both deterministic).
 - **No terminal-wide mode.** The wheel keeps scrolling the terminal's own
   scrollback and selection needs no Shift, which is the entire cost this
   removes. The mouse path stays as the fallback for terminals without OSC 8,

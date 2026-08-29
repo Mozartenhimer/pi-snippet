@@ -633,6 +633,17 @@ export default function piSnippetTui(pi: any): void {
 		state.inferred = [];
 		if (!isEnabled()) return;
 		const branch = ctx.sessionManager.getBranch();
+		// Every assistant message in the branch gets repainted through the
+		// transformer on resume/fork/reload, each with the URL it had before —
+		// messageKey and (as of the session-id token) linkToken are both
+		// deterministic. `linkTargets` has to be rebuilt for all of them, not
+		// just the tip, or a click on a chip anywhere but the last message
+		// resolves against an empty map and silently does nothing.
+		for (const entry of branch) {
+			if (entry.type === "message" && entry.message.role === "assistant") {
+				indexMessageForLinks(entry.message);
+			}
+		}
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const entry = branch[i];
 			if (entry.type !== "message") continue;
@@ -662,7 +673,16 @@ export default function piSnippetTui(pi: any): void {
 			/* keep the random fallback */
 		}
 		if (pi.getFlag("snippet-click") === true) flagClick = true;
-		if (event.reason === "resume" || event.reason === "fork" || event.reason === "reload") {
+		// "startup" is a real restart too: `pi --session <file>` fires it, not
+		// "resume" — that reason is only for /resume inside a running process.
+		// A restart that skips hydration leaves linkTargets empty, so the chip
+		// URLs the transcript is repainted with resolve to nothing.
+		if (
+			event.reason === "startup" ||
+			event.reason === "resume" ||
+			event.reason === "fork" ||
+			event.reason === "reload"
+		) {
 			hydrateFromBranch(ctx);
 		} else {
 			state.addressable = [];
