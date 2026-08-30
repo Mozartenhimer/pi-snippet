@@ -30,9 +30,14 @@ PI_SNIPPET_SETTINGS=/tmp/s.json python3 scripts/osc8-probe.py unknown  # the no-
 python3 scripts/snippet-model-rpc-smoke.py  # real pi over RPC: /snippets model applies, validates, persists
 python3 scripts/snippet-model-tmux.py  # real pi, real terminal: /snippets model's tab-completing dropdown, Tab, /snippets menu redirect
 python3 scripts/snippet-infer-tmux.py  # real pi, real terminal: primary streams, second model's chips light up, superscripts stay put, footer tracks not sent / waiting / new-chip count
+python3 scripts/ssh-remote-tmux.py     # fake SSH_TTY, one process: the honest default and the /snippets opt-in
+sudo bash scripts/docker-ssh-env.sh    # two containers, real sshd (once; no registry pull — debootstrap + import)
+sudo python3 scripts/ssh-click-docker.py  # real SSH: chip URL, real handler, ssh -L forward, click lands in the composer
 ```
 
 The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a grid, answering cursor-position queries), and assert what lands in the editor. They are the only way to test terminal interaction end to end — `script` starts pi at screen row 0, which masks a whole class of bugs.
+
+**Remote clicking is the one feature a single machine cannot test.** The click resolves on the client and the socket lives on the server, so `ssh-remote-tmux.py` — which fakes `SSH_TTY` in one process — asserts the UI contract and nothing about the wire. `docker-ssh-env.sh` builds the two hosts (no image is pulled: registry blob CDNs are commonly blocked by egress policy, so the base is debootstrapped from the distro archive and imported, with node and pi copied in from this machine), and `ssh-click-docker.py` drives real pi on the server through real sshd and asserts the whole trip. Order matters there and is the user's own: remote clicking goes on *before* the message arrives, because a message rendered while it was off is painted with bare labels and carries no URL to click.
 
 (The mouse-reporting harnesses — `click-offset-repro.py`, `infer-click-tmux.py`, the width-table checks — went with mouse mode; git history has them. The mock-LLM fixture `test/fixtures/mock-llm.js`, which scripted both a primary and a small model's replies via `ProviderConfig.streamSimple`, went with the inference layer too; git shows how it registered. `test/fixtures/mock-llm.js` has since been restored in the tag-re-emit shape — one mock provider playing both the primary and the second model, told apart by a marker in the system prompt, both roles streamed in chunks so partial frames are observable — and `test/fixtures/mock-models.js` is the narrower catalogue-only fixture for `/snippets model`'s harnesses, which need something for `getAvailable()` to return but never a reply.)
 
