@@ -14,6 +14,7 @@
  * terminal would trail every chip on screen.
  */
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -44,7 +45,11 @@ afterEach(() => {
 	resetCapabilitiesCache();
 });
 
-function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, string>) {
+function setup(
+	settings: Partial<typeof DEFAULT_SETTINGS>,
+	env: Record<string, string>,
+	opts: { selectReply?: string } = {},
+) {
 	writeFileSync(
 		process.env.PI_SNIPPET_SETTINGS!,
 		JSON.stringify({ ...DEFAULT_SETTINGS, ...settings }),
@@ -67,6 +72,8 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 		"ITERM_SESSION_ID",
 		"WT_SESSION",
 		"PI_HYPERLINKS",
+		"SSH_TTY",
+		"SSH_CONNECTION",
 	]) {
 		delete process.env[key];
 	}
@@ -94,18 +101,24 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 
 	const tui = new FakeTui();
 	const offered: string[] = [];
+	const notes: string[] = [];
+	const editors: string[] = [];
 	const ctx: any = {
 		mode: "tui",
 		hasUI: true,
 		sessionManager: { getBranch: () => [] },
 		ui: {
 			getEditorText: () => "",
-			setEditorText: () => {},
-			notify: () => {},
+			setEditorText: (text: string) => {
+				editors.push(text);
+			},
+			notify: (message: string) => {
+				notes.push(message);
+			},
 			setStatus: () => {},
 			select: async (_title: string, choices: string[]) => {
 				offered.push(...choices);
-				return undefined;
+				return opts.selectReply;
 			},
 			setFooter: (factory?: any) => {
 				if (factory) factory(tui);
@@ -121,6 +134,8 @@ function setup(settings: Partial<typeof DEFAULT_SETTINGS>, env: Record<string, s
 
 	return {
 		tui,
+		notes,
+		editors,
 		say,
 		menu: async () => {
 			offered.length = 0;
@@ -180,5 +195,52 @@ describe("clicking on by default, by the terminal", () => {
 		const choices = await h.menu();
 		expect(choices).toContainEqual(expect.stringContaining("Remove click handler"));
 		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
+	});
+});
+
+describe("over SSH", () => {
+	// SSH_TTY is what a real sshd sets; either marker must trigger the same
+	// behavior, since SSH_CONNECTION can appear without a TTY (port forwards).
+	const SSH_ENV = { TERM_PROGRAM: "ghostty", SSH_TTY: "/dev/pts/3" };
+
+	it("paints bare labels until remote clicking is on, even where hyperlinks work", () => {
+		const h = setup({}, SSH_ENV);
+		h.say(CHIPPED);
+		// Without a forward, a URL is a click that dies silently on the client
+		// machine — the outcome the layer refuses to paint by default.
+		expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
+	});
+
+	it("offers remote clicking instead of desktop registration", async () => {
+		const h = setup({}, SSH_ENV);
+		const choices = await h.menu();
+		expect(choices).toContainEqual(expect.stringContaining("Remote clicking: off"));
+		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
+	});
+
+	it("enabling paints URLs, prints the forward line, and verifies on a real click", async () => {
+		const h = setup({}, SSH_ENV, { selectReply: "Remote clicking: on" });
+		const pending = h.menu();
+		// The enable path ends in a verify window waiting for a click; deliver
+		// one through the socket it just opened, in the handler's wire format —
+		// exactly how a click forwarded over ssh -L arrives.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		const recipe = h.editors.find((text) => text.includes("-L "));
+		expect(recipe).toMatch(/mkdir -p \/tmp\/pi-snippet-\$\(id -u\) && ssh -L \/tmp\/pi-snippet-\$\(id -u\)\/[0-9a-f]{8}\.sock:(\S+) <host>/);
+		const socketPath = recipe!.match(/ssh -L \/tmp\/pi-snippet-\$\(id -u\)\/[0-9a-f]{8}\.sock:(\S+)/)![1]!;
+		await new Promise<void>((resolve, reject) => {
+			const s = connect(socketPath, () => {
+				s.write("00000000/c1\n");
+				s.end();
+				resolve();
+			});
+			s.on("error", reject);
+		});
+		await pending;
+		expect(h.render(CHIPPED)).toMatch(/\]\(pisnip:\/\/[0-9a-f]{8}\/[0-9a-f]{8}\/c1\)/);
+		expect(h.notes.join("\n")).toContain("Verified:");
+		// And off again: bare labels, socket closed, nothing left to hang vitest.
+		await h.menu();
+		expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
 	});
 });

@@ -276,11 +276,11 @@ The socket is a local IPC endpoint that types into the user's composer, so:
 
 | Situation | What happens |
 |---|---|
-| SSH / remote pi | Terminal opens the URI on the **local** machine; the socket is on the remote. Broken, and silently. Detect (`SSH_TTY`) and refuse link mode. |
-| tmux without `hyperlinks` | No OSC 8 emitted; auto-detected (§5), stays on mouse. |
+| SSH / remote pi | Clicks resolve on the client; the socket is here. Shipped: `/snippets` → *Remote clicking* paints URLs and prints the `ssh -L` forward for this session (verified by the user's own click). Designed: the ssh-back handler (`docs/ssh-back-handler.md`) removes the per-session forward. |
+| tmux without `hyperlinks` | No OSC 8 emitted; auto-detected (§5); bare labels. |
 | Terminal without OSC 8 at all | Same. |
 | Terminal that restricts URI schemes | The unmeasured risk. See §9. |
-| No handler installed | Link mode not offered; mouse path unchanged. |
+| No handler installed | Chips paint bare labels until `/snippets` registers one; nothing to click with. |
 | `link-osc8 = false` in the user's Ghostty config | OSC 8 links stop being highlighted, previewed, copied or opened. Default is true; nothing detects it from inside, so it fails as a click that does nothing. |
 | Session ends, user clicks an old chip in scrollback | Socket is gone; the opener fails quietly. Acceptable — arguably better than inserting into a session that has moved on. |
 | Two sessions, one terminal (tabs) | Correct by token; each session's chips reach only that session. |

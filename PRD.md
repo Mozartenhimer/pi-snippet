@@ -582,6 +582,17 @@ Support on terminals other than Ghostty — gnome-terminal in particular — is
 catalogued in `docs/linux-terminals.md`. Design, measurements and open items:
 `docs/terminal-resolved-clicks.md`.
 
+**Over SSH** the delivery path inverts: the click is resolved on the machine
+in front of the user, whose desktop has no socket for this session — the
+socket lives here. Without an explicit opt-in the chips therefore paint as
+bare labels (`Alt+N` still works — it is in-band), and `/snippets` offers
+*Remote clicking*: session-scoped, it paints URLs again and puts the
+`ssh -L` command that forwards this session's socket to the client into the
+composer, verified by the user's own first click. `docs/ssh-back-handler.md` designs the
+zero-setup successor — a client-side handler that relays unresolvable clicks
+back over SSH — which removes the per-session forward at the cost of a
+one-time client configuration.
+
 ### 12.2 Addressing more than ten suggestions
 
 A terminal has ten digit keys, so `Alt+N` alone tops out at ten. Digits are therefore accumulated into a number:

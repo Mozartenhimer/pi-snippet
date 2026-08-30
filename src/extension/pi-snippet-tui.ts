@@ -249,7 +249,25 @@ export default function piSnippetTui(pi: any): void {
 	 * disagree with it and every chip trails a visible
 	 * `(pisnip://a1b2c3d4/ff2ee691/c1)`.
 	 */
-	const linkOn = () => isEnabled() && getCapabilities().hyperlinks;
+	/**
+	 * An SSH session turns the delivery path inside out. The click is resolved
+	 * by the terminal on the machine in front of the user, and the desktop
+	 * there dispatches it to *its* handler — which has no socket for this
+	 * session; the socket lives here. A chip URL painted by default over SSH
+	 * is therefore a dead click that fails silently, which is the one outcome
+	 * this layer refuses to dress up: without an explicit opt-in, SSH paints
+	 * bare labels (Alt+N still works — it is in-band). The opt-in, "Remote
+	 * clicking" in `/snippets`, is session state, not a persisted setting:
+	 * the socket it forwards is named by *this* session's token, so a persisted
+	 * yes would paint dead URLs into every future session that never set a
+	 * forward up. The recipe it prints is the `ssh -L` unix-socket forward;
+	 * `docs/ssh-back-handler.md` designs the zero-setup successor.
+	 */
+	const overSsh = (): boolean =>
+		Boolean(process.env.SSH_TTY || process.env.SSH_CONNECTION);
+	let remoteClicks = false;
+	const linkOn = () =>
+		isEnabled() && getCapabilities().hyperlinks && (!overSsh() || remoteClicks);
 
 	/**
 	 * What each rendered message's chips mean, keyed by a hash of the exact
@@ -343,6 +361,12 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	/** Set while an install probe is in flight; see `installClickHandler`. */
 	let probeArrived: (() => void) | null = null;
+	/**
+	 * Set while the remote-clicking verify window is open: fired by any click
+	 * that resolves, probe or real, because over SSH there is no local opener
+	 * to fire a synthetic probe — the user's own Ctrl+click is the probe.
+	 */
+	let anyClickArrived: (() => void) | null = null;
 	/** The message key a probe URL uses, which no real message can collide with. */
 	const PROBE_KEY = "00000000";
 	const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -350,6 +374,7 @@ export default function piSnippetTui(pi: any): void {
 	const linkServer = new LinkServer({
 		token: () => linkToken,
 		resolve: (msg, index) => {
+			anyClickArrived?.();
 			if (msg === PROBE_KEY) {
 				probeArrived?.();
 				return undefined; // a probe proves the path; it inserts nothing
@@ -452,6 +477,9 @@ export default function piSnippetTui(pi: any): void {
 	let unregisteredHintShown = false;
 	const hintIfUnregistered = (ctx: any): void => {
 		if (unregisteredHintShown || process.platform !== "linux") return;
+		// Over SSH the desktop is on the client machine; "register the handler"
+		// here would write into a desktop nobody is looking at.
+		if (overSsh()) return;
 		if (state.addressable.length === 0) return;
 		if (linkInstall.isInstalled()) return;
 		unregisteredHintShown = true;
@@ -467,8 +495,8 @@ export default function piSnippetTui(pi: any): void {
 	 * The link server is cheap enough to leave listening: it holds a socket,
 	 * not a terminal mode, so unlike the old mouse reporting it does not need
 	 * an "only while there are chips" gate. It is stopped when suggestions are
-	 * off or the terminal cannot paint a hyperlink, because then nothing can
-	 * paint a URL that names it.
+	 * off, the terminal cannot paint a hyperlink, or (over SSH) remote clicking
+	 * is off — because then nothing can paint a URL that names it.
 	 */
 	const syncClicks = (ctx: any) => {
 		lastCtx = ctx;
@@ -863,9 +891,12 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const clickStatusLabel = (): string => {
 		if (process.platform !== "linux") return "Ctrl+click: unavailable off Linux";
+		if (overSsh() && !remoteClicks)
+			return "Ctrl+click: over SSH — the click resolves on your machine, not this one; enable remote clicking below";
 		if (!getCapabilities().hyperlinks) {
 			return "Ctrl+click: inert — this terminal paints no hyperlinks (see docs/linux-terminals.md)";
 		}
+		if (overSsh()) return "Ctrl+click: remote — chips are clickable through the ssh socket forward";
 		if (!linkInstall.isInstalled()) return "Ctrl+click: handler not registered";
 		return "Ctrl+click: on";
 	};
@@ -881,6 +912,14 @@ export default function piSnippetTui(pi: any): void {
 	const installClickHandler = async (ctx: any): Promise<void> => {
 		if (process.platform !== "linux") {
 			ctx.ui.notify("Terminal-resolved clicking is Linux-only for now", "warning");
+			return;
+		}
+		if (overSsh()) {
+			ctx.ui.notify(
+				"Over SSH the desktop is on the machine in front of you — register the handler there. "
+					+ "Here, use “Remote clicking” instead.",
+				"warning",
+			);
 			return;
 		}
 		const result = linkInstall.install();
@@ -921,6 +960,77 @@ export default function piSnippetTui(pi: any): void {
 			probeArrived = previous;
 		}
 		syncClicks(ctx);
+	};
+
+	/**
+	 * Remote clicking over SSH, on and off.
+	 *
+	 * Turning it on paints chip URLs again (this session only) and prints the
+	 * one thing the user cannot derive from here: the `ssh -L` argument that
+	 * carries this session's socket across the wire, with the local side
+	 * written as `$(id -u)` so it expands in *their* shell on the client
+	 * machine, where the handler looks for it. The remote side is the path the
+	 * listener actually bound — not a path computed from the same rules, which
+	 * is exactly the disagreement a confined snap can introduce (see
+	 * `link-server.ts`).
+	 *
+	 * Every invocation while on ends in a verify window: over SSH there is no
+	 * local opener to fire a synthetic probe, so the user's own Ctrl+click is
+	 * the probe, and the first enable cannot pass it (the forward does not
+	 * exist until they reconnect). The verdict is honest about that — "no click
+	 * yet" is the expected first-run answer, not a failure to retry blindly.
+	 */
+	const toggleRemoteClicking = async (ctx: any): Promise<void> => {
+		if (remoteClicks) {
+			remoteClicks = false;
+			syncClicks(ctx);
+			ctx.ui.notify("Remote clicking off — chips paint as plain labels again");
+			return;
+		}
+		remoteClicks = true;
+		syncClicks(ctx); // starts the listener: the far end of the forward
+		const started = linkServer.listening ? linkServer.socketPath : linkServer.start();
+		if (!started) {
+			remoteClicks = false;
+			syncClicks(ctx);
+			ctx.ui.notify("Could not open a socket to forward", "warning");
+			return;
+		}
+		// The verify window opens here, not after the recipe below: the socket
+		// exists from this moment, and a click that lands while the toasts
+		// settle must still count.
+		let arrived = false;
+		const previous = anyClickArrived;
+		anyClickArrived = () => {
+			arrived = true;
+		};
+		// The recipe goes in the composer, not a toast: it is something the user
+		// must copy to another machine verbatim, and toasts clip at the terminal
+		// width and coalesce when fired within a render tick — both measured
+		// live, and either would silently truncate the one line that matters.
+		// The editor already has the precedent (`/snippets model` prefills it)
+		// and one more property toasts lack: the text survives reading it.
+		ctx.ui.setEditorText(
+			`mkdir -p /tmp/pi-snippet-$(id -u) && ssh -L /tmp/pi-snippet-$(id -u)/${linkToken}.sock:${started} <host>`,
+		);
+		tui?.requestRender?.();
+		ctx.ui.notify("Remote clicking on — the ssh command is in the editor. Reconnect with it, then resume (pi --continue).");
+		// A beat apart, or the toast coalescing above eats the first one.
+		await delay(1200);
+		ctx.ui.notify("Once, on your machine: pi /snippets → “Register click handler”.");
+		try {
+			for (let i = 0; i < 100 && !arrived; i++) await delay(100);
+		} finally {
+			anyClickArrived = previous;
+		}
+		if (arrived) {
+			ctx.ui.notify("Verified: a click made the whole trip — desktop, handler, forward, this session.");
+		} else {
+			ctx.ui.notify(
+				"No click yet — expected until you reconnect. Then pick this again to verify.",
+				"warning",
+			);
+		}
 	};
 
 	/**
@@ -1076,18 +1186,29 @@ export default function piSnippetTui(pi: any): void {
 				ctx.ui.notify("Inline suggestions are off for this session (--no-suggestions)");
 				return;
 			}
+				const clickRows = overSsh()
+					? [
+						`Remote clicking: ${remoteClicks ? "on" : "off"} — ${
+							remoteClicks
+								? "print the forward line again and verify a click"
+								: "make Ctrl+click work over SSH (forwards this session's socket)"
+							}`,
+					  ]
+					: [
+						...(process.platform === "linux" && !linkInstall.isInstalled()
+							? ["Register click handler — one-time desktop setup, needed before Ctrl+click works"]
+							: []),
+						...(process.platform === "linux" && linkInstall.isInstalled()
+							? ["Remove click handler — unregister pisnip:// from the desktop"]
+							: []),
+					  ];
 			const choice = await ctx.ui.select(
 				`${snippetStats(ctx)} — ${clickStatusLabel()}`,
 				[
 					`Suggestions: ${MODE_SUMMARY[state.mode]} — change`,
 					`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
 					`Second model: ${effectiveModel().id}${effectiveModel().fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
-					...(process.platform === "linux" && !linkInstall.isInstalled()
-						? ["Register click handler — one-time desktop setup, needed before Ctrl+click works"]
-						: []),
-					...(process.platform === "linux" && linkInstall.isInstalled()
-						? ["Remove click handler — unregister pisnip:// from the desktop"]
-						: []),
+					...clickRows,
 				],
 			);
 			if (!choice) return;
@@ -1095,6 +1216,8 @@ export default function piSnippetTui(pi: any): void {
 				await pickMode(ctx);
 			} else if (choice.startsWith("Second model:")) {
 				await pickModel(ctx);
+			} else if (choice.startsWith("Remote clicking:")) {
+				await toggleRemoteClicking(ctx);
 			} else if (choice.startsWith("Register click handler")) {
 				await installClickHandler(ctx);
 			} else if (choice.startsWith("Remove click handler")) {
