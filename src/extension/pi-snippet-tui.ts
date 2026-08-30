@@ -854,12 +854,17 @@ export default function piSnippetTui(pi: any): void {
 		queueInference(event.message, ctx);
 	});
 
+	// pi's /hotkeys table gives every registerShortcut call its own row (no
+	// "hidden" option exists, and there's no unregister), and all ten digits
+	// must be bound for the chord in digit-chord.ts to see every keystroke —
+	// so ten rows are unavoidable. Only one needs the full explanation.
 	for (let n = 0; n <= 9; n++) {
+		const suggestion = n === 0 ? 10 : n;
 		pi.registerShortcut(`alt+${n}`, {
 			description:
-				n === 0
-					? "Insert suggestion 10 (or extend a two-digit number)"
-					: `Insert suggestion ${n} (hold Alt and type two digits for 10+)`,
+				n === 1
+					? "Insert suggestion 1 (hold Alt and type two digits for 10+, e.g. Alt+1 Alt+0)"
+					: `Insert suggestion ${suggestion}`,
 			handler: (ctx: any) => {
 				if (!isEnabled() || !state.hotkeysEnabled || !ctx.hasUI) return;
 				lastCtx = ctx;
