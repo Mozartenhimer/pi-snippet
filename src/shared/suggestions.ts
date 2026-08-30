@@ -18,7 +18,7 @@
  */
 
 export const SNIPPET_TAG = "snippet";
-export const MAX_SUGGESTION_LENGTH = 120;
+const MAX_SUGGESTION_LENGTH = 120;
 /**
  * Hard ceiling — a runaway-output guard, not a style rule. It matches what
  * two-digit `Alt` addressing can reach (see shared/digit-chord.ts).
@@ -37,14 +37,14 @@ export interface SuggestOptions {
 	acceptedSoFar?: number;
 }
 
-export interface TextNode {
+interface TextNode {
 	type: "text";
 	text: string;
 	/** Offset of this run within the text that was parsed. */
 	start: number;
 }
 
-export interface SuggestionNode {
+interface SuggestionNode {
 	type: "suggestion";
 	/** Trimmed suggestion text: what is displayed and what is inserted. */
 	text: string;

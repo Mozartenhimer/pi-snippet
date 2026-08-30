@@ -28,7 +28,7 @@
 import { fencedRegions, MAX_SUGGESTIONS_PER_MESSAGE, parseSuggestions } from "./suggestions.js";
 
 /** Regions of `text` that are code, where a question mark means nothing. */
-export function codeRegions(text: string): Array<{ start: number; end: number }> {
+function codeRegions(text: string): Array<{ start: number; end: number }> {
 	const regions = fencedRegions(text);
 	const inline = /`+[^`\n]*`+/g;
 	let m: RegExpExecArray | null;

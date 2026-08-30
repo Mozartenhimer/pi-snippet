@@ -51,15 +51,15 @@ function configHome(env: NodeJS.ProcessEnv): string {
  * repoints it on every run). Same reasoning as `settings.ts` keeping
  * preferences out of the session store, one level further out.
  */
-export function handlerPath(env: NodeJS.ProcessEnv = process.env): string {
+function handlerPath(env: NodeJS.ProcessEnv = process.env): string {
 	return join(dataHome(env), "pi-snippet", "open-handler");
 }
 
-export function desktopPath(env: NodeJS.ProcessEnv = process.env): string {
+function desktopPath(env: NodeJS.ProcessEnv = process.env): string {
 	return join(dataHome(env), "applications", DESKTOP_ID);
 }
 
-export function mimeappsPath(env: NodeJS.ProcessEnv = process.env): string {
+function mimeappsPath(env: NodeJS.ProcessEnv = process.env): string {
 	return join(configHome(env), "mimeapps.list");
 }
 
@@ -76,7 +76,7 @@ export function mimeappsPath(env: NodeJS.ProcessEnv = process.env): string {
  * in the same order — these two processes may not share a namespace, and this
  * list is the whole of their agreement about where to meet.
  */
-export function handlerSource(): string {
+function handlerSource(): string {
 	return `#!/usr/bin/env python3
 """pi-snippet click handler. Forwards one ${LINK_SCHEME}:// URL and exits.
 
@@ -310,7 +310,7 @@ export function uninstall(env: NodeJS.ProcessEnv = process.env): UninstallResult
  * `xdg-mime query default` is the cheap, widely-present form of gio's lookup;
  * when it is absent the file checks above are the best available answer.
  */
-export function queryDefaultHandler(env: NodeJS.ProcessEnv = process.env): string | null {
+function queryDefaultHandler(env: NodeJS.ProcessEnv = process.env): string | null {
 	try {
 		const out = execFileSync("xdg-mime", ["query", "default", MIME], {
 			// The caller's environment merged over this process's: the XDG
@@ -336,7 +336,7 @@ export function isInstalled(env: NodeJS.ProcessEnv = process.env): boolean {
  * Add the default association without xdg-utils, preserving everything else in
  * the file. `mimeapps.list` is a plain ini and this is the only key we own.
  */
-export function setDefaultByHand(env: NodeJS.ProcessEnv = process.env): void {
+function setDefaultByHand(env: NodeJS.ProcessEnv = process.env): void {
 	const path = mimeappsPath(env);
 	const entry = `${MIME}=${DESKTOP_ID}`;
 	let lines: string[] = [];
@@ -373,7 +373,7 @@ function run(command: string, args: string[]): boolean {
  * the XDG portal with `ask=false` and only falls back to `xdg-open` when the
  * portal errors.
  */
-export function probeCommands(url: string): Array<{ command: string; args: string[] }> {
+function probeCommands(url: string): Array<{ command: string; args: string[] }> {
 	return [
 		{
 			command: "gdbus",

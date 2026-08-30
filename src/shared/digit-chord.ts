@@ -17,7 +17,7 @@
  */
 
 /** How long an ambiguous prefix waits for another digit. */
-export const CHORD_TIMEOUT_MS = 350;
+const CHORD_TIMEOUT_MS = 350;
 
 export interface ChordState {
 	/**
