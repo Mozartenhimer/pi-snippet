@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -139,6 +139,44 @@ describe("pi-snippet-tui: /snippets choices persist", () => {
 		});
 		const menu = await readMenu(file);
 		expect(menu).toContainEqual(expect.stringContaining("Alt+digit shortcuts: off"));
+	});
+
+	/**
+	 * Register and remove are one condition, not two — the menu offers exactly
+	 * the one that applies. Both rows were untested while they were written as a
+	 * pair of inverted `isInstalled()` checks, which is how they could have
+	 * drifted into offering both at once or neither.
+	 */
+	it.skipIf(process.platform !== "linux").each([
+		[true, "Remove click handler", "Register click handler"],
+		[false, "Register click handler", "Remove click handler"],
+	] as const)("with the handler installed=%s the menu offers %s", async (installed, offered, hidden) => {
+		const xdg = mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
+		const previous = { data: process.env.XDG_DATA_HOME, ssh: process.env.SSH_TTY };
+		process.env.XDG_DATA_HOME = join(xdg, "data");
+		// Over SSH the menu offers the forward instead of either row, so this
+		// has to be a local-looking session whichever machine runs the tests.
+		delete process.env.SSH_TTY;
+		try {
+			if (installed) {
+				mkdirSync(join(xdg, "data", "pi-snippet"), { recursive: true });
+				mkdirSync(join(xdg, "data", "applications"), { recursive: true });
+				writeFileSync(join(xdg, "data", "pi-snippet", "open-handler"), "#!/bin/sh\n", "utf8");
+				writeFileSync(
+					join(xdg, "data", "applications", "pi-snippet-open.desktop"),
+					"[Desktop Entry]\n",
+					"utf8",
+				);
+			}
+			const menu = await readMenu(file);
+			expect(menu).toContainEqual(expect.stringContaining(offered));
+			expect(menu).not.toContainEqual(expect.stringContaining(hidden));
+		} finally {
+			if (previous.data === undefined) delete process.env.XDG_DATA_HOME;
+			else process.env.XDG_DATA_HOME = previous.data;
+			if (previous.ssh !== undefined) process.env.SSH_TTY = previous.ssh;
+			rmSync(xdg, { recursive: true, force: true });
+		}
 	});
 
 	it("says so when the settings file cannot be written", async () => {

@@ -153,6 +153,17 @@ describe("parseSuggestions — edge case matrix (PRD §11)", () => {
 		expect(chipTexts("`code` then <snippet>a real one</snippet>")).toEqual(["a real one"]);
 	});
 
+	it("a backtick run of the wrong length does not close a code span", () => {
+		// The span opened by one backtick is closed only by a run of exactly one,
+		// so the ``  in the middle is span content and the tag inside it is inert.
+		expect(chipTexts("`a``b<snippet>x</snippet>`")).toEqual([]);
+	});
+
+	it("an unclosed tag leaves the following text node anchored at the content", () => {
+		const res = parseSuggestions("<snippet>hanging");
+		expect(res.nodes).toEqual([{ type: "text", text: "hanging", start: 9 }]);
+	});
+
 	it("content spanning a blank line: plain text, no chip", () => {
 		const res = parseSuggestions("<snippet>first part\n\nsecond paragraph</snippet>");
 		expect(res.suggestions).toEqual([]);
@@ -234,6 +245,25 @@ describe("visibleStreamingPrefix — streaming buffer (PRD §7, 10.7)", () => {
 
 	it("hides a partial close tag mid-suggestion", () => {
 		expect(visibleStreamingPrefix("ok <snippet>go</")).toBe("ok ");
+	});
+
+	it("a lone backtick does not stop the scan", () => {
+		// The backtick opens no span (nothing closes it), so it is a literal run
+		// and the unclosed tag after it must still be hidden.
+		expect(visibleStreamingPrefix("a ` b <snippet>go")).toBe("a ` b ");
+	});
+
+	it("shows a close tag that never had an open", () => {
+		const s = "done</snippet> and on to the next thing";
+		expect(visibleStreamingPrefix(s)).toBe(s);
+	});
+
+	it("keeps hiding when a second tag opens after one gave up", () => {
+		// The first construct is past any length a chip could be, so it resolves
+		// as text and the scan continues into it — where a fresh open tag is
+		// hidden as usual.
+		const s = `before <snippet>${"y".repeat(200)} <snippet>short`;
+		expect(visibleStreamingPrefix(s)).toBe(`before <snippet>${"y".repeat(200)} `);
 	});
 });
 
