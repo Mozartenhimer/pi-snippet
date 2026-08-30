@@ -1,29 +1,34 @@
 #!/usr/bin/env python3
-"""Terminal-resolved clicking over a real SSH connection, end to end.
+"""Relayed clicking over real SSH: no forward, no flag, no resume.
 
 Runs inside the *client* container (see scripts/docker-ssh-env.sh); driven by
 scripts/ssh-click-docker.py, which is the thing to run by hand.
 
-scripts/ssh-remote-tmux.py asserts the same flow with SSH_TTY faked in one
-process, which is enough for the UI contract and nothing else: the feature is
-the wire. Here pi runs on another host behind real sshd, reached through a real
-pty, so SSH_TTY and SSH_CONNECTION are set by sshd; the chip URL is scraped out
-of the OSC 8 hyperlink the terminal actually received; the click is fired by the
-handler `link-install.ts` generated on this machine; and it reaches the session
-only by crossing the `ssh -L` unix-socket forward that /snippets printed.
+The sibling harness (ssh-click-client.py) asserts the shipped `ssh -L` path,
+which costs a flag on every ssh invocation. This asserts the successor
+(docs/ssh-back-handler.md): the click finds no socket on this machine, reads
+the relay host off the client's own config, and tunnels *itself* back through
+a fresh ssh — so the only per-machine setup is the one-time bootstrap line,
+which is taken from where the remote /snippets put it rather than hardcoded.
 
-The order matters and is the user's own: remote clicking goes on *first*, then
-the message arrives, because a message rendered while it was off is painted with
-bare labels and no URL to click.
+Deliberately hostile to a false pass: the local socket directory is removed and
+any forward killed first, so nothing here can succeed by the shipped path.
 """
-import json, os, pty, re, select, subprocess, sys, time
+import json, os, pty, re, select, shutil, subprocess, sys, time
 
-ROWS, COLS = 30, 110
+ROWS, COLS = 30, 200  # wide, so the bootstrap line lands unwrapped
 SUGGESTION = "rebuild the solution"
 REPLY = f"Two ways. Want me to <snippet>{SUGGESTION}</snippet>?"
 HANDLER = os.path.expanduser("~/.local/share/pi-snippet/open-handler")
 SOCKDIR = f"/tmp/pi-snippet-{os.getuid()}"
+REMOTES = os.path.expanduser("~/.pi/agent/pi-snippet-remotes.json")
 HOST = os.environ.get("PISNIP_SSH_HOST", "piserver")
+
+# Nothing local may answer, or a pass proves nothing.
+subprocess.run(["pkill", "-f", "ssh -o BatchMode=yes -N -L"], capture_output=True)
+shutil.rmtree(SOCKDIR, ignore_errors=True)
+if os.path.exists(REMOTES):
+	os.unlink(REMOTES)
 
 remote_env = {
 	"MOCK_LLM_INFER_MARKER": "@@none@@",
@@ -55,7 +60,6 @@ fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
 
 
 def pump(seconds):
-	"""Read for a while, answering cursor-position queries as a terminal does."""
 	global raw
 	end = time.time() + seconds
 	while time.time() < end:
@@ -94,12 +98,9 @@ def send(data):
 
 
 def select_row(label, timeout=12):
-	"""Press Down until `label`'s row is selected. The menu marks it with →,
-	so this reads the live screen rather than counting keystrokes — the row
-	order changes with the session's state."""
 	end = time.time() + timeout
 	while time.time() < end:
-		tail = flat(text())[-4000:]
+		tail = flat(text())[-6000:]
 		rows = [l for l in re.split(r"[\r\n]", tail) if label in l]
 		if rows and rows[-1].lstrip().startswith("→"):
 			return True
@@ -130,44 +131,54 @@ def check(name, ok):
 
 
 def bail(message):
-	open("/tmp/ssh-click.out", "w").write(text())
+	open("/tmp/ssh-relay.out", "w").write(text())
 	print(message, file=sys.stderr)
 	print(f"\n{sum(results.values())}/{len(results)} checks passed", flush=True)
 	sys.exit(1)
 
 
-# --- pi comes up over ssh -----------------------------------------------------
 check("pi started over ssh", wait_for("Inline suggestions", 30) or wait_for("auto", 10))
 pump(2)
 
-# --- remote clicking on -------------------------------------------------------
+# --- the one-time bootstrap, taken from where the remote put it ---------------
 clear_composer(); send(b"/snippets\r")
-check("menu opened", wait_for("Remote clicking", 20))
-check("menu offers Remote clicking, not desktop registration",
-      "Register click handler —" not in flat(text()))
+check("menu opened", wait_for("SSH relay setup", 20))
+check("selected the relay setup row", select_row("SSH relay setup"))
+send(b"\r")
+check("bootstrap line went to the composer", wait_for("pi-snippet-remotes.json", 20))
+pump(2)
+
+lines = re.findall(r"mkdir -p ~/\.pi/agent && printf [^\r\n\x1b]*pi-snippet-remotes\.json",
+                   flat(text()))
+check("bootstrap line is complete and unwrapped", len(lines) > 0)
+if not lines:
+	bail("no bootstrap line on screen")
+bootstrap = lines[-1].strip()
+print(f"    bootstrap={bootstrap}", flush=True)
+
+# The remote knows which address the client reached it at (SSH_CONNECTION), and
+# offers it. It cannot know the alias, which is why the toast says to prefer one
+# — so the harness does exactly what a user is told to do.
+peer = subprocess.run(["getent", "hosts", "pisnip-server"], capture_output=True, text=True)
+server_ip = peer.stdout.split()[0] if peer.stdout.split() else ""
+check("bootstrap suggests this host's own address", server_ip != "" and server_ip in bootstrap)
+retargeted = bootstrap.replace(server_ip, HOST) if server_ip else bootstrap
+subprocess.run(["bash", "-lc", retargeted], check=False)
+try:
+	written = json.load(open(REMOTES))
+except (OSError, ValueError):
+	written = None
+check("client config written by that line", written == {"host": HOST})
+
+# --- paint URLs (a chip over SSH is bare until the user opts in) --------------
+clear_composer(); send(b"/snippets\r")
+wait_for("Remote clicking", 15)
 check("selected the Remote clicking row", select_row("Remote clicking"))
 send(b"\r")
-check("toggle reported on", wait_for("Remote clicking on", 20))
-check("recipe went to the composer", "ssh -L" in flat(text()))
-# The first enable cannot verify — no forward exists yet. Saying so, rather than
-# claiming success, is the contract.
+check("remote clicking on", wait_for("Remote clicking on", 20))
 check("first enable says no click yet", wait_for("No click yet", 25))
 pump(2)
 
-# --- the socket the session actually bound ------------------------------------
-ls = subprocess.run(["ssh", "-o", "BatchMode=yes", HOST, f"ls {SOCKDIR}/"],
-                    capture_output=True, text=True, timeout=20)
-socks = [s for s in ls.stdout.split() if s.endswith(".sock")]
-check("server bound exactly one socket", len(socks) == 1)
-if not socks:
-	bail("no socket on the server")
-token = socks[0][:-5]
-remote_sock = f"{SOCKDIR}/{socks[0]}"
-print(f"    token={token} remote_sock={remote_sock}", flush=True)
-check("recipe names this session's socket",
-      token in flat(text()).replace(" ", "").replace("\n", "").replace("\r", ""))
-
-# --- a message, now that chips carry URLs -------------------------------------
 clear_composer(); send(b"go\r")
 check("assistant replied", wait_for("Two ways", 30))
 pump(3)
@@ -177,26 +188,12 @@ if not urls:
 	bail("no chip URL painted")
 url = urls[-1]
 print(f"    chip url={url}", flush=True)
-check("URL names this session's token", url.startswith(f"pisnip://{token}/"))
 
-# --- the forward, run for real ------------------------------------------------
-os.makedirs(SOCKDIR, mode=0o700, exist_ok=True)
-local_sock = f"{SOCKDIR}/{token}.sock"
-if os.path.exists(local_sock):
-	os.unlink(local_sock)
-fwd = subprocess.Popen(
-	["ssh", "-o", "BatchMode=yes", "-N", "-L", f"{local_sock}:{remote_sock}", HOST],
-	stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-for _ in range(40):
-	if os.path.exists(local_sock):
-		break
-	pump(0.25)
-check("forward created the local socket", os.path.exists(local_sock))
+# --- nothing local may answer -------------------------------------------------
+shutil.rmtree(SOCKDIR, ignore_errors=True)
+check("no local socket directory on the client", not os.path.exists(SOCKDIR))
 
-# --- re-arm the verify window and click ---------------------------------------
-# Off, then on. The token comes from the session id, so the path is unchanged
-# and the forward above still lands — which is the property that lets a resumed
-# session rebind the socket its own old scrollback points at.
+# --- re-arm the verify window, then click -------------------------------------
 clear_composer(); send(b"/snippets\r"); wait_for("Remote clicking", 15)
 select_row("Remote clicking"); send(b"\r")
 check("toggling off reported off", wait_for("Remote clicking off", 20))
@@ -206,14 +203,25 @@ select_row("Remote clicking"); send(b"\r")
 check("verify window re-armed", wait_for("Remote clicking on", 20))
 
 before = len(raw)
-rc = subprocess.run([HANDLER, url], capture_output=True, timeout=20)
-check("handler exited 0 (it found the forwarded socket)", rc.returncode == 0)
-check("click made the whole trip", wait_for("Verified", 25))
+started = time.time()
+rc = subprocess.run([HANDLER, url], capture_output=True, timeout=30)
+elapsed = time.time() - started
+print(f"    handler exit={rc.returncode} in {elapsed:.1f}s", flush=True)
+check("handler exited 0 (it relayed over ssh)", rc.returncode == 0)
+check("handler said nothing on the way", rc.stdout == b"" and rc.stderr == b"")
+check("click made the whole trip, with no forward", wait_for("Verified", 25))
 after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
 check("suggestion text landed in the composer", SUGGESTION in after)
 
-fwd.terminate()
-open("/tmp/ssh-click.out", "w").write(text())
+# --- and the unconfigured case still fails quietly ----------------------------
+os.unlink(REMOTES)
+quiet = subprocess.run([HANDLER, url], capture_output=True, timeout=30)
+check("unconfigured click exits 1 quietly", quiet.returncode == 1 and quiet.stdout == b"")
+stamp = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp",
+                     "pi-snippet-unconfigured-" + url.split("/")[2])
+check("unconfigured click leaves the rate-limit stamp", os.path.exists(stamp))
+
+open("/tmp/ssh-relay.out", "w").write(text())
 print()
 print(f"{sum(results.values())}/{len(results)} checks passed", flush=True)
 sys.exit(0 if all(results.values()) else 1)

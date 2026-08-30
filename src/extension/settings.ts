@@ -85,7 +85,7 @@ export const DEFAULT_SETTINGS: SnippetSettings = {
  * (PRD H3), where pi renames both the directory and this variable — such a
  * build should set `PI_SNIPPET_SETTINGS`.
  */
-function agentDir(env: NodeJS.ProcessEnv): string {
+export function agentDir(env: NodeJS.ProcessEnv = process.env): string {
 	const configured = env.PI_CODING_AGENT_DIR;
 	if (configured === undefined || configured === "") return join(homedir(), ".pi", "agent");
 	if (configured === "~") return homedir();

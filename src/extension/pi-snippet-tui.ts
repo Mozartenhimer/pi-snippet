@@ -1034,6 +1034,77 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/**
+	 * The address the client reached this host at, from `SSH_CONNECTION`'s
+	 * third field.
+	 *
+	 * A starting point for the relay config, nothing more: an `~/.ssh/config`
+	 * alias is usually the better answer, since it carries the user's keys,
+	 * ports and jump hosts already. Which is why this only ever appears inside
+	 * a line the user edits before running — the remote pi knows which host it
+	 * is on, and must not write the client's config (docs/ssh-back-handler.md).
+	 */
+	const sshServerHost = (): string => {
+		const address = (process.env.SSH_CONNECTION ?? "").split(/\s+/)[2];
+		return address !== undefined && linkInstall.isRelayHost(address) ? address : "<this-host>";
+	};
+
+	/**
+	 * The one-time client-side setup for relayed clicking.
+	 *
+	 * The manual `ssh -L` forward above costs a flag on every ssh invocation
+	 * and a resume; this costs one paste per client machine and nothing per
+	 * session. The remote pi cannot touch the client's desktop, so the
+	 * bootstrap is in-band — and it goes in the composer, not a toast, for the
+	 * same reason the forward recipe does: toasts clip at the terminal width
+	 * and coalesce within a render tick, and this is a line that has to survive
+	 * being read and copied to another machine.
+	 */
+	const showRelaySetup = (ctx: any): void => {
+		const host = sshServerHost();
+		ctx.ui.setEditorText(
+			`mkdir -p ~/.pi/agent && printf '{"host":"%s"}\\n' ${host} > ~/.pi/agent/pi-snippet-remotes.json`,
+		);
+		tui?.requestRender?.();
+		ctx.ui.notify(
+			host === "<this-host>"
+				? "Run that on your machine, with this host's ssh alias in place of <this-host>. Register the click handler there once, and chips need no forward."
+				: `Run that on your machine (an ~/.ssh/config alias is usually better than ${host}). Register the click handler there once, and chips need no forward.`,
+		);
+	};
+
+	/**
+	 * Set or clear the host that clicks are relayed to when no local socket
+	 * answers — the client half of the same feature.
+	 *
+	 * Only ever a host, never a URL and never anything a shell could act on:
+	 * the value reaches an `ssh` argv inside the handler, so it is checked here
+	 * as well as there. An empty entry clears the file rather than writing a
+	 * host that means nothing.
+	 */
+	const pickRelayHost = async (ctx: any): Promise<void> => {
+		const current = linkInstall.readRelayHost();
+		const entry = await ctx.ui.input(
+			`Relay clicks for remote sessions to (currently ${current ?? "not set"})`,
+			"an ~/.ssh/config alias or hostname — leave empty to clear",
+		);
+		if (entry === undefined) return; // cancelled
+		const host = entry.trim();
+		if (host !== "" && !linkInstall.isRelayHost(host)) {
+			ctx.ui.notify(`Not a hostname or ssh alias: ${host}`, "warning");
+			return;
+		}
+		if (!linkInstall.writeRelayHost(host)) {
+			ctx.ui.notify(`Could not write ${linkInstall.remotesPath()}`, "warning");
+			return;
+		}
+		ctx.ui.notify(
+			host === ""
+				? "SSH relay host cleared — clicks on remote sessions go back to failing quietly"
+				: `Clicks that find no local session now relay to ${host}`,
+		);
+	};
+
+	/**
 	 * Write the preferences back to disk. A failure — read-only home, a full
 	 * disk — is not worth interrupting anyone over, but it does change what the
 	 * toggle means, so the notification says so instead of promising a
@@ -1193,6 +1264,7 @@ export default function piSnippetTui(pi: any): void {
 								? "print the forward line again and verify a click"
 								: "make Ctrl+click work over SSH (forwards this session's socket)"
 							}`,
+						"SSH relay setup — the one-time command to run on your machine, instead of a forward",
 					  ]
 					: [
 						...(process.platform === "linux" && !linkInstall.isInstalled()
@@ -1200,6 +1272,12 @@ export default function piSnippetTui(pi: any): void {
 							: []),
 						...(process.platform === "linux" && linkInstall.isInstalled()
 							? ["Remove click handler — unregister pisnip:// from the desktop"]
+							: []),
+						// The client half of relayed clicking: which host a click
+						// goes back to when nothing local answers. Only useful
+						// once something dispatches pisnip:// to the handler.
+						...(process.platform === "linux" && linkInstall.isInstalled()
+							? [`SSH relay host: ${linkInstall.readRelayHost() ?? "not set"} — change`]
 							: []),
 					  ];
 			const choice = await ctx.ui.select(
@@ -1218,6 +1296,10 @@ export default function piSnippetTui(pi: any): void {
 				await pickModel(ctx);
 			} else if (choice.startsWith("Remote clicking:")) {
 				await toggleRemoteClicking(ctx);
+			} else if (choice.startsWith("SSH relay setup")) {
+				showRelaySetup(ctx);
+			} else if (choice.startsWith("SSH relay host:")) {
+				await pickRelayHost(ctx);
 			} else if (choice.startsWith("Register click handler")) {
 				await installClickHandler(ctx);
 			} else if (choice.startsWith("Remove click handler")) {

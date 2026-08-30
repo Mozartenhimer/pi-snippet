@@ -61,11 +61,27 @@ try:
 finally:
 	shutil.rmtree(tmp, ignore_errors=True)
 
-driver = os.path.join(ROOT, "scripts", "ssh-click-client.py")
-if run("docker", "cp", driver, f"{CLIENT}:/tmp/ssh-click-client.py").returncode != 0:
-	die("could not copy the driver into the client")
+DRIVERS = {
+	"forward": ("ssh-click-client.py", "the shipped ssh -L forward"),
+	"relay": ("ssh-relay-client.py", "the ssh-back relay, with no forward at all"),
+}
+which = sys.argv[1] if len(sys.argv) > 1 else "both"
+if which not in ("both", *DRIVERS):
+	die(f"usage: ssh-click-docker.py [both|{'|'.join(DRIVERS)}]")
+chosen = list(DRIVERS) if which == "both" else [which]
 
-print(f"--- driving real pi on {SERVER} from {CLIENT} ---", flush=True)
-result = subprocess.run(
-	["docker", "exec", "-u", "dev", CLIENT, "python3", "/tmp/ssh-click-client.py"])
-sys.exit(result.returncode)
+failed = []
+for name in chosen:
+	script, blurb = DRIVERS[name]
+	driver = os.path.join(ROOT, "scripts", script)
+	if run("docker", "cp", driver, f"{CLIENT}:/tmp/{script}").returncode != 0:
+		die(f"could not copy {script} into the client")
+	print(f"\n--- {name}: {blurb} ---", flush=True)
+	if subprocess.run(["docker", "exec", "-u", "dev", CLIENT, "python3", f"/tmp/{script}"]).returncode != 0:
+		failed.append(name)
+
+print()
+if failed:
+	print("FAILED: " + ", ".join(failed))
+	sys.exit(1)
+print("all paths passed: " + ", ".join(chosen))
