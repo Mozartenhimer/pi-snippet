@@ -386,6 +386,10 @@ Recommended split, then:
 - Same socket, same handler, same extension-side code; only the URL builder and
   the installer differ per platform.
 
+That split, worked out per platform (Windows registry + named pipe, macOS app
+bundle + file transport, plus the terminal-native hooks that skip the OS
+entirely), is sketched in `docs/win-mac-clicks.md`.
+
 ### 9d. Still unmeasured
 
 - **Latency.** Portal round trip and LaunchServices dispatch, plus interpreter
