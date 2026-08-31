@@ -145,18 +145,23 @@ function tagPatterns(tagName: string): TagPatterns {
 	};
 }
 
-/** Length of the run of backticks starting at `pos`. */
+/** Length of the run of backticks starting at `pos`, which is at least one. */
 function backtickRunLength(text: string, pos: number): number {
 	let n = 1;
 	while (text[pos + n] === "`") n++;
 	return n;
 }
 
-/** Length of the inline code span starting at `pos` (backtick run), or 0. */
+/**
+ * Length of the inline code span opening at `pos`, or 0 when the run of
+ * backticks there is never closed by a run of the same length.
+ *
+ * Callers have already established that `text[pos]` is a backtick; the guard
+ * that re-checked it was unreachable, and the run length it then recomputed is
+ * `backtickRunLength`'s job.
+ */
 function codeSpanLength(text: string, pos: number): number {
-	if (text[pos] !== "`") return 0;
-	let n = 1;
-	while (text[pos + n] === "`") n++;
+	const n = backtickRunLength(text, pos);
 	// Find the next run of exactly n backticks.
 	let i = pos + n;
 	while (i < text.length) {
@@ -232,7 +237,8 @@ function* scan(text: string, pat: TagPatterns): Generator<ScanToken> {
 			// A span when something closes it, otherwise the literal run — either
 			// way it is text, and the tags inside it are inert.
 			if (runStart === -1) runStart = i;
-			i += codeSpanLength(text, i) || backtickRunLength(text, i);
+			const span = codeSpanLength(text, i);
+			i += span > 0 ? span : backtickRunLength(text, i);
 			continue;
 		}
 		if (ch !== "<") {

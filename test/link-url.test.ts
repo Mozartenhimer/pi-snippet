@@ -97,3 +97,23 @@ describe("parsing what arrives on the socket", () => {
 		expect(parseChipUrl(url)).toBeNull();
 	});
 });
+
+/**
+ * A URL whose token and shape are fine but whose path is not. The scheme
+ * regex admits any path after the token, so the path parse is the second gate
+ * and has to be able to say no on its own.
+ */
+describe("parseChipUrl — a well-formed token with a malformed path", () => {
+	it("rejects a path that names no chip", () => {
+		expect(parseChipUrl("pisnip://a1b2c3d4/nonsense")).toBeNull();
+	});
+
+	it("rejects chip zero", () => {
+		expect(parseChipUrl("pisnip://a1b2c3d4/0f3e2a91/c0")).toBeNull();
+		expect(parseChipPath("/0f3e2a91/c000")).toBeNull();
+	});
+
+	it("still accepts the highest addressable chip", () => {
+		expect(parseChipPath("/0f3e2a91/c999")).toEqual({ msg: "0f3e2a91", index: 999 });
+	});
+});

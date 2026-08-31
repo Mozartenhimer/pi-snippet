@@ -160,3 +160,27 @@ describe("settings path", () => {
 		expect(path).toBe(join(homedir(), ".pi", "agent", "pi-snippet.json"));
 	});
 });
+
+/**
+ * A settings file whose top level is not an object at all. JSON.parse is happy
+ * to return a number, a string or null, and `merge` has to answer for each —
+ * MC/DC showed neither arm of its type guard had ever been taken.
+ */
+describe("settings file — a top level that is not an object", () => {
+	it("falls back to defaults for a bare JSON scalar", () => {
+		writeFileSync(file, "42", "utf8");
+		expect(loadSettings(file)).toEqual(DEFAULT_SETTINGS);
+	});
+
+	it("falls back to defaults for JSON null", () => {
+		// `typeof null === "object"`, so this is the arm the type check alone
+		// would let through.
+		writeFileSync(file, "null", "utf8");
+		expect(loadSettings(file)).toEqual(DEFAULT_SETTINGS);
+	});
+
+	it("falls back to defaults for a JSON array", () => {
+		writeFileSync(file, '["mode", "off"]', "utf8");
+		expect(loadSettings(file)).toEqual(DEFAULT_SETTINGS);
+	});
+});

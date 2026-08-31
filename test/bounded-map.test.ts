@@ -56,3 +56,24 @@ describe("putBounded", () => {
 		expect([...map]).toEqual([["b", 2]]);
 	});
 });
+
+describe("putBounded — the eviction loop itself", () => {
+	it("evicts nothing when the map is already within its limit", () => {
+		const map = new Map([["a", 1]]);
+		putBounded(map, "b", 2, 4);
+		expect([...map.keys()]).toEqual(["a", "b"]);
+	});
+
+	it("evicts more than one entry when the limit shrinks under it", () => {
+		const map = new Map<string, number>();
+		for (const k of ["a", "b", "c", "d"]) putBounded(map, k, 1, 10);
+		putBounded(map, "e", 2, 2);
+		expect([...map.keys()]).toEqual(["d", "e"]);
+	});
+
+	it("accepts a limit of zero by keeping nothing", () => {
+		const map = new Map<string, number>();
+		putBounded(map, "a", 1, 0);
+		expect(map.size).toBe(0);
+	});
+});
