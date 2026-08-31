@@ -822,7 +822,11 @@ rather than one replacing the other:
 
 The two prompts share one exported guidance block (`INFER_GUIDANCE`) for what
 counts as a plausible reply, so tuning what to offer can only be done once,
-in a place both styles read from; only the *format* instructions differ.
+in a place both styles read from; only the *format* instructions differ. The
+worked examples are shared the same way — one internal table (`INFER_EXAMPLES`)
+of message-plus-replies scenarios, rendered into each prompt's own shape (tags
+re-emitted, or a plain line join) — so an example can't be edited or added for
+one style and forgotten for the other.
 Switching styles mid-session re-arms the failure breaker (a style change is
 as much a fresh start as a model change) and asks again rather than replaying
 a cached answer from the other style — `InferenceEngine`'s cache key folds

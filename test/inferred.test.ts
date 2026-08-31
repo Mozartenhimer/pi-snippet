@@ -38,6 +38,23 @@ describe("INFER_OPTIONS_SYSTEM_PROMPT", () => {
 		expect(INFER_SYSTEM_PROMPT).toContain(shared);
 		expect(INFER_OPTIONS_SYSTEM_PROMPT).toContain(shared);
 	});
+
+	it("shares its worked examples with the reemit prompt, one shape per style", () => {
+		// Same underlying scenario (INFER_EXAMPLES, unexported): reemit tags
+		// the replies in place, options lists them as bare lines. Both must
+		// show the exact same example message, verbatim.
+		const exampleMessage =
+			"The build failed in three places. Want me to fix them one at a time, or show you all three errors first?";
+		expect(INFER_SYSTEM_PROMPT).toContain(exampleMessage);
+		expect(INFER_OPTIONS_SYSTEM_PROMPT).toContain(exampleMessage);
+		expect(INFER_SYSTEM_PROMPT).toContain(
+			"The build failed in three places. Want me to <snippet>fix them one at a time</snippet>, or <snippet>show you all three errors first</snippet>?",
+		);
+		expect(INFER_OPTIONS_SYSTEM_PROMPT).toContain("fix them one at a time\nshow you all three errors first");
+		// The no-op example agrees too, rendered plain in one and empty in the other.
+		expect(INFER_SYSTEM_PROMPT).toContain("I've pushed the branch and CI is green.");
+		expect(INFER_OPTIONS_SYSTEM_PROMPT).toMatch(/I've pushed the branch and CI is green\.\n\nExample reply:\n$/);
+	});
 });
 
 describe("unfence", () => {

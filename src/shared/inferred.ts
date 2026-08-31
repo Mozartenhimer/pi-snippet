@@ -25,7 +25,7 @@
  * rather than repaired: the failure mode is a missing chip, never a wrong one.
  */
 
-import { fencedRegions, MAX_SUGGESTIONS_PER_MESSAGE, parseSuggestions } from "./suggestions.js";
+import { fencedRegions, MAX_SUGGESTIONS_PER_MESSAGE, parseSuggestions, SNIPPET_TAG } from "./suggestions.js";
 
 /** Regions of `text` that are code, where an anchor must never land. */
 function codeRegions(text: string): Array<{ start: number; end: number }> {
@@ -68,6 +68,48 @@ const INFER_GUIDANCE = `What counts as a plausible reply:
 
 There is no limit on how many you find — more options are better than fewer. But never offer a noun, a filename, or a fragment that only makes sense inside the assistant's own sentence; every reply must stand alone as the user's own words, copied verbatim, and must never come from inside a code block or code span.`;
 
+/**
+ * One example message, and the plausible replies a good answer finds in it —
+ * the two styles show the same scenarios and disagree only on how a reply is
+ * written down, so an example lives here once and each prompt renders its
+ * own shape from it. Editing or adding an example now can't update one
+ * prompt and forget the other.
+ */
+interface InferExample {
+	/** The assistant's message, exactly as both prompts show it. */
+	message: string;
+	/** The plausible replies in it, in document order; empty for none at all. */
+	replies: string[];
+}
+
+const INFER_EXAMPLES: readonly InferExample[] = [
+	{
+		message:
+			"The build failed in three places. Want me to fix them one at a time, or show you all three errors first?",
+		replies: ["fix them one at a time", "show you all three errors first"],
+	},
+	{ message: "I've pushed the branch and CI is green.", replies: [] },
+];
+
+/** `reemit`'s shape for one example: the message with every reply wrapped in tags. */
+function reemitExampleReply(example: InferExample): string {
+	const located = locateAnchors(example.message, example.replies);
+	let out = "";
+	let cursor = 0;
+	for (const anchor of located) {
+		out += example.message.slice(cursor, anchor.start) + `<${SNIPPET_TAG}>${anchor.text}</${SNIPPET_TAG}>`;
+		cursor = anchor.end;
+	}
+	return out + example.message.slice(cursor);
+}
+
+/** Renders every example as `Example message: … / Example reply: …`, one style's shape at a time. */
+function renderExamples(exampleReply: (example: InferExample) => string): string {
+	return INFER_EXAMPLES.map(
+		(example) => `Example message:\n${example.message}\n\nExample reply:\n${exampleReply(example)}`,
+	).join("\n\n");
+}
+
 /** Instruction for the second model. Kept separate so it can be tuned alone. */
 export const INFER_SYSTEM_PROMPT = `You add to an AI coding assistant's message the replies its user could plausibly send back.
 
@@ -82,17 +124,7 @@ Hard rules:
 - Never remove, move, or alter an existing <snippet> tag, and never wrap text that is already inside one.
 - Reply with the marked-up message and nothing else: no prose, no code fence, no quotes.
 
-Example message:
-The build failed in three places. Want me to <snippet>fix them one at a time</snippet>, or show you all three errors first?
-
-Example reply:
-The build failed in three places. Want me to <snippet>fix them one at a time</snippet>, or <snippet>show you all three errors first</snippet>?
-
-Example message:
-I've pushed the branch and CI is green.
-
-Example reply:
-I've pushed the branch and CI is green.`;
+${renderExamples(reemitExampleReply)}`;
 
 /**
  * The `options` style's instruction: instead of re-emitting the message, the
@@ -108,18 +140,7 @@ ${INFER_GUIDANCE}
 
 A message that invites nothing new gets an empty reply.
 
-Example message:
-The build failed in three places. Want me to fix them one at a time, or show you all three errors first?
-
-Example reply:
-fix them one at a time
-show you all three errors first
-
-Example message:
-I've pushed the branch and CI is green.
-
-Example reply:
-`;
+${renderExamples((example) => example.replies.join("\n"))}`;
 
 export function buildInferPrompt(messageText: string): string {
 	return `<assistant_message>\n${messageText}\n</assistant_message>`;
