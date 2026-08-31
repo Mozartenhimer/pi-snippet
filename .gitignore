@@ -2,3 +2,4 @@ node_modules/
 dist/
 *.log
 scripts/.build/
+.mcdc/
