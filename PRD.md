@@ -782,10 +782,13 @@ command's own argument completions get pi's dropdown. (It was a standalone
 because two top-level commands for one feature was the annoyance — pi passes
 a slash command's `getArgumentCompletions` everything typed after the command
 name, so `model` is just the first word of that string, matched and stripped
-by hand.) In the TUI, that menu entry now prefills `/snippets model <current
-pin>` in the composer and hands focus back rather than opening the dialog;
-outside the TUI (RPC, print, where there is no composer to prefill) it still
-opens the old typed prompt. With
+by hand.) In the TUI, that menu entry now prefills `/snippets model ` (always
+blank, never the current pin — picking "change" means replacing it, so there's
+nothing worth pre-filling) in the composer and hands focus back rather than
+opening the dialog; the tab-complete dropdown itself stays quiet until
+something is typed, rather than dumping the whole hundreds-long catalogue on
+an empty query. Outside the TUI (RPC, print, where there is no composer to
+prefill) it still opens the old typed prompt. With
 `PI_SNIPPET_MODEL` as a session-level override above it (the key is named
 `inferModel`, not `model`, so a stale pin from the removed layer stays dead);
 there is no per-message cap on its tags (more options are better than fewer;

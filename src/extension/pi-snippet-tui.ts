@@ -1190,18 +1190,20 @@ export default function piSnippetTui(pi: any): void {
 	/**
 	 * Pick the second model.
 	 *
-	 * In the TUI this prefills `/snippets model <current pin>` in the composer
-	 * and hands focus back, rather than opening a blocking dialog: `ui.input()`
-	 * has no autocomplete (`ExtensionUIDialogOptions` offers a timeout and an
-	 * abort signal, nothing else), and only a slash command's own
-	 * `getArgumentCompletions` gets pi's tab-completing dropdown — the same one
-	 * `/model` uses. Elsewhere (RPC, print) there is no composer to prefill, so
-	 * this keeps the old typed prompt, which is also what scripted callers
-	 * (`docs/rpc.md`) already drive.
+	 * In the TUI this prefills `/snippets model ` (always blank, never the
+	 * current pin — picking "change" means you're about to replace it, so
+	 * there's nothing worth pre-filling) in the composer and hands focus back,
+	 * rather than opening a blocking dialog: `ui.input()` has no autocomplete
+	 * (`ExtensionUIDialogOptions` offers a timeout and an abort signal, nothing
+	 * else), and only a slash command's own `getArgumentCompletions` gets pi's
+	 * tab-completing dropdown — the same one `/model` uses. Elsewhere (RPC,
+	 * print) there is no composer to prefill, so this keeps the old typed
+	 * prompt, which is also what scripted callers (`docs/rpc.md`) already
+	 * drive.
 	 */
 	const pickModel = async (ctx: any): Promise<void> => {
 		if (ctx.mode === "tui") {
-			ctx.ui.setEditorText(`/snippets model ${state.inferModel ?? ""}`);
+			ctx.ui.setEditorText("/snippets model ");
 			ctx.ui.notify("Tab-completes provider/id — leave it empty and press Enter to reset to the default");
 			tui?.requestRender?.();
 			return;
@@ -1238,9 +1240,16 @@ export default function piSnippetTui(pi: any): void {
 				return [{ value: "model ", label: "model", description: "Set the second model" }];
 			}
 			if (prefix.slice(0, spaceIdx) !== "model") return null;
+			const query = prefix.slice(spaceIdx + 1);
+			// Nothing typed yet: `modelCompletions("", …)` returns the whole
+			// catalogue unfiltered — hundreds of models, "unusable as a menu"
+			// (that's the reason this is a tab-completer and not a `select` at
+			// all). The dropdown should only come up once there's an actual
+			// filtered suggestion to show, not dump everything on a bare prefill.
+			if (query === "") return null;
 			const available: PiModel[] = lastCtx?.modelRegistry?.getAvailable?.() ?? [];
 			if (available.length === 0) return null;
-			const items = modelCompletions(prefix.slice(spaceIdx + 1), available);
+			const items = modelCompletions(query, available);
 			return items.length > 0 ? items.map((item) => ({ ...item, value: `model ${item.value}` })) : null;
 		},
 		handler: async (args: string, ctx: any) => {

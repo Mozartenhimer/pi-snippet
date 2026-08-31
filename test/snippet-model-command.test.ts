@@ -126,6 +126,13 @@ describe("/snippets model completions", () => {
 		expect(await commands.get("snippets").getArgumentCompletions("bogus")).toBeNull();
 		expect(await commands.get("snippets").getArgumentCompletions("bogus mockllm/small")).toBeNull();
 	});
+
+	it("stays quiet on a bare `model ` with nothing typed yet, rather than dumping the whole catalogue", async () => {
+		const { pi, handlers, commands } = makeFakePi();
+		piSnippetTui(pi);
+		handlers.get("session_start")!({}, makeCtx().ctx);
+		expect(await commands.get("snippets").getArgumentCompletions("model ")).toBeNull();
+	});
 });
 
 describe("/snippets model handler", () => {
@@ -190,6 +197,18 @@ describe("/snippets menu: Second model — change", () => {
 
 		expect(loadSettings(file).inferModel).toBe("mockllm/mock-medium");
 		expect(seen.editorText()).toBe(""); // no composer to prefill outside the TUI
+	});
+
+	it("stays blank even when a pin is already stored — you're about to replace it, not read it back", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx({ mode: "tui" });
+		await commands.get("snippets").handler("model mockllm/mock-large-reasoner", seen.ctx);
+
+		const seenAgain = makeCtx({ mode: "tui", pick: "Second model:" });
+		await commands.get("snippets").handler("", seenAgain.ctx);
+
+		expect(seenAgain.editorText()).toBe("/snippets model ");
 	});
 });
 
