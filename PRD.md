@@ -591,10 +591,39 @@ socket lives here. Without an explicit opt-in the chips therefore paint as
 bare labels (`Alt+N` still works — it is in-band), and `/snippets` offers
 *Remote clicking*: session-scoped, it paints URLs again and puts the
 `ssh -L` command that forwards this session's socket to the client into the
-composer, verified by the user's own first click. `docs/ssh-back-handler.md` designs the
-zero-setup successor — a client-side handler that relays unresolvable clicks
-back over SSH — which removes the per-session forward at the cost of a
-one-time client configuration.
+composer, verified by the user's own first click.
+
+Two deliveries reach that socket, and the opt-in above governs only whether
+URLs are painted — not which one carries the click:
+
+1. **The forward.** The `ssh -L` recipe above, run by the user. No client
+   configuration, visible in their own ssh invocation, and paid for on every
+   connection and every resume.
+2. **The relay** (`docs/ssh-back-handler.md`). The handler on the client, having
+   found no local socket, reads a host from `~/.pi/agent/pi-snippet-remotes.json`
+   and tunnels the click back through a fresh `ssh`, which runs a fixed,
+   self-contained python one-liner that writes to the socket on the far end.
+   Nothing is installed remotely. One paste per client machine, nothing per
+   session; `/snippets` over SSH offers *SSH relay setup*, which puts that
+   paste — carrying the address the client reached this host at, from
+   `SSH_CONNECTION` — into the composer, and `/snippets` on the client offers
+   *SSH relay host* to set or clear it.
+
+The host never comes from the URL: a hostname in a chip URL would make any
+pasteable `pisnip://` link an instruction to SSH somewhere, so the config file
+is the allowlist. The handler validates the URL's shape strictly (netloc
+`isalnum()`, path `^/[0-9a-f]{1,16}/c[0-9]{1,3}$`) *before* the relay branch,
+because `ssh host cmd arg` re-parses the command line in a remote shell — the
+validation is the security boundary, and the fixed argv is defence in depth.
+`BatchMode=yes` and two timeouts keep a click from ever hanging on a password
+prompt or a dark host.
+
+Failure stays quiet with one exception. A chip clicked in old scrollback finds
+no session and must say nothing; a *configured but unreachable* host is the
+same situation and is equally quiet. Unconfigured is the one state worth
+reporting, because it has a one-time fix: `notify-send` where it exists, rate-
+limited to once an hour per token through a stamp file, since the handler is
+stateless and spawns fresh per click.
 
 ### 12.2 Addressing more than ten suggestions
 

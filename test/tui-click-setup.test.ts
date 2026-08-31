@@ -24,6 +24,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { install } from "../src/extension/link-install.js";
+
 vi.mock("@earendil-works/pi-tui", () => ({
 	getCapabilities: () => ({ hyperlinks: true }),
 }));
@@ -159,7 +161,10 @@ function makeFakePi() {
  * instance — which is the only way its input listener (the Alt-release watch)
  * gets installed.
  */
-function makeCtx(choose: (options: string[]) => string | undefined = () => undefined) {
+function makeCtx(
+	choose: (options: string[]) => string | undefined = () => undefined,
+	answer: (title: string) => string | undefined = () => undefined,
+) {
 	const notices: string[] = [];
 	let text = "";
 	const listeners: Array<(data: string) => void> = [];
@@ -198,6 +203,7 @@ function makeCtx(choose: (options: string[]) => string | undefined = () => undef
 					factory?.(instance);
 				},
 				select: async (_title: string, options: string[]) => choose(options),
+				input: async (title: string) => answer(title),
 			},
 		},
 	};
@@ -369,6 +375,159 @@ describe("remote clicking over SSH", () => {
 		} finally {
 			pi.shutdown();
 		}
+	});
+});
+
+describe("the ssh-back relay", () => {
+	/** What the handler on the client would read. */
+	const written = (): unknown => {
+		try {
+			return JSON.parse(readFileSync(process.env.PI_SNIPPET_REMOTES!, "utf8"));
+		} catch {
+			return null;
+		}
+	};
+
+	describe("the bootstrap line, from the remote side", () => {
+		const SETUP = (options: string[]) => options.find((o) => o.startsWith("SSH relay setup"));
+
+		it("offers the address this session was reached at, and says to prefer an alias", async () => {
+			process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
+			const pi = makeFakePi();
+			const { ctx, notices, editorText } = makeCtx(SETUP);
+			try {
+				await pi.run("", ctx);
+				// A runnable line, in the composer rather than a toast: it has to
+				// survive being read and copied to another machine.
+				expect(editorText()).toContain('printf \'{"host":"%s"}');
+				expect(editorText()).toContain("10.0.0.2");
+				expect(editorText()).toContain("~/.pi/agent/pi-snippet-remotes.json");
+				// The remote knows the address and nothing about the client's aliases.
+				expect(notices.join(" ")).toContain("alias is usually better than 10.0.0.2");
+			} finally {
+				pi.shutdown();
+			}
+		});
+
+		it("leaves a placeholder when there is no address to offer", async () => {
+			// Over SSH by `SSH_TTY` alone — no `SSH_CONNECTION` to read a peer out
+			// of, which is ordinary under `sudo` and inside some multiplexers.
+			process.env.SSH_TTY = "/dev/pts/3";
+			const pi = makeFakePi();
+			const { ctx, notices, editorText } = makeCtx(SETUP);
+			try {
+				await pi.run("", ctx);
+				expect(editorText()).toContain("<this-host>");
+				expect(notices.join(" ")).toContain("in place of <this-host>");
+			} finally {
+				pi.shutdown();
+			}
+		});
+
+		it("refuses an address that is not a hostname rather than pasting it", async () => {
+			// The line is run in a shell on the client. Whatever `SSH_CONNECTION`
+			// says, only a hostname shape is ever printed into it.
+			process.env.SSH_CONNECTION = "10.0.0.1 22 evil;id 22";
+			const pi = makeFakePi();
+			const { ctx, editorText } = makeCtx(SETUP);
+			try {
+				await pi.run("", ctx);
+				expect(editorText()).not.toContain("evil");
+				expect(editorText()).toContain("<this-host>");
+			} finally {
+				pi.shutdown();
+			}
+		});
+	});
+
+	describe("the relay host, from the client side", () => {
+		const ROW = "SSH relay host: not set — change";
+		const HOST_ROW = (options: string[]) => options.find((o) => o.startsWith("SSH relay host:"));
+
+		it("is offered once a handler is installed, showing what is on file", async () => {
+			writeFileSync(process.env.PI_SNIPPET_REMOTES!, '{"host":"mybox"}\n', "utf8");
+			install();
+			const seen: string[] = [];
+			const pi = makeFakePi();
+			const { ctx } = makeCtx((options) => {
+				seen.push(...options);
+				return undefined;
+			});
+			try {
+				await pi.run("", ctx);
+				expect(seen).toContain("SSH relay host: mybox — change");
+			} finally {
+				pi.shutdown();
+			}
+		});
+
+		it("records a host, and says where clicks go now", async () => {
+			const pi = makeFakePi();
+			const { ctx, notices } = makeCtx(() => ROW, () => "  mybox  ");
+			try {
+				await pi.run("", ctx);
+				expect(written()).toEqual({ host: "mybox" });
+				expect(notices.join(" ")).toContain("relay to mybox");
+			} finally {
+				pi.shutdown();
+			}
+		});
+
+		it("clears on an empty entry, and says clicks go back to failing quietly", async () => {
+			writeFileSync(process.env.PI_SNIPPET_REMOTES!, '{"host":"mybox"}\n', "utf8");
+			const pi = makeFakePi();
+			const { ctx, notices } = makeCtx(() => ROW, () => "   ");
+			try {
+				await pi.run("", ctx);
+				expect(written()).toBeNull();
+				expect(notices.join(" ")).toContain("cleared");
+			} finally {
+				pi.shutdown();
+			}
+		});
+
+		it("writes nothing when the prompt is cancelled", async () => {
+			const pi = makeFakePi();
+			const { ctx, notices } = makeCtx(() => ROW, () => undefined);
+			try {
+				await pi.run("", ctx);
+				expect(written()).toBeNull();
+				expect(notices).toEqual([]);
+			} finally {
+				pi.shutdown();
+			}
+		});
+
+		it("refuses anything a shell could act on, before it reaches the file", async () => {
+			// The value ends up in an `ssh` argv inside the handler, so it is
+			// checked here as well as there.
+			const pi = makeFakePi();
+			const { ctx, notices } = makeCtx(() => ROW, () => "mybox; id");
+			try {
+				await pi.run("", ctx);
+				expect(written()).toBeNull();
+				expect(notices.join(" ")).toContain("Not a hostname or ssh alias");
+			} finally {
+				pi.shutdown();
+			}
+		});
+
+		it("says so when the file cannot be written", async () => {
+			// A file where the directory should be — an unwritable agent directory
+			// costs the relay, not the session, and the toast is the difference
+			// between "set" and "looks set".
+			const blocker = join(home, "blocker");
+			writeFileSync(blocker, "", "utf8");
+			process.env.PI_SNIPPET_REMOTES = join(blocker, "remotes.json");
+			const pi = makeFakePi();
+			const { ctx, notices } = makeCtx(() => ROW, () => "mybox");
+			try {
+				await pi.run("", ctx);
+				expect(notices.join(" ")).toContain("Could not write");
+			} finally {
+				pi.shutdown();
+			}
+		});
 	});
 });
 

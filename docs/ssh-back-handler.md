@@ -1,12 +1,16 @@
 # The ssh-back handler: clicking over SSH without per-session forwards
 
-*Design, not implementation. What exists today is the manual recipe: over SSH,
-`/snippets` → "Remote clicking" paints chip URLs again and prints the `ssh -L`
-argument that carries this session's socket across the wire. It works, and it
-costs a flag on every ssh invocation and a session resume. This document
-designates the successor: register the handler on the **client** machine, and
-let a click that finds no local socket relay itself back over SSH to the host
-the session lives on.*
+*Shipped. Register the handler on the **client** machine, and a click that
+finds no local socket relays itself back over SSH to the host the session
+lives on — no per-session forward, no flag, no resume. The manual recipe stays
+beside it: over SSH, `/snippets` → "Remote clicking" paints chip URLs again and
+prints the `ssh -L` argument that carries this session's socket across the
+wire. Both feed the same socket protocol and the same verify window.*
+
+*This document was the design, and is kept as written except where the build
+settled a question differently — those points are marked **As built**. The
+harness the "Testing" section calls for exists:
+`scripts/ssh-click-docker.py`, over two containers and real sshd.*
 
 ## The inversion, stated precisely
 
@@ -72,12 +76,30 @@ silently — a regeneration updates both.
    The registration flow can do this; it is the same directory the handler
    would use locally anyway.
 
+**As built.** (2) is the `/snippets` row *SSH relay host: … — change*, and it
+also clears: an empty entry deletes the file rather than recording a host that
+means nothing. `PI_SNIPPET_REMOTES` overrides the path, as `PI_SNIPPET_SETTINGS`
+does for the toggles. (3) turned out to be unnecessary — the handler tries each
+candidate and falls through to the relay when none answers, so a directory that
+does not exist is just another miss. Nothing needs creating on the client.
+
 The bootstrap is in-band, because the remote pi cannot touch the client
 desktop: the remote `/snippets` → *Remote clicking* entry puts the command to
 run on the client into the composer (the editor, not a toast — toasts clip at
 the terminal width and coalesce within a render tick, both measured live).
 One copy-paste, once per client machine — not per session, which is the
 entire point.
+
+**As built.** It is its own row, *SSH relay setup*, rather than more output
+from *Remote clicking*: the two write different things to the one composer, and
+a user who wanted the forward should not have to read past the paste for the
+path they did not choose. The line carries the address the client reached this
+host at (`SSH_CONNECTION`'s third field) — the remote knows that much and
+nothing about the client's aliases, so the accompanying toast says to prefer
+one. It is a `printf` into the config file rather than an instruction to run
+`pi /snippets` on the client, because a runnable line is the shorter honest
+version of "one copy-paste"; the client's own menu row remains for anyone who
+would rather type it.
 
 ## Failure semantics
 
@@ -121,6 +143,18 @@ connection. Four rules keep that boring:
    `^/[0-9a-f]{8}/c\d+$` — before the branch runs, so the remote shell has no
    metacharacter to act on. The validation is the security boundary, not the
    argv split; both are load-bearing.
+
+   **As built** the path pattern is `^/[0-9a-f]{1,16}/c[0-9]{1,3}$`, matching
+   `parseChipPath()` in `shared/link-url.ts` rather than tightening past it —
+   a handler that rejects a URL the extension would have accepted is a click
+   that dies for no reason the user can see. The character set is what matters
+   here, and it is unchanged: hex and a small integer have no metacharacter in
+   them. The host is checked on the same principle at both ends
+   (`^[A-Za-z0-9._@-]{1,255}$`, in `isRelayHost()` and again in the handler),
+   so a config file carrying `mybox; id` yields no relay rather than a quoted-
+   around one. The relay one-liner is embedded in a single-quoted shell word
+   and therefore must contain no apostrophe — a test asserts that, because the
+   failure mode is handing python's source to a shell.
 3. **`BatchMode=yes`.** A click must never hang on a password prompt or an
    interactive host-key confirmation. BatchMode makes any credential problem
    fail fast and visibly (in the relay-failure sense above) instead of
@@ -164,6 +198,24 @@ asserted too: BatchMode against a deliberately unauthenticated account must
 produce the quiet exit, and an unconfigured client must produce the
 rate-limited `notify-send` (asserted by stamp file, not by scraping desktop
 notifications).
+
+**As built** it is two containers rather than localhost — `scripts/docker-ssh-env.sh`
+builds them, `scripts/ssh-click-docker.py` drives them — because a relay to
+`localhost` can pass while the click never leaves the machine, and the whole
+feature is the wire. `ssh-relay-client.py` removes the local socket directory
+and kills any forward before it clicks, so nothing there can succeed by the
+shipped path; `ssh-click-client.py` asserts that shipped path beside it. The
+bootstrap line is not hardcoded in the harness — it is scraped out of the
+composer where *SSH relay setup* put it and then run, so the paste a user is
+given is the paste that is tested.
+
+`test/ssh-relay.test.ts` covers what does not need two machines by *running*
+the generated handler with a recording `ssh` stub on its PATH: the local socket
+still wins over the relay, the relay argv carries `BatchMode=yes` and the
+timeout, a malformed URL exits before anything shells out, a relay failure is a
+quiet non-zero, and the unconfigured case writes the stamp file once. Those
+tests skip where python3 is absent rather than passing silently — `npm test`
+may not assume an interpreter it does not install.
 
 ## Open questions
 
