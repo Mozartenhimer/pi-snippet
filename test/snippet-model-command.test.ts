@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import piSnippetTui from "../src/extension/pi-snippet-tui.js";
-import { loadSettings } from "../src/extension/settings.js";
+import { DEFAULT_SETTINGS, loadSettings } from "../src/extension/settings.js";
 
 /**
  * `/snippets model` exists because `ui.input()` (the old picker's dialog) has
@@ -190,5 +190,101 @@ describe("/snippets menu: Second model — change", () => {
 
 		expect(loadSettings(file).inferModel).toBe("mockllm/mock-medium");
 		expect(seen.editorText()).toBe(""); // no composer to prefill outside the TUI
+	});
+});
+
+/**
+ * The answers this command gives when nothing changes. Each of these returns
+ * quietly or notifies and stops, so MC/DC is what showed they had never run.
+ */
+describe("/snippets model — the paths that change nothing", () => {
+	it("says the default is already in force when there is nothing to reset", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		await commands.get("snippets").handler("model", seen.ctx);
+		expect(seen.notices.at(-1)).toContain("already the default");
+		expect(loadSettings(file).inferModel).toBeUndefined();
+	});
+
+	it("stays quiet when the pin is the one already stored", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		await commands.get("snippets").handler("model mockllm/mock-medium", seen.ctx);
+		const said = seen.notices.length;
+		await commands.get("snippets").handler("model mockllm/mock-medium", seen.ctx);
+		expect(seen.notices.length).toBe(said);
+	});
+
+	it("accepts a pin it cannot validate when the registry lists nothing", async () => {
+		// An empty catalogue is not evidence against a pin — refusing here
+		// would make the setting unusable before a provider has loaded.
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		const ctx = { ...seen.ctx, modelRegistry: { getAvailable: () => [] } };
+		await commands.get("snippets").handler("model someone/unlisted", ctx);
+		expect(loadSettings(file).inferModel).toBe("someone/unlisted");
+	});
+
+	it("changes nothing when the model prompt is cancelled", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx({ mode: "cli", pick: "Second model:", input: undefined });
+		await commands.get("snippets").handler("", seen.ctx);
+		expect(loadSettings(file).inferModel).toBeUndefined();
+	});
+
+	it("names the environment override in the prompt it opens", async () => {
+		process.env.PI_SNIPPET_MODEL = "mockllm/mock-large-reasoner";
+		try {
+			const { pi, commands } = makeFakePi();
+			piSnippetTui(pi);
+			let asked = "";
+			const seen = makeCtx({ mode: "cli", pick: "Second model:" });
+			await commands.get("snippets").handler("", {
+				...seen.ctx,
+				ui: {
+					...seen.ctx.ui,
+					input: async (title: string) => {
+						asked = title;
+						return undefined;
+					},
+				},
+			});
+			expect(asked).toContain("PI_SNIPPET_MODEL override");
+		} finally {
+			delete process.env.PI_SNIPPET_MODEL;
+		}
+	});
+
+	it("offers no completions for a prefix `model` cannot grow into", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		expect(commands.get("snippets").getArgumentCompletions("mo")).toEqual([
+			{ value: "model ", label: "model", description: "Set the second model" },
+		]);
+		expect(commands.get("snippets").getArgumentCompletions("zz")).toBeNull();
+	});
+});
+
+describe("/snippets — where chips come from", () => {
+	it("changes nothing when the mode picker is dismissed", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx({ pick: "Suggestions:" });
+		// The first select picks "Suggestions:"; the second (the mode picker)
+		// is answered with something no mode label matches.
+		let opened = 0;
+		await commands.get("snippets").handler("", {
+			...seen.ctx,
+			ui: {
+				...seen.ctx.ui,
+				select: async (_t: string, options: string[]) =>
+					opened++ === 0 ? options.find((o) => o.startsWith("Suggestions:")) : "not a mode",
+			},
+		});
+		expect(loadSettings(file).mode).toBe(DEFAULT_SETTINGS.mode);
 	});
 });

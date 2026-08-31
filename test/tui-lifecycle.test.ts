@@ -14,14 +14,14 @@ import piSnippetTui from "../src/extension/pi-snippet-tui.js";
 type Handler = (event: any, ctx: any) => any;
 
 /** A fake pi that keeps everything the extension registers. */
-function makeFakePi() {
+function makeFakePi(flag?: string) {
 	const handlers = new Map<string, Handler>();
 	const shortcuts = new Map<string, (ctx: any) => void>();
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
 	let transformer: ((markdown: string, ctx: any) => string) | undefined;
 	const pi = {
 		registerFlag: () => {},
-		getFlag: () => undefined,
+		getFlag: (name: string) => (name === flag ? true : undefined),
 		on: (name: string, handler: Handler) => handlers.set(name, handler),
 		registerMarkdownTransformer: (fn: (markdown: string, ctx: any) => string) => {
 			transformer = fn;
@@ -288,5 +288,59 @@ describe("the /snippets menu", () => {
 		expect(notices.at(-1)).toContain("enabled");
 		pi.press("alt+1", ctx);
 		expect(ctx.ui.getEditorText()).toBe("rebuild");
+	});
+});
+
+describe("--no-suggestions, latched for the session", () => {
+	const branch = [assistant("Want me to <snippet>rebuild</snippet>?")];
+
+	it("addresses nothing, paints nothing and says why", async () => {
+		const pi = makeFakePi("no-suggestions");
+		const { ctx, notices } = makeCtx(branch);
+		// The flag is latched where the prompt injection is decided, so that
+		// has to have run before anything reads it.
+		pi.fire("before_agent_start", { systemPrompt: "" }, ctx);
+		pi.fire("session_start", { reason: "resume" }, ctx);
+		pi.fire("message_end", { message: msg("Want me to <snippet>rebuild</snippet>?") }, ctx);
+		pi.press("alt+1", ctx);
+		expect(ctx.ui.getEditorText()).toBe("");
+		// Display-only: the tags come off, but nothing is numbered.
+		expect(
+			pi.transform("Want me to <snippet>rebuild</snippet>?", {
+				messageType: "assistant",
+				isStreaming: false,
+			}),
+		).toBe("Want me to rebuild?");
+
+		await pi.run("", ctx);
+		expect(notices.at(-1)).toContain("--no-suggestions");
+	});
+});
+
+describe("off Linux, where there is no handler to register", () => {
+	it("says clicking is unavailable and offers no click row", async () => {
+		const real = process.platform;
+		Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+		try {
+			const pi = makeFakePi();
+			let heading = "";
+			let options: string[] = [];
+			const { ctx } = makeCtx();
+			await pi.run("", {
+				...ctx,
+				ui: {
+					...ctx.ui,
+					select: async (title: string, opts: string[]) => {
+						heading = title;
+						options = opts;
+						return undefined;
+					},
+				},
+			});
+			expect(heading).toContain("unavailable off Linux");
+			expect(options.some((o) => o.includes("click handler"))).toBe(false);
+		} finally {
+			Object.defineProperty(process, "platform", { value: real, configurable: true });
+		}
 	});
 });
