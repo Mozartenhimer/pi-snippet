@@ -1,16 +1,26 @@
 /**
  * Live sweep of small-to-mid OpenRouter models against the layer-2 task:
- * send the real prompt (INFER_SYSTEM_PROMPT + buildInferPrompt) for a set of
- * fixed sample messages, then score each reply with the real validation
- * (extractAnchors) so a model is measured on exactly what the extension
- * would paint. Writes a JSON dump of every result and an HTML report built
- * from it, so a report can be regenerated later without spending money on
- * the API calls again.
+ * send the real prompt for a set of fixed sample messages, then score each
+ * reply with the real validation so a model is measured on exactly what the
+ * extension would paint. Writes a JSON dump of every result and an HTML
+ * report built from it, so a report can be regenerated later without
+ * spending money on the API calls again.
+ *
+ * `--style` picks which of the two live reply shapes (`shared/inferred.ts`,
+ * PRD §17) is under test: `reemit` (the default, unchanged from before this
+ * flag existed) sends `INFER_SYSTEM_PROMPT` and scores with `extractAnchors`
+ * — the model rewrites the whole message with more `<snippet>` tags added.
+ * `options` sends `INFER_OPTIONS_SYSTEM_PROMPT` and scores with
+ * `extractOptionAnchors` — the model lists bare reply lines instead. Both
+ * styles are live in production as an ongoing A/B; running this sweep once
+ * per style against the same models and samples is how to compare them
+ * side by side rather than by guessing.
  *
  * Entry points:
- *   npm run infer-sweep                         # all curated (paid) models
- *   npm run infer-sweep -- vendor/model ...      # a subset, live
- *   npm run infer-sweep -- --from-json <path>    # rebuild the HTML only
+ *   npm run infer-sweep                              # reemit, all curated (paid) models
+ *   npm run infer-sweep -- --style options            # the other reply shape
+ *   npm run infer-sweep -- vendor/model ...            # a subset, live
+ *   npm run infer-sweep -- --from-json <path>          # rebuild the HTML only
  *
  * Needs OPENROUTER_API_KEY in the environment for a live run; --from-json
  * needs neither the key nor the network. Everything else is fixed strings:
@@ -23,16 +33,20 @@
  * CANDIDATES is paid models only. OpenRouter's `:free` models share one
  * account-wide quota — 50 requests/day without added credits, seen as
  * `free-models-per-day` in a 429 body — which made an all-free sweep
- * unreliable mid-run and untestable for cost. `DEFAULT_INFER_MODEL` in
- * `src/extension/infer.ts` (the shipped default) is `:free` and is
- * therefore not in this list; pass it explicitly on argv to include it,
+ * unreliable mid-run and untestable for cost; a `:free` id is not in this
+ * list for that reason, but pass one explicitly on argv to include it,
  * knowing its cost columns will read zero and its results may be quota
- * noise rather than a real score.
+ * noise rather than a real score. `DEFAULT_INFER_MODEL` in
+ * `src/extension/infer.ts` (the shipped default, `qwen/qwen3.7-flash`) is
+ * paid and simply not curated into this particular list; pass it on argv
+ * too if you want it swept.
  *
- * Scores per sample: copy fidelity (reply with tags stripped must equal the
- * message with tags stripped — the prompt's hard rule), preservation of
- * existing tags, anchors accepted by extractAnchors, and anchors the model
- * proposed that validation dropped (invented or paraphrased). Cost is
+ * Scores per sample: fidelity (nothing invented or paraphrased — the whole
+ * message must come back unchanged under `reemit`, every listed line must
+ * be verbatim under `options`), preservation of existing tags (`reemit`
+ * only — `options` never re-emits them, so there is nothing to lose),
+ * anchors accepted by the style's own extraction function, and anchors the
+ * model proposed that validation dropped (invented or paraphrased). Cost is
  * OpenRouter's own measured `usage.cost_details` when the provider returns
  * it, split into input and output; a model that fails every sample can
  * still have spent money (a reasoning model burning its budget on
@@ -40,7 +54,15 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { extractAnchors, INFER_SYSTEM_PROMPT, buildInferPrompt, unfence } from "../src/shared/inferred.js";
+import {
+	buildInferPrompt,
+	extractAnchors,
+	extractOptionAnchors,
+	INFER_OPTIONS_SYSTEM_PROMPT,
+	INFER_SYSTEM_PROMPT,
+	unfence,
+	type InferStyle,
+} from "../src/shared/inferred.js";
 import { parseSuggestions } from "../src/shared/suggestions.js";
 
 interface ModelSpec {
@@ -171,7 +193,7 @@ interface SampleResult {
 	cost?: Cost;
 }
 
-async function runSample(model: ModelSpec, sample: Sample): Promise<SampleResult> {
+async function runSample(model: ModelSpec, sample: Sample, style: InferStyle): Promise<SampleResult> {
 	const started = Date.now();
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), 60_000);
@@ -188,7 +210,7 @@ async function runSample(model: ModelSpec, sample: Sample): Promise<SampleResult
 				max_tokens: 2048,
 				temperature: 0,
 				messages: [
-					{ role: "system", content: INFER_SYSTEM_PROMPT },
+					{ role: "system", content: style === "options" ? INFER_OPTIONS_SYSTEM_PROMPT : INFER_SYSTEM_PROMPT },
 					{ role: "user", content: buildInferPrompt(sample.message) },
 				],
 			}),
@@ -234,15 +256,37 @@ async function runSample(model: ModelSpec, sample: Sample): Promise<SampleResult
 			};
 		}
 		const reply = unfence(raw);
-		const { nodes } = parseSuggestions(reply);
-		const proposed = nodes.filter((n) => n.type === "suggestion").length;
-		const copyFidelity = stripTags(reply) === stripTags(sample.message);
-		const preserved = sample.existing.every((t) => stripTags(reply).includes(t));
-		const accepted = extractAnchors(reply, sample.message, sample.existing);
-		const dropped = nodes
-			.filter((n): n is Extract<typeof n, { type: "suggestion" }> => n.type === "suggestion")
-			.map((n) => n.text)
-			.filter((t) => !sample.existing.includes(t) && !accepted.includes(t));
+		let proposed: number;
+		let copyFidelity: boolean;
+		let preserved: boolean;
+		let accepted: string[];
+		let dropped: string[];
+		if (style === "options") {
+			const lines = reply
+				.split("\n")
+				.map((line) => line.trim())
+				.filter((line) => line.length > 0);
+			proposed = lines.length;
+			accepted = extractOptionAnchors(reply, sample.message, sample.existing);
+			dropped = lines.filter((line) => !sample.existing.includes(line) && !accepted.includes(line));
+			// There is no re-emitted message to diff against a tag-preservation
+			// rule, so both fidelity concepts collapse to one question: did every
+			// listed line survive validation, i.e. was nothing invented or
+			// paraphrased. Nothing is ever "lost" here — the model never had to
+			// carry an existing chip forward — so `preserved` is trivially true.
+			copyFidelity = dropped.length === 0;
+			preserved = true;
+		} else {
+			const { nodes } = parseSuggestions(reply);
+			proposed = nodes.filter((n) => n.type === "suggestion").length;
+			copyFidelity = stripTags(reply) === stripTags(sample.message);
+			preserved = sample.existing.every((t) => stripTags(reply).includes(t));
+			accepted = extractAnchors(reply, sample.message, sample.existing);
+			dropped = nodes
+				.filter((n): n is Extract<typeof n, { type: "suggestion" }> => n.type === "suggestion")
+				.map((n) => n.text)
+				.filter((t) => !sample.existing.includes(t) && !accepted.includes(t));
+		}
 		return { ok: true, latencyMs, copyFidelity, preserved, proposed, accepted, dropped, raw, cost };
 	} catch (err) {
 		const latencyMs = Date.now() - started;
@@ -329,13 +373,18 @@ function summarizeRow(model: ModelSpec, results: SampleResult[], samples: Sample
 
 interface SweepData {
 	generatedAt: string;
+	style: InferStyle;
 	systemPrompt: string;
 	samples: Sample[];
 	rows: Array<{ model: ModelSpec; results: SampleResult[] }>;
 }
 
-async function runModel(model: ModelSpec, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<ModelRow> {
-	const results = await Promise.all(SAMPLES.map((sample) => limit(() => runSample(model, sample))));
+async function runModel(
+	model: ModelSpec,
+	limit: <T>(fn: () => Promise<T>) => Promise<T>,
+	style: InferStyle,
+): Promise<ModelRow> {
+	const results = await Promise.all(SAMPLES.map((sample) => limit(() => runSample(model, sample, style))));
 	return summarizeRow(model, results, SAMPLES);
 }
 
@@ -346,17 +395,36 @@ const flagValue = (name: string): string | undefined => {
 	const i = argv.indexOf(name);
 	return i !== -1 ? argv[i + 1] : undefined;
 };
-const outPath = flagValue("--out") ?? "scripts/.build/infer-sweep-report.html";
+const styleArg = flagValue("--style") ?? "reemit";
+if (styleArg !== "reemit" && styleArg !== "options") {
+	console.error(`--style must be "reemit" or "options", got ${JSON.stringify(styleArg)}`);
+	process.exit(1);
+}
+const style: InferStyle = styleArg;
+const outPath = flagValue("--out") ?? `scripts/.build/infer-sweep-report.${style}.html`;
 const jsonPath = flagValue("--json") ?? outPath.replace(/\.html?$/, ".json");
 const fromJsonPath = flagValue("--from-json");
-const argvModels = argv.filter((a, i, arr) => !a.startsWith("-") && arr[i - 1] !== "--out" && arr[i - 1] !== "--json" && arr[i - 1] !== "--from-json");
+const argvModels = argv.filter(
+	(a, i, arr) =>
+		!a.startsWith("-") &&
+		arr[i - 1] !== "--out" &&
+		arr[i - 1] !== "--json" &&
+		arr[i - 1] !== "--from-json" &&
+		arr[i - 1] !== "--style",
+);
 
 let data: SweepData;
 
 if (fromJsonPath) {
-	const loaded = JSON.parse(readFileSync(fromJsonPath, "utf8")) as SweepData;
-	data = loaded;
-	console.log(`Regenerating from ${fromJsonPath} (${data.rows.length} model(s), captured ${data.generatedAt}), no network calls.`);
+	const loaded = JSON.parse(readFileSync(fromJsonPath, "utf8")) as Omit<SweepData, "style"> & {
+		style?: InferStyle;
+	};
+	// Older dumps, from before `--style` existed, carried only the reemit
+	// shape — read across the same way `settings.ts` reads a stale key.
+	data = { style: "reemit", ...loaded };
+	console.log(
+		`Regenerating from ${fromJsonPath} (${data.rows.length} model(s), style=${data.style}, captured ${data.generatedAt}), no network calls.`,
+	);
 } else {
 	if (!process.env.OPENROUTER_API_KEY) {
 		console.error("OPENROUTER_API_KEY is not set");
@@ -369,8 +437,10 @@ if (fromJsonPath) {
 			: CANDIDATES;
 
 	const limit = makeLimiter(8);
-	console.log(`Sweeping ${models.length} model(s) across ${SAMPLES.length} samples (up to 8 requests in flight)…\n`);
-	const rows = await Promise.all(models.map((m) => runModel(m, limit)));
+	console.log(
+		`Sweeping ${models.length} model(s) across ${SAMPLES.length} samples, style=${style} (up to 8 requests in flight)…\n`,
+	);
+	const rows = await Promise.all(models.map((m) => runModel(m, limit, style)));
 
 	for (const row of rows) {
 		console.log(`=== ${row.model.id}`);
@@ -407,7 +477,8 @@ if (fromJsonPath) {
 
 	data = {
 		generatedAt: new Date().toISOString(),
-		systemPrompt: INFER_SYSTEM_PROMPT,
+		style,
+		systemPrompt: style === "options" ? INFER_OPTIONS_SYSTEM_PROMPT : INFER_SYSTEM_PROMPT,
 		samples: SAMPLES,
 		rows: rows.map((r) => ({ model: r.model, results: r.results })),
 	};
@@ -461,7 +532,7 @@ const promptsHtml = `
 <section>
   <h2>Prompts</h2>
   <details>
-    <summary>System prompt (INFER_SYSTEM_PROMPT)</summary>
+    <summary>System prompt (${data.style === "options" ? "INFER_OPTIONS_SYSTEM_PROMPT" : "INFER_SYSTEM_PROMPT"})</summary>
     <pre class="prompt">${esc(data.systemPrompt)}</pre>
   </details>
   <table class="samples">
@@ -570,10 +641,18 @@ const legendHtml = `
     <dt>Model</dt><dd>OpenRouter model id, exactly as sent in the API request.</dd>
     <dt>Params</dt><dd>Active parameters in billions, as OpenRouter's catalog states them. A mixture-of-experts model's total parameter count can be far larger than what's active per token; this is the active figure, which is what governs cost and latency.</dd>
     <dt>$/1M in, $/1M out</dt><dd>List price from OpenRouter's catalog at the time <code>CANDIDATES</code> was curated — a reference, not what this sweep actually paid (see Input $/Output $/Total $).</dd>
-    <dt>Copy fidelity</dt><dd>Samples (out of the total) where the reply, with all &lt;snippet&gt; tags stripped, was byte-identical to the message sent, with tags stripped the same way. This is <code>INFER_SYSTEM_PROMPT</code>'s hard rule: no paraphrasing, no dropped or added words. A model that drifts here cannot be trusted not to corrupt a transcript.</dd>
-    <dt>Tags preserved</dt><dd>Of the samples that included an existing &lt;snippet&gt; tag (layer 1's own chip), how many the model left untouched. Only one sample in the fixed set has an existing tag, so this is out of 1, not out of the sample count.</dd>
-    <dt>Anchors accepted</dt><dd>Total new &lt;snippet&gt; spans, summed across every sample, that passed <code>extractAnchors</code> \u2014 found verbatim in the original message's non-code text and not overlapping a chip that already existed. These are the chips layer 2 would actually paint.</dd>
-    <dt>Anchors dropped</dt><dd>New tags the model proposed that <code>extractAnchors</code> rejected: invented text, a paraphrase, or a span already covered. A model with fidelity intact but many drops is hallucinating snippets, not just failing to add them.</dd>
+    <dt>Copy fidelity</dt><dd>${
+			data.style === "options"
+				? "Samples (out of the total) where every line the model listed survived <code>extractOptionAnchors</code> \u2014 nothing invented, paraphrased, or already covered. There is no re-emitted message to diff here (that is the <code>reemit</code> style's version of this column); a model that drifts is proposing lines that are not the user's own words."
+				: "Samples (out of the total) where the reply, with all &lt;snippet&gt; tags stripped, was byte-identical to the message sent, with tags stripped the same way. This is <code>INFER_SYSTEM_PROMPT</code>'s hard rule: no paraphrasing, no dropped or added words. A model that drifts here cannot be trusted not to corrupt a transcript."
+		}</dd>
+    <dt>Tags preserved</dt><dd>${
+			data.style === "options"
+				? "Not meaningful under this style \u2014 <code>options</code> never re-emits the message, so there is nothing for the model to lose. Always shown as fully preserved."
+				: "Of the samples that included an existing &lt;snippet&gt; tag (layer 1's own chip), how many the model left untouched. Only one sample in the fixed set has an existing tag, so this is out of 1, not out of the sample count."
+		}</dd>
+    <dt>Anchors accepted</dt><dd>Total chips, summed across every sample, that passed the style's own extraction function (<code>extractAnchors</code> for <code>reemit</code>, <code>extractOptionAnchors</code> for <code>options</code>) \u2014 found verbatim in the original message's non-code text and not overlapping a chip that already existed. These are the chips layer 2 would actually paint.</dd>
+    <dt>Anchors dropped</dt><dd>Tags or lines the model proposed that the style's extraction function rejected: invented text, a paraphrase, or a span already covered. A model with fidelity intact but many drops is hallucinating snippets, not just failing to add them.</dd>
     <dt>Failed</dt><dd>Samples where the request errored, timed out, or came back with an empty reply (including a reasoning model that spent its whole token budget on chain-of-thought before writing content).</dd>
     <dt>Median ms</dt><dd>Median latency across the samples that returned a response at all (failed samples are excluded, not counted as 0ms).</dd>
     <dt>Input $, Output $, Total $</dt><dd>Measured spend, summed across every sample for that model. Read from OpenRouter's own <code>usage.cost_details</code> when the provider returns it; otherwise estimated from token counts against the list price. Includes failed samples \u2014 a reasoning model that returns empty content is still billed for the reasoning tokens it generated.</dd>
@@ -588,7 +667,7 @@ const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>infer-sweep report — ${data.generatedAt}</title>
+<title>infer-sweep report (${data.style}) — ${data.generatedAt}</title>
 <style>
   body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 2rem; color: #1a1a1a; background: #fafafa; }
   h1 { font-size: 1.4rem; }
@@ -619,8 +698,8 @@ const html = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-  <h1>infer-sweep: second-model layer, live scored against ${rows.length} model(s)</h1>
-  <p>Generated ${esc(data.generatedAt)}. Ranked by copy fidelity, tag preservation, then anchors accepted. Total spend: ${fmtCost(sweepTotalCost)}.</p>
+  <h1>infer-sweep: second-model layer (${data.style} style), live scored against ${rows.length} model(s)</h1>
+  <p>Generated ${esc(data.generatedAt)}. Ranked by copy fidelity, tag preservation, then anchors accepted. Total spend: ${fmtCost(sweepTotalCost)}. Run the sweep again with <code>--style ${data.style === "options" ? "reemit" : "options"}</code> for the other shape's report, to compare side by side.</p>
   ${promptsHtml}
   ${summaryHtml}
   ${detailHtml}

@@ -322,10 +322,10 @@ A suggestion, once accepted, keeps its number for the life of the message — la
 *Accept:* Tag name is configurable; parser and prompt snippet read from the same constant.
 
 **H5.** As a user, I want to choose which of the two suggestion layers run, not just whether suggestions are on.
-*Accept:* One setting, `mode`, with the four combinations — `off`, `tags` (layer 1 only), `both` (the default), `infer` (layer 2 only) — chosen from a `select` that `/snippets` → "Suggestions" opens. Four options rather than a switch and a sub-switch because the layers are independent and cost different things: layer 1 costs a system-prompt injection on every turn, layer 2 costs a request per question-bearing message. `infer` is the mode that buys chips without putting anything in the primary model's prompt — the injection *is* layer 1, so that mode skips it and the second model does all the tagging; tags the primary writes anyway are still painted, since a tag left unparsed would show up as raw markup. `off` does neither and paints nothing. Layer 2's model pin is stored separately from the mode, so standing the layer down and back up remembers which model it was pointed at. A `mode` a hand-edit made unrecognisable falls back to the default; a settings file from before the modes is read for its boolean `enabled: false` alone, which becomes `off` — silently turning suggestions back on for someone who had switched them off is the one migration worth the two lines.
+*Accept:* One setting, `mode`, with the four combinations — `off`, `tags` (layer 1 only), `both` (the default), `infer` (layer 2 only) — chosen from a `select` that `/snippets` → "Suggestions" opens. Four options rather than a switch and a sub-switch because the layers are independent and cost different things: layer 1 costs a system-prompt injection on every turn, layer 2 costs a request per assistant message (no question-mark gate — see §17's "Cost control"). `infer` is the mode that buys chips without putting anything in the primary model's prompt — the injection *is* layer 1, so that mode skips it and the second model does all the tagging; tags the primary writes anyway are still painted, since a tag left unparsed would show up as raw markup. `off` does neither and paints nothing. Layer 2's model pin and reply style are stored separately from the mode, so standing the layer down and back up remembers which model it was pointed at and which shape it was replying in. A `mode` a hand-edit made unrecognisable falls back to the default; a settings file from before the modes is read for its boolean `enabled: false` alone, which becomes `off` — silently turning suggestions back on for someone who had switched them off is the one migration worth the two lines.
 
 **H4.** As a user, I want the choices I make in `/snippets` to still hold the next time I start pi.
-*Accept:* The settings (`mode` — which layers run, see H5 — the hotkey toggle, and the second model's pin; click-to-insert stopped being a preference when clicking became always-on and terminal-resolved) are written to `~/.pi/agent/pi-snippet.json` — pi's agent directory, resolved as pi resolves it (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`), overridable outright with `PI_SNIPPET_SETTINGS` — as they are changed, and read back at load. pi exposes no settings or key-value API to extensions (`ExtensionAPI` has only `appendEntry()`, which is session-scoped and branch-aware, so it is the wrong shape for a preference); a JSON file beside pi's own `settings.json` is the convention its shipped `preset.ts` example follows. The file lives outside the session store — these are preferences about the tool, not state of one conversation, so a fork or a resume finds the same answer as a fresh start. A missing, malformed, or unreadable file falls back to defaults rather than failing to load; a write that fails leaves the toggle in force for the session and says so in the notification. `--no-suggestions` is a session override and never rewrites the stored preference. Global only, deliberately: a project-local override would have to decide which file a toggle writes back to, and picking wrong reproduces exactly the bug this story fixes.
+*Accept:* The settings (`mode` — which layers run, see H5 — the hotkey toggle, the second model's pin, and its reply style — `reemit` or `options`, see §17; click-to-insert stopped being a preference when clicking became always-on and terminal-resolved) are written to `~/.pi/agent/pi-snippet.json` — pi's agent directory, resolved as pi resolves it (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`), overridable outright with `PI_SNIPPET_SETTINGS` — as they are changed, and read back at load. pi exposes no settings or key-value API to extensions (`ExtensionAPI` has only `appendEntry()`, which is session-scoped and branch-aware, so it is the wrong shape for a preference); a JSON file beside pi's own `settings.json` is the convention its shipped `preset.ts` example follows. The file lives outside the session store — these are preferences about the tool, not state of one conversation, so a fork or a resume finds the same answer as a fresh start. A missing, malformed, or unreadable file falls back to defaults rather than failing to load; a write that fails leaves the toggle in force for the session and says so in the notification. `--no-suggestions` is a session override and never rewrites the stored preference. Global only, deliberately: a project-local override would have to decide which file a toggle writes back to, and picking wrong reproduces exactly the bug this story fixes.
 
 ---
 
@@ -782,22 +782,66 @@ command's own argument completions get pi's dropdown. (It was a standalone
 because two top-level commands for one feature was the annoyance — pi passes
 a slash command's `getArgumentCompletions` everything typed after the command
 name, so `model` is just the first word of that string, matched and stripped
-by hand.) In the TUI, that menu entry now prefills `/snippets model <current
-pin>` in the composer and hands focus back rather than opening the dialog;
-outside the TUI (RPC, print, where there is no composer to prefill) it still
-opens the old typed prompt. With
+by hand.) In the TUI, that menu entry now prefills `/snippets model ` (always
+blank, never the current pin — picking "change" means replacing it, so there's
+nothing worth pre-filling) in the composer and hands focus back rather than
+opening the dialog; the tab-complete dropdown itself stays quiet until
+something is typed, rather than dumping the whole hundreds-long catalogue on
+an empty query. Outside the TUI (RPC, print, where there is no composer to
+prefill) it still opens the old typed prompt. With
 `PI_SNIPPET_MODEL` as a session-level override above it (the key is named
 `inferModel`, not `model`, so a stale pin from the removed layer stays dead);
 there is no per-message cap on its tags (more options are better than fewer;
 only the runaway guard of 99 total per message applies); its chips are
-first-class, so no anchor/reply JSON — the tag re-emit is the whole protocol;
-and it runs on every question-bearing message, seeing the tags layer 1 already
+first-class, so no anchor/reply JSON — the tag re-emit is the whole protocol
+(for the `reemit` style below; `options` has no JSON either, just bare lines);
+and it runs on every assistant message, seeing the tags layer 1 already
 painted so it adds to them rather than restarting from a blind position.
 
-**Cost control.** The gate is a question mark outside code (`asksSomething`):
-a status update pays nothing. The call goes out at `message_end`, streams via
-the provider's `streamSimple`, and each anchor becomes a chip as its closing
-tag arrives — chips light up while the second model is still writing.
+**Reply shape is a live A/B, not a settled choice (`shared/inferred.ts`).**
+`settings.inferStyle` — `/snippets` → "Second model style", or typed directly
+as `/snippets style reemit` / `/snippets style options` — picks which of two
+prompts and two extraction functions runs, and both stay reachable at once
+rather than one replacing the other:
+
+- **`reemit`** (the default, and everything described above): the model is
+  told to keep any tags it is given and re-emit the whole message with more
+  `<snippet>` tags added; `extractAnchors` validates it, `locateAnchors`
+  places each anchor at its first verbatim spot.
+- **`options`**: the model is told to skip re-emission and just list bare
+  reply lines, one per line, nothing else — no tags, no surrounding prose.
+  `extractOptionAnchors` validates the list (verbatim-or-nothing, same as
+  `reemit`, but checked per line rather than per parsed tag), and
+  `locateAllOccurrences` — `locateAnchors`'s sibling — finds *every* verbatim
+  occurrence of each accepted line in the message, painting all of them under
+  the same chip number: "Should we rebuild or commit?" answered elsewhere
+  with "rebuild it now" gets both spots lit, since clicking either sends the
+  identical reply. A still-streaming reply's last line is held back until the
+  caller marks the reply complete — it has not seen its terminating newline
+  yet and may still be growing into something else.
+
+The two prompts share one exported guidance block (`INFER_GUIDANCE`) for what
+counts as a plausible reply, so tuning what to offer can only be done once,
+in a place both styles read from; only the *format* instructions differ. The
+worked examples are shared the same way — one internal table (`INFER_EXAMPLES`)
+of message-plus-replies scenarios, rendered into each prompt's own shape (tags
+re-emitted, or a plain line join) — so an example can't be edited or added for
+one style and forgotten for the other.
+Switching styles mid-session re-arms the failure breaker (a style change is
+as much a fresh start as a model change) and asks again rather than replaying
+a cached answer from the other style — `InferenceEngine`'s cache key folds
+the style in for exactly that reason.
+
+**Cost control: there is none, deliberately.** The question-mark gate this
+section used to describe (`asksSomething`) is gone — every assistant message
+is sent, a status update costing the same request as a question. The reply
+shapes are being compared in production, and a gate that only fired on some
+messages would make that comparison noisier, not cheaper enough to matter at
+this model's price (see "Cheap beats free" below). The call goes out at
+`message_end`, streams via the provider's `streamSimple`, and each anchor
+becomes a chip as its closing tag (`reemit`) or its terminating newline
+(`options`) arrives — chips light up while the second model is still writing,
+under either style.
 
 **Cheap beats free.** The default was OpenRouter's free nemotron until a
 live run showed why free is the wrong axis: OpenRouter meters free models per
@@ -816,26 +860,31 @@ chip and never says why.
 
 **The footer line.** The built-in footer carries one extension status
 (`ctx.ui.setStatus("pi-snippet", …)`) saying where the layer stands for the
-message on screen: `snippet: not sent` while the primary streams or the gate
-said no, `snippet: sent (waiting)` while the reply streams, and then the
-report — `snippet: 2 new chips` — counted live as the anchors land, zero
-included when a reply genuinely arrived and added nothing. A request that got
-no answer says `snippet: second model failed` — it was asked; "not sent"
-would credit the layer with a decision it never made.
+message on screen: `snippet: not sent` while the message on screen has not
+yet finished streaming, `snippet: sent (waiting)` while the reply streams,
+and then the report — `snippet: 2 new chips` — counted live as the anchors
+land, zero included when a reply genuinely arrived and added nothing. A
+request that got no answer says `snippet: second model failed` — it was
+asked; "not sent" would credit the layer with a decision it never made.
 
 When there is no second model to call at all — nothing resolves, the model
 that does resolve has no configured auth, or three consecutive failures have
 stood the layer down — the line says `snippet: second model unavailable`
-instead, checked before the question-mark gate because it is a condition of
-the session rather than of the message. The two failure lines exist because
-all three otherwise look identical from outside: a session whose second model
-cannot run would report `not sent` after every question it ever asked,
+instead, checked before the message is even handed to the engine because it
+is a condition of the session rather than of the message. The two failure
+lines exist because all three otherwise look identical from outside: a
+session whose second model cannot run would report `not sent` forever,
 reading as a working layer that keeps declining. The reason itself is still
 never shown — only that there wasn't one.
 
 **Testing.** Fixed strings only: the engine and the contract are tested
 against canned replies through a fake registry (`test/inferred.test.ts`,
-`test/infer-engine.test.ts`). No test makes a live model call.
+`test/infer-engine.test.ts`), covering both reply styles and the cache-key
+separation between them. No vitest test makes a live model call; the one live
+harness is `scripts/infer-sweep.ts`, a manual sweep (never run by `npm test`)
+that scores real OpenRouter replies against the real extraction functions —
+`--style options` runs it against the other prompt, so the two can be
+compared side by side rather than by guessing.
 
 The design of the *removed* layer remains in git history (PRD §17 as of before
 the removal, plus `src/extension/magic.ts` and `src/shared/inferred.ts`);

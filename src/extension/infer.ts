@@ -7,7 +7,8 @@
  *
  * A fixed one, chosen deliberately rather than guessed: OpenRouter's
  * `qwen/qwen3.7-flash`. Small and cheap rather than free — this layer runs
- * after every question-bearing message, so its latency must be invisible and
+ * after every assistant message (there is no question-mark gate; a status
+ * update pays the same as a question), so its latency must be invisible and
  * its cost per call must round to nothing (~$0.00004 at this model's rates:
  * a few hundred tokens in, a hundred or so out). The free tier was tried
  * first and lost on availability, not on quality: OpenRouter meters free
@@ -15,6 +16,18 @@
  * for the rest of the day after fifty calls — silently, since it surfaces
  * nothing. `PI_SNIPPET_MODEL` (`provider/id`, or a bare id) overrides it,
  * which is how the tests point it at a mock.
+ *
+ * ## Reply style
+ *
+ * `state.inferStyle` (`/snippets` → "Second model style") picks which of two
+ * prompts and extraction functions this layer uses, per `InferenceEngine`'s
+ * `getStyle` callback: `reemit` (the default) has the model rewrite the whole
+ * message with more `<snippet>` tags added, exactly as layer 1 would;
+ * `options` has it list bare reply lines instead, and every verbatim
+ * occurrence of a line in the message lights up under the same chip number.
+ * Both stay live rather than one replacing the other — this is a running A/B,
+ * and the cache key folds the style in so switching mid-session asks again
+ * rather than replaying the other style's answer.
  *
  * ## How it runs
  *
@@ -40,7 +53,7 @@
  * - Never keeps trying on a dead credential. `hasConfiguredAuth()` answers
  *   whether credentials are *configured*, not whether they work — an expired
  *   key or a model the account cannot invoke would otherwise fire a request
- *   that cannot succeed after every question-bearing message. Three
+ *   that cannot succeed after every assistant message. Three
  *   consecutive failures stand the layer down for the session.
  */
 
@@ -49,7 +62,10 @@ import { putBounded } from "../shared/bounded-map.js";
 import {
 	buildInferPrompt,
 	extractAnchors,
+	extractOptionAnchors,
+	INFER_OPTIONS_SYSTEM_PROMPT,
 	INFER_SYSTEM_PROMPT,
+	type InferStyle,
 } from "../shared/inferred.js";
 
 /** The model this layer uses unless `PI_SNIPPET_MODEL` or `/snippets` say otherwise. */
@@ -206,7 +222,9 @@ export function resolveInferenceModel(host: InferHost, explicitPin?: string): Pi
  * Keyed by the exact message text (tags included — they are part of what the
  * model sees) rather than by a message id: the same text re-rendered after a
  * resize, a fork, or a `/tree` walk is the same question, and a session that
- * comes back to it should not pay again.
+ * comes back to it should not pay again. The style is folded into the key
+ * too — switching `/snippets`' reply style mid-session must ask again, never
+ * serve one style's answer back under the other's shape.
  */
 export class InferenceEngine {
 	private readonly cache = new Map<string, string[]>();
@@ -218,9 +236,12 @@ export class InferenceEngine {
 	 * menu applies to the next message without a reload.
 	 */
 	private readonly getPin: () => string | undefined;
+	/** The stored reply-style choice, read per call for the same reason. */
+	private readonly getStyle: () => InferStyle;
 
-	constructor(getPin: () => string | undefined = () => undefined) {
+	constructor(getPin: () => string | undefined = () => undefined, getStyle: () => InferStyle = () => "reemit") {
 		this.getPin = getPin;
+		this.getStyle = getStyle;
 	}
 
 	/** True once the layer has given up for the session. */
@@ -233,9 +254,13 @@ export class InferenceEngine {
 		this.failures = 0;
 	}
 
-	/** Cached answer for a message, without asking. */
+	private cacheKey(messageText: string): string {
+		return `${this.getStyle()} ${messageText}`;
+	}
+
+	/** Cached answer for a message under the current style, without asking. */
 	peek(messageText: string): string[] | undefined {
-		return this.cache.get(messageText);
+		return this.cache.get(this.cacheKey(messageText));
 	}
 
 	private remember(key: string, value: string[]): void {
@@ -263,12 +288,14 @@ export class InferenceEngine {
 		existing: readonly string[],
 		onChip?: (anchor: string) => void,
 	): Promise<string[] | null> {
-		const cached = this.cache.get(messageText);
+		const style = this.getStyle();
+		const key = this.cacheKey(messageText);
+		const cached = this.cache.get(key);
 		if (cached) {
 			for (const anchor of cached) onChip?.(anchor);
 			return cached;
 		}
-		const pending = this.inFlight.get(messageText);
+		const pending = this.inFlight.get(key);
 		if (pending) return pending;
 		if (this.stoodDown) return null;
 
@@ -279,13 +306,17 @@ export class InferenceEngine {
 		// could not fire.
 		if (!model) return null;
 		const registry = host.modelRegistry as PiRegistry;
+		const extract = (raw: string, opts?: { complete?: boolean }): string[] =>
+			style === "options"
+				? extractOptionAnchors(raw, messageText, existing, opts)
+				: extractAnchors(raw, messageText, existing);
 
 		const run = (async (): Promise<string[] | null> => {
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), INFER_TIMEOUT_MS);
 			host.signal?.addEventListener("abort", () => controller.abort());
 			const context = {
-				systemPrompt: INFER_SYSTEM_PROMPT,
+				systemPrompt: style === "options" ? INFER_OPTIONS_SYSTEM_PROMPT : INFER_SYSTEM_PROMPT,
 				messages: [{ role: "user", content: buildInferPrompt(messageText) }],
 			};
 			const options = { maxTokens: maxTokensFor(messageText), signal: controller.signal };
@@ -297,7 +328,7 @@ export class InferenceEngine {
 					context,
 					options,
 					(partial) => {
-						for (const anchor of extractAnchors(partial, messageText, existing)) {
+						for (const anchor of extract(partial, { complete: false })) {
 							if (!seen.has(anchor)) {
 								seen.add(anchor);
 								onChip?.(anchor);
@@ -305,9 +336,22 @@ export class InferenceEngine {
 						}
 					},
 				);
-				const anchors = extractAnchors(finalText, messageText, existing);
+				// The options style holds its last line back on every partial (it
+				// has not seen its terminating newline yet — see `extractOptionAnchors`),
+				// so nothing here has reported it even once the stream has produced
+				// every byte of it. Extracting from the known-complete `finalText`
+				// and reporting whatever `seen` missed is what still paints it: for
+				// `reemit`, the last partial already saw the full text, so this loop
+				// is a no-op there.
+				const anchors = extract(finalText);
+				for (const anchor of anchors) {
+					if (!seen.has(anchor)) {
+						seen.add(anchor);
+						onChip?.(anchor);
+					}
+				}
 				this.failures = 0;
-				this.remember(messageText, anchors);
+				this.remember(key, anchors);
 				return anchors;
 			} catch {
 				// Timeout, transport failure, a provider that rejected the
@@ -318,11 +362,11 @@ export class InferenceEngine {
 				return null;
 			} finally {
 				clearTimeout(timer);
-				this.inFlight.delete(messageText);
+				this.inFlight.delete(key);
 			}
 		})();
 
-		this.inFlight.set(messageText, run);
+		this.inFlight.set(key, run);
 		return run;
 	}
 }

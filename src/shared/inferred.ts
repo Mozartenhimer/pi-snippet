@@ -25,9 +25,9 @@
  * rather than repaired: the failure mode is a missing chip, never a wrong one.
  */
 
-import { fencedRegions, MAX_SUGGESTIONS_PER_MESSAGE, parseSuggestions } from "./suggestions.js";
+import { fencedRegions, MAX_SUGGESTIONS_PER_MESSAGE, parseSuggestions, SNIPPET_TAG } from "./suggestions.js";
 
-/** Regions of `text` that are code, where a question mark means nothing. */
+/** Regions of `text` that are code, where an anchor must never land. */
 function codeRegions(text: string): Array<{ start: number; end: number }> {
 	const regions = fencedRegions(text);
 	const inline = /`+[^`\n]*`+/g;
@@ -38,25 +38,76 @@ function codeRegions(text: string): Array<{ start: number; end: number }> {
 	return regions;
 }
 
-function inAnyRegion(regions: Array<{ start: number; end: number }>, pos: number): boolean {
-	return regions.some((r) => pos >= r.start && pos < r.end);
-}
+/**
+ * Which shape the second model replies in — a live A/B rather than a settled
+ * choice, so both stay reachable from `/snippets`.
+ *
+ * `reemit` re-emits the whole message with more `<snippet>` tags added — the
+ * message itself carries the answer, verbatim, at the position it was found.
+ * `options` instead has the model list bare reply lines, one per line, with
+ * no re-emission and no tags at all; the extension then finds every verbatim
+ * occurrence of a line in the message and lights all of them up under the
+ * same chip number, since either occurrence sends the identical reply.
+ */
+export type InferStyle = "reemit" | "options";
+
+export const INFER_STYLES: readonly InferStyle[] = ["reemit", "options"];
 
 /**
- * Cheap gate on whether a message is worth spending a model call on.
- *
- * Deliberately generous in one direction only: a message that asks nothing
- * must never reach the model (that is the whole cost control), but a message
- * that merely might is allowed through — the model returns the message
- * unchanged and we cache that. A question mark outside code is the signal; a
- * coding agent's "should I …", "want me to …" always carries one.
+ * What counts as a plausible reply — the one piece of judgment both reply
+ * styles need identically. Factored out so the two prompts below can only
+ * drift on *format* (tags re-emitted vs. bare lines listed), never on *what
+ * to offer*: editing this once keeps both current, rather than two prose
+ * blocks that quietly diverge as one gets tuned and the other forgotten.
  */
-export function asksSomething(text: string): boolean {
-	const regions = codeRegions(text);
-	for (let i = text.indexOf("?"); i !== -1; i = text.indexOf("?", i + 1)) {
-		if (!inAnyRegion(regions, i)) return true;
+const INFER_GUIDANCE = `What counts as a plausible reply:
+- Each branch of an either/or question: "Do you want to rebuild or commit?" -> rebuild, commit.
+- An offer the user could accept: "Want me to fix them one at a time?" -> fix them one at a time.
+- The bare name of an option in a list, when the name alone is a complete reply.
+- A binary question's affirmative: "Shall I proceed?" -> proceed.
+
+There is no limit on how many you find — more options are better than fewer. But never offer a noun, a filename, or a fragment that only makes sense inside the assistant's own sentence; every reply must stand alone as the user's own words, copied verbatim, and must never come from inside a code block or code span.`;
+
+/**
+ * One example message, and the plausible replies a good answer finds in it —
+ * the two styles show the same scenarios and disagree only on how a reply is
+ * written down, so an example lives here once and each prompt renders its
+ * own shape from it. Editing or adding an example now can't update one
+ * prompt and forget the other.
+ */
+interface InferExample {
+	/** The assistant's message, exactly as both prompts show it. */
+	message: string;
+	/** The plausible replies in it, in document order; empty for none at all. */
+	replies: string[];
+}
+
+const INFER_EXAMPLES: readonly InferExample[] = [
+	{
+		message:
+			"The build failed in three places. Want me to fix them one at a time, or show you all three errors first?",
+		replies: ["fix them one at a time", "show you all three errors first"],
+	},
+	{ message: "I've pushed the branch and CI is green.", replies: [] },
+];
+
+/** `reemit`'s shape for one example: the message with every reply wrapped in tags. */
+function reemitExampleReply(example: InferExample): string {
+	const located = locateAnchors(example.message, example.replies);
+	let out = "";
+	let cursor = 0;
+	for (const anchor of located) {
+		out += example.message.slice(cursor, anchor.start) + `<${SNIPPET_TAG}>${anchor.text}</${SNIPPET_TAG}>`;
+		cursor = anchor.end;
 	}
-	return false;
+	return out + example.message.slice(cursor);
+}
+
+/** Renders every example as `Example message: … / Example reply: …`, one style's shape at a time. */
+function renderExamples(exampleReply: (example: InferExample) => string): string {
+	return INFER_EXAMPLES.map(
+		(example) => `Example message:\n${example.message}\n\nExample reply:\n${exampleReply(example)}`,
+	).join("\n\n");
 }
 
 /** Instruction for the second model. Kept separate so it can be tuned alone. */
@@ -64,31 +115,32 @@ export const INFER_SYSTEM_PROMPT = `You add to an AI coding assistant's message 
 
 You are given the assistant's message. Some spans may already be wrapped in <snippet></snippet> tags — leave those exactly as they are. Add <snippet></snippet> tags around every other span the user could plausibly send back as their next message. The text you wrap is exactly what the user sends when they pick it, so wrap the shortest span that reads as a complete reply on its own.
 
-What to wrap:
-- Each branch of an either/or question: "Do you want to rebuild or commit?" -> rebuild, commit.
-- An offer the user could accept: "Want me to fix them one at a time?" -> fix them one at a time.
-- The bare name of an option in a list, when the name alone is a complete reply.
-- A binary question's affirmative: "Shall I proceed?" -> proceed.
+${INFER_GUIDANCE}
 
-Tag freely: there is no limit on the number of tags — more options are better than fewer. But never wrap a noun, a filename, or a fragment that only makes sense inside the assistant's own sentence; the wrapped text must stand alone as the user's words. A message that invites nothing new comes back exactly as you received it.
+A message that invites nothing new comes back exactly as you received it.
 
 Hard rules:
 - Copy the message exactly. The ONLY change is adding <snippet> and </snippet> around new spans. No paraphrasing, no added or dropped words, no punctuation fixes, nothing.
 - Never remove, move, or alter an existing <snippet> tag, and never wrap text that is already inside one.
-- Never wrap text inside a code block or code span.
 - Reply with the marked-up message and nothing else: no prose, no code fence, no quotes.
 
-Example message:
-The build failed in three places. Want me to <snippet>fix them one at a time</snippet>, or show you all three errors first?
+${renderExamples(reemitExampleReply)}`;
 
-Example reply:
-The build failed in three places. Want me to <snippet>fix them one at a time</snippet>, or <snippet>show you all three errors first</snippet>?
+/**
+ * The `options` style's instruction: instead of re-emitting the message, the
+ * model lists bare reply lines. No tags, no re-emission — `extractOptionAnchors`
+ * below locates every verbatim occurrence of each line itself, which is what
+ * lets the same option light up more than once in the message.
+ */
+export const INFER_OPTIONS_SYSTEM_PROMPT = `You read an AI coding assistant's message and list the replies its user could plausibly send back.
 
-Example message:
-I've pushed the branch and CI is green.
+Reply with the options only, one per line, and nothing else: no numbering, no bullets, no prose, no code fence, no quotes, no blank lines. Each line must be copied verbatim from the assistant's message — the exact words, unmodified — since what you write is exactly what the user sends when they pick it. Write the shortest line that reads as a complete reply on its own.
 
-Example reply:
-I've pushed the branch and CI is green.`;
+${INFER_GUIDANCE}
+
+A message that invites nothing new gets an empty reply.
+
+${renderExamples((example) => example.replies.join("\n"))}`;
 
 export function buildInferPrompt(messageText: string): string {
 	return `<assistant_message>\n${messageText}\n</assistant_message>`;
@@ -115,8 +167,12 @@ export interface LocatedAnchor {
 }
 
 /**
- * Locate each anchor verbatim in `text`, skipping code regions and spans the
- * given layer-1 chips already cover.
+ * Shared walk behind `locateAnchors` and `locateAllOccurrences`: find each
+ * anchor verbatim in `text`, skipping code regions and spans already taken by
+ * an earlier anchor, an earlier occurrence, or `existing`. `allOccurrences`
+ * is the only difference between the two — `reemit` wants the first verbatim
+ * spot an anchor occupies, `options` wants every one of them, sharing the
+ * same `order` (and so the same chip number) across every occurrence.
  *
  * This is the authority on where a layer-2 chip paints: an anchor is located
  * against the exact text the transformer was handed (which may be one text
@@ -125,17 +181,17 @@ export interface LocatedAnchor {
  * anchor that overlaps an existing chip or an earlier anchor is dropped: the
  * failure mode is a missing chip, never a doubled one.
  */
-export function locateAnchors(
+function placeAnchors(
 	text: string,
 	anchors: readonly string[],
-	existing: ReadonlyArray<{ text: string; start: number; end: number }> = [],
+	existing: ReadonlyArray<{ text: string; start: number; end: number }>,
+	allOccurrences: boolean,
 ): LocatedAnchor[] {
 	const regions = codeRegions(text);
 	const taken: Array<{ start: number; end: number }> = [...existing];
 	const found: LocatedAnchor[] = [];
 	for (const [order, anchor] of anchors.entries()) {
 		if (anchor.length === 0) continue;
-		let placed = false;
 		for (
 			let start = text.indexOf(anchor);
 			start !== -1;
@@ -146,17 +202,38 @@ export function locateAnchors(
 			if (taken.some((t) => start < t.end && end > t.start)) continue;
 			found.push({ text: anchor, start, end, order });
 			taken.push({ start, end });
-			placed = true;
-			break;
-		}
-		if (!placed) {
-			// Not found: dropped. The caller's list may name an anchor that
-			// belongs to another form of the message (a different text block);
-			// that is ordinary, not an error.
+			if (!allOccurrences) break;
 		}
 	}
 	found.sort((a, b) => a.start - b.start);
 	return found;
+}
+
+/**
+ * Locate each anchor at its first verbatim spot in `text` — the `reemit`
+ * style's shape, where an anchor is a span the model wrapped once.
+ */
+export function locateAnchors(
+	text: string,
+	anchors: readonly string[],
+	existing: ReadonlyArray<{ text: string; start: number; end: number }> = [],
+): LocatedAnchor[] {
+	return placeAnchors(text, anchors, existing, false);
+}
+
+/**
+ * Locate every verbatim occurrence of each anchor — the `options` style's
+ * shape, where a reply line the model listed once may appear more than once
+ * in the message ("Should we rebuild or commit?" answered elsewhere with
+ * "rebuild it now"): every occurrence gets painted, and every one shares the
+ * anchor's chip number, since clicking any of them sends the identical reply.
+ */
+export function locateAllOccurrences(
+	text: string,
+	anchors: readonly string[],
+	existing: ReadonlyArray<{ text: string; start: number; end: number }> = [],
+): LocatedAnchor[] {
+	return placeAnchors(text, anchors, existing, true);
 }
 
 /**
@@ -201,6 +278,48 @@ export function extractAnchors(
 		if (located.length === 0) continue; // invented or paraphrased: drop it
 		accepted.push(located[0]!);
 		anchors.push(node.text);
+	}
+	return anchors;
+}
+
+/**
+ * The `options` style's counterpart to `extractAnchors`: the model's reply is
+ * bare lines, not tags, so validation is simpler — a line is worth a chip once
+ * it appears verbatim anywhere in the message's non-code text. Where it
+ * actually paints (once, or every occurrence) is decided later, at render
+ * time, by `locateAllOccurrences`; this only decides which distinct lines
+ * survive and in what order they are numbered.
+ *
+ * `complete: false` marks a still-streaming reply: the last line has not seen
+ * its terminating newline yet and may still grow, so it is held back rather
+ * than painted as "reb" before "rebuild" finishes arriving. The caller passes
+ * `complete: false` on every partial and leaves it unset for the final text.
+ */
+export function extractOptionAnchors(
+	raw: string,
+	messageText: string,
+	existing: readonly string[] = [],
+	opts?: { complete?: boolean },
+): string[] {
+	const layer1Texts = parseSuggestions(messageText).nodes
+		.filter((n) => n.type === "suggestion")
+		.map((n) => n.text);
+	const covered = new Set([...layer1Texts, ...existing]);
+
+	const segments = unfence(raw).split("\n");
+	const candidates = opts?.complete === false ? segments.slice(0, -1) : segments;
+	const lines = candidates.map((line) => line.trim()).filter((line) => line.length > 0);
+
+	const anchors: string[] = [];
+	for (const line of lines) {
+		if (covered.size >= MAX_SUGGESTIONS_PER_MESSAGE) break;
+		// Already a chip — layer 1's, an earlier line this same reply, or one
+		// the caller already painted — or nowhere in the message at all
+		// (invented, paraphrased, or only inside a code region).
+		if (covered.has(line)) continue;
+		if (locateAnchors(messageText, [line]).length === 0) continue;
+		covered.add(line);
+		anchors.push(line);
 	}
 	return anchors;
 }

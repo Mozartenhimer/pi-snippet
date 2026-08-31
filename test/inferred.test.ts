@@ -1,31 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
-	asksSomething,
 	buildInferPrompt,
 	extractAnchors,
+	extractOptionAnchors,
+	INFER_OPTIONS_SYSTEM_PROMPT,
 	INFER_SYSTEM_PROMPT,
+	locateAllOccurrences,
 	locateAnchors,
 	unfence,
 } from "../src/shared/inferred.js";
 import { MAX_SUGGESTIONS_PER_MESSAGE } from "../src/shared/suggestions.js";
 import { mergeSuggestions, toTuiMarkdown } from "../src/shared/tui-markdown.js";
-
-describe("asksSomething", () => {
-	it("says yes to a question in prose", () => {
-		expect(asksSomething("Do you want to rebuild or commit?")).toBe(true);
-		expect(asksSomething("Want me to fix them one at a time,\n\nor all at once?")).toBe(true);
-	});
-
-	it("says no to a status update", () => {
-		expect(asksSomething("Pushed the branch, CI is green.")).toBe(false);
-	});
-
-	it("says no when the only question mark is code", () => {
-		expect(asksSomething("Use `items.filter(x => x.ok)?` here:\n\n```\nwhere ok = ?\n```")).toBe(
-			false,
-		);
-	});
-});
 
 describe("buildInferPrompt", () => {
 	it("sends the message as stored, layer-1 tags included", () => {
@@ -35,8 +20,40 @@ describe("buildInferPrompt", () => {
 	});
 
 	it("asks the model to add to existing tags, freely — more is better", () => {
-		expect(INFER_SYSTEM_PROMPT).toMatch(/no limit on the number of tags/);
+		expect(INFER_SYSTEM_PROMPT).toMatch(/no limit on how many/);
 		expect(INFER_SYSTEM_PROMPT).toMatch(/Never remove, move, or alter an existing <snippet> tag/);
+	});
+});
+
+describe("INFER_OPTIONS_SYSTEM_PROMPT", () => {
+	it("asks for bare lines, not tags", () => {
+		expect(INFER_OPTIONS_SYSTEM_PROMPT).toMatch(/one per line/);
+		expect(INFER_OPTIONS_SYSTEM_PROMPT).not.toContain("<snippet>");
+	});
+
+	it("shares its 'what counts as a plausible reply' guidance with the reemit prompt", () => {
+		// Factored out so the two prompts can drift on format only, never on
+		// what to offer — this is the guarantee that they still agree.
+		const shared = "A binary question's affirmative: \"Shall I proceed?\" -> proceed.";
+		expect(INFER_SYSTEM_PROMPT).toContain(shared);
+		expect(INFER_OPTIONS_SYSTEM_PROMPT).toContain(shared);
+	});
+
+	it("shares its worked examples with the reemit prompt, one shape per style", () => {
+		// Same underlying scenario (INFER_EXAMPLES, unexported): reemit tags
+		// the replies in place, options lists them as bare lines. Both must
+		// show the exact same example message, verbatim.
+		const exampleMessage =
+			"The build failed in three places. Want me to fix them one at a time, or show you all three errors first?";
+		expect(INFER_SYSTEM_PROMPT).toContain(exampleMessage);
+		expect(INFER_OPTIONS_SYSTEM_PROMPT).toContain(exampleMessage);
+		expect(INFER_SYSTEM_PROMPT).toContain(
+			"The build failed in three places. Want me to <snippet>fix them one at a time</snippet>, or <snippet>show you all three errors first</snippet>?",
+		);
+		expect(INFER_OPTIONS_SYSTEM_PROMPT).toContain("fix them one at a time\nshow you all three errors first");
+		// The no-op example agrees too, rendered plain in one and empty in the other.
+		expect(INFER_SYSTEM_PROMPT).toContain("I've pushed the branch and CI is green.");
+		expect(INFER_OPTIONS_SYSTEM_PROMPT).toMatch(/I've pushed the branch and CI is green\.\n\nExample reply:\n$/);
 	});
 });
 
@@ -102,6 +119,80 @@ describe("extractAnchors", () => {
 	});
 });
 
+describe("extractOptionAnchors", () => {
+	const message = "Do you want to rebuild or commit?";
+
+	it("keeps lines that appear verbatim in the message", () => {
+		expect(extractOptionAnchors("rebuild\ncommit", message)).toEqual(["rebuild", "commit"]);
+	});
+
+	it("trims each line and drops blank ones", () => {
+		expect(extractOptionAnchors("  rebuild  \n\ncommit\n", message)).toEqual(["rebuild", "commit"]);
+	});
+
+	it("drops a line the model invented or paraphrased", () => {
+		expect(extractOptionAnchors("rebuild the project\ncommit", message)).toEqual(["commit"]);
+	});
+
+	it("drops a line that duplicates a chip the primary model already tagged", () => {
+		const tagged = "Do you want to <snippet>rebuild</snippet> or commit?";
+		expect(extractOptionAnchors("rebuild\ncommit", tagged, ["rebuild"])).toEqual(["commit"]);
+	});
+
+	it("drops a line that only exists inside a code block", () => {
+		const msg = "Run this?\n\n```\nnpm run build\n```";
+		expect(extractOptionAnchors("npm run build", msg)).toEqual([]);
+	});
+
+	it("drops a line the model repeated within the same reply", () => {
+		expect(extractOptionAnchors("rebuild\nrebuild\ncommit", message)).toEqual(["rebuild", "commit"]);
+	});
+
+	it("returns nothing for a reply that lists nothing usable", () => {
+		expect(extractOptionAnchors("", message)).toEqual([]);
+		expect(extractOptionAnchors("I would suggest committing first.", message)).toEqual([]);
+	});
+
+	it("strips a fence the model wrapped the list in", () => {
+		expect(extractOptionAnchors("```\nrebuild\ncommit\n```", message)).toEqual(["rebuild", "commit"]);
+	});
+
+	it("imposes no limit of its own beyond the runaway cap", () => {
+		const options = Array.from({ length: 8 }, (_, i) => `option${i}`);
+		const msg = `Pick one: ${options.join(", ")}?`;
+		expect(extractOptionAnchors(options.join("\n"), msg)).toEqual(options);
+	});
+
+	it("adds nothing once the message already carries the maximum chips", () => {
+		const full = Array.from(
+			{ length: MAX_SUGGESTIONS_PER_MESSAGE },
+			(_, i) => `<snippet>reply ${i}</snippet>`,
+		).join(" and also ");
+		const plain = Array.from({ length: MAX_SUGGESTIONS_PER_MESSAGE }, (_, i) => `reply ${i}`).join(
+			" and also ",
+		);
+		expect(extractOptionAnchors("one more", `${full} and also ${plain}`)).toEqual([]);
+	});
+
+	describe("a still-streaming reply (`complete: false`)", () => {
+		it("holds back the last line, which has not seen its newline yet", () => {
+			// "commit" has no trailing newline in this partial — it may still be
+			// growing into "commitment" or further — so only "rebuild" is safe.
+			expect(extractOptionAnchors("rebuild\ncommit", message, [], { complete: false })).toEqual([
+				"rebuild",
+			]);
+		});
+
+		it("releases the final line once the caller says the reply is complete", () => {
+			expect(extractOptionAnchors("rebuild\ncommit", message, [], { complete: true })).toEqual([
+				"rebuild",
+				"commit",
+			]);
+			expect(extractOptionAnchors("rebuild\ncommit", message)).toEqual(["rebuild", "commit"]);
+		});
+	});
+});
+
 describe("locateAnchors", () => {
 	it("finds each anchor at its verbatim position, in document order", () => {
 		const found = locateAnchors("Do you want to rebuild or commit?", ["commit", "rebuild"]);
@@ -124,6 +215,42 @@ describe("locateAnchors", () => {
 		expect(locateAnchors(text, ["rebuild"])).toEqual([
 			{ text: "rebuild", start: text.indexOf("rebuild?"), end: text.indexOf("rebuild?") + 7, order: 0 },
 		]);
+	});
+
+	it("stops at the first occurrence — the `reemit` shape, one span per anchor", () => {
+		const text = "rebuild it, or just rebuild without asking?";
+		expect(locateAnchors(text, ["rebuild"])).toEqual([
+			{ text: "rebuild", start: 0, end: 7, order: 0 },
+		]);
+	});
+});
+
+describe("locateAllOccurrences", () => {
+	it("finds every verbatim occurrence, all sharing the anchor's order", () => {
+		const text = "Type rebuild to rebuild, or type commit to commit.";
+		const found = locateAllOccurrences(text, ["rebuild", "commit"]);
+		expect(found.map((f) => f.order)).toEqual([0, 0, 1, 1]);
+		expect(found.map((f) => f.text)).toEqual(["rebuild", "rebuild", "commit", "commit"]);
+	});
+
+	it("never lands inside a code fence, for any occurrence", () => {
+		const text = "```\nrebuild\n```\nrebuild now, or rebuild later?";
+		const found = locateAllOccurrences(text, ["rebuild"]);
+		// The fenced "rebuild" is excluded; only the two outside it survive.
+		expect(found.map((f) => f.start)).toEqual([
+			text.indexOf("rebuild now"),
+			text.indexOf("rebuild later"),
+		]);
+	});
+
+	it("still refuses to overlap an existing chip", () => {
+		const existing = [{ text: "rebuild", start: 0, end: 7 }];
+		const found = locateAllOccurrences("rebuild or rebuild again?", ["rebuild"], existing);
+		expect(found).toEqual([{ text: "rebuild", start: 11, end: 18, order: 0 }]);
+	});
+
+	it("drops an empty anchor rather than matching everywhere", () => {
+		expect(locateAllOccurrences("anything at all", [""])).toEqual([]);
 	});
 });
 
@@ -190,26 +317,44 @@ describe("mergeSuggestions — layer 1 and layer 2 paint as one stream", () => {
 	});
 });
 
-/**
- * Boundary cases the ordinary tests never reach, found by MC/DC. Each one is
- * a way an anchor could be mislocated: a question mark that sits after a code
- * block rather than inside one, an occurrence that stops just short of code,
- * an empty anchor, and the runaway cap.
- */
-describe("asksSomething — a question outside the code that precedes it", () => {
-	it("sees a question mark that follows a fenced block", () => {
-		expect(asksSomething("```\nrm -rf /\n```\nShall I run that?")).toBe(true);
+describe("mergeSuggestions — the `options` style paints every occurrence", () => {
+	it("gives repeated occurrences of the same option one shared chip number", () => {
+		const text = "Type rebuild to rebuild.";
+		const merged = mergeSuggestions(text, undefined, ["rebuild"], "options");
+		expect(merged.suggestions).toEqual(["rebuild"]);
+		const indexes = merged.nodes
+			.filter((n) => n.type === "suggestion")
+			.map((n) => (n.type === "suggestion" ? n.index : -1));
+		expect(indexes).toEqual([0, 0]);
+		const out = toTuiMarkdown(text, {
+			isStreaming: false,
+			enabled: true,
+			inferred: ["rebuild"],
+			inferStyle: "options",
+		});
+		expect(out).toBe("Type ¹rebuild to ¹rebuild.");
 	});
 
-	it("sees a question mark that follows an inline span", () => {
-		expect(asksSomething("`git push` next?")).toBe(true);
+	it("defaults to the `reemit` shape — one occurrence — when no style is given", () => {
+		const text = "Type rebuild to rebuild.";
+		const merged = mergeSuggestions(text, undefined, ["rebuild"]);
+		expect(merged.nodes.filter((n) => n.type === "suggestion")).toHaveLength(1);
 	});
 
-	it("still ignores one inside the block", () => {
-		expect(asksSomething("```\nwhat?\n```\nDone.")).toBe(false);
+	it("numbers two different options after the tagged chips, each at every occurrence", () => {
+		const text = "<snippet>tagged</snippet>. rebuild or commit, rebuild or commit.";
+		const merged = mergeSuggestions(text, undefined, ["rebuild", "commit"], "options");
+		expect(merged.suggestions).toEqual(["tagged", "rebuild", "commit"]);
+		const suggestionNodes = merged.nodes.filter((n) => n.type === "suggestion");
+		expect(suggestionNodes.map((n) => (n.type === "suggestion" ? n.index : -1))).toEqual([0, 1, 2, 1, 2]);
 	});
 });
 
+/**
+ * Boundary cases the ordinary tests never reach, found by MC/DC. Each one is
+ * a way an anchor could be mislocated: an occurrence that stops just short of
+ * code, an empty anchor, and the runaway cap.
+ */
 describe("locateAnchors — boundaries", () => {
 	it("places an anchor that ends immediately before a code span", () => {
 		const text = "Run it now `--force` instead.";

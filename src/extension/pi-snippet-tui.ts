@@ -35,7 +35,7 @@
  */
 import { putBounded } from "../shared/bounded-map.js";
 import { DigitChord } from "../shared/digit-chord.js";
-import { asksSomething } from "../shared/inferred.js";
+import { INFER_STYLES, type InferStyle } from "../shared/inferred.js";
 import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix } from "../shared/suggestions.js";
 import { mergeSuggestions, toTuiMarkdown } from "../shared/tui-markdown.js";
 import {
@@ -88,6 +88,21 @@ const MODE_SUMMARY: Record<SnippetMode, string> = {
 	infer: "second model only",
 };
 
+/**
+ * The two shapes the second model can reply in — a live A/B (PRD §17), not a
+ * settled default, so both stay reachable from the menu.
+ */
+const STYLE_LABEL: Record<InferStyle, string> = {
+	reemit: "tag re-emit — rewrites the message with more <snippet> tags added",
+	options: "options list — lists bare reply lines; every match in the message lights up",
+};
+
+/** The same two, short enough to sit in the `/snippets` menu line. */
+const STYLE_SUMMARY: Record<InferStyle, string> = {
+	reemit: "tag re-emit",
+	options: "options list",
+};
+
 export default function piSnippetTui(pi: any): void {
 	/**
 	 * The stored preferences, read once at load. `state` starts from them and is
@@ -112,6 +127,13 @@ export default function piSnippetTui(pi: any): void {
 		 * one.
 		 */
 		inferModel: stored.inferModel,
+		/**
+		 * Which shape the second model replies in — `reemit` or `options`
+		 * (`shared/inferred.ts`). A live A/B: both stay reachable from
+		 * `/snippets` so real use can tell them apart, rather than one
+		 * replacing the other.
+		 */
+		inferStyle: stored.inferStyle,
 		hotkeysEnabled: stored.hotkeysEnabled,
 		/**
 		 * Suggestions of the most recent assistant message — the one streaming,
@@ -135,7 +157,7 @@ export default function piSnippetTui(pi: any): void {
 	 * transcript (raw tags only, never rewritten) repaints with layer-1 chips
 	 * alone. Anchors are answers, not part of the message.
 	 */
-	const infer = new InferenceEngine(() => state.inferModel);
+	const infer = new InferenceEngine(() => state.inferModel, () => state.inferStyle);
 	/**
 	 * Whether there is a second model to send anything to.
 	 *
@@ -333,7 +355,7 @@ export default function piSnippetTui(pi: any): void {
 		const anchors = inferredFor(message);
 		for (const form of messageForms(message, opts)) {
 			if (form.length === 0) continue;
-			const chips = mergeSuggestions(form, undefined, anchors).suggestions;
+			const chips = mergeSuggestions(form, undefined, anchors, state.inferStyle).suggestions;
 			if (chips.length > 0) rememberLinkTargets(form, chips);
 		}
 	};
@@ -559,6 +581,7 @@ export default function piSnippetTui(pi: any): void {
 				// in the message lifecycle handlers (PRD §5.2) and indexed per
 				// form by `applyInferredAnchor`.
 				inferred: isEnabled() ? inferredByForm.get(messageKey(markdown)) : undefined,
+				inferStyle: state.inferStyle,
 			});
 		},
 	);
@@ -586,12 +609,12 @@ export default function piSnippetTui(pi: any): void {
 				if (block.type !== "text") continue;
 				const raw = block.text ?? "";
 				const text = visibleStreamingPrefix(raw);
-				const res = mergeSuggestions(text, { acceptedSoFar: suggestions.length }, anchors);
+				const res = mergeSuggestions(text, { acceptedSoFar: suggestions.length }, anchors, state.inferStyle);
 				suggestions.push(...res.suggestions);
 			}
 			return suggestions;
 		}
-		return mergeSuggestions(messageText(message), undefined, anchors).suggestions;
+		return mergeSuggestions(messageText(message), undefined, anchors, state.inferStyle).suggestions;
 	};
 
 	/** The message text, in document order. */
@@ -758,22 +781,22 @@ export default function piSnippetTui(pi: any): void {
 	 *
 	 * The message goes as stored, layer-1 tags included: the second model sees
 	 * what is already covered and is asked to add more, not to repeat it — and
-	 * anything it echoes anyway is dropped at validation time. The gate is the
-	 * old one: a message that asks nothing pays nothing. Every failure inside
-	 * is silent.
+	 * anything it echoes anyway is dropped at validation time. Every message
+	 * is sent — there is no question-mark gate; a status update costs the same
+	 * request as a question, and pays for itself in never mis-declining one.
+	 * Every failure inside is silent.
 	 */
 	const queueInference = (message: { role?: string; content?: TextBlock[] }, ctx: any): void => {
 		if (!inferOn()) return;
 		if (!secondModelReachable(ctx)) {
-			// Checked before the gate, not after: this is a condition of the
-			// session rather than of the message, and the user needs to see it
-			// whether or not this particular message would have been worth a call.
+			// This is a condition of the session rather than of the message, and
+			// the user needs to see it whether or not this particular message
+			// would have added anything.
 			inferStatus = "unavailable";
 			syncInferStatus(ctx);
 			return;
 		}
 		const raw = messageText(message);
-		if (!asksSomething(raw)) return;
 		const existing = parseSuggestions(raw).suggestions;
 		const seq = latestAssistantSeq;
 		inferStatus = "waiting";
@@ -1007,7 +1030,7 @@ export default function piSnippetTui(pi: any): void {
 	 * persistence that did not happen.
 	 */
 	const persist = (): string => {
-		// The three persisted fields, passed straight from state: `saveSettings`
+		// The four persisted fields, passed straight from state: `saveSettings`
 		// is what decides the file's shape (it drops an undefined `inferModel`
 		// rather than writing a null), so spelling the same normalization out
 		// here again would just be a second place to keep it in step.
@@ -1016,6 +1039,7 @@ export default function piSnippetTui(pi: any): void {
 				mode: state.mode,
 				hotkeysEnabled: state.hotkeysEnabled,
 				inferModel: state.inferModel,
+				inferStyle: state.inferStyle,
 			},
 			settingsFile,
 		);
@@ -1062,11 +1086,46 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/**
+	 * Apply a reply-style choice by name — `reemit` or `options`, whatever the
+	 * menu offers. Shared by `/snippets style`'s typed form and `pickInferStyle`.
+	 */
+	const applyInferStyle = async (value: string, ctx: any): Promise<void> => {
+		const picked = INFER_STYLES.find((style) => style === value);
+		if (picked === undefined) {
+			ctx.ui.notify(
+				`"${value}" is not a second-model style — pick ${INFER_STYLES.join(" or ")}`,
+				"warning",
+			);
+			return;
+		}
+		if (picked === state.inferStyle) return;
+		state.inferStyle = picked;
+		infer.rearm(); // a style change is a fresh start, same as a model change
+		ctx.ui.notify(`Second model style: ${STYLE_SUMMARY[picked]}${persist()}`);
+	};
+
+	/**
+	 * Pick which shape the second model replies in — a live A/B, not a settled
+	 * default (see `shared/inferred.ts`): both `reemit` and `options` stay
+	 * reachable here so real use can tell them apart.
+	 */
+	const pickInferStyle = async (ctx: any): Promise<void> => {
+		const options = INFER_STYLES.map(
+			(style) => `${STYLE_LABEL[style]}${style === state.inferStyle ? " (current)" : ""}`,
+		);
+		const choice = await ctx.ui.select("How the second model replies — both stay live, pick one to try", options);
+		if (!choice) return;
+		const picked = INFER_STYLES.find((style) => choice.startsWith(STYLE_LABEL[style]));
+		if (picked === undefined) return;
+		await applyInferStyle(picked, ctx);
+	};
+
+	/**
 	 * Pick which layers run.
 	 *
 	 * Four options rather than a toggle and a sub-toggle, because the two
 	 * layers are independent and each costs something different: layer 1 costs
-	 * a system-prompt injection, layer 2 costs a request per question-bearing
+	 * a system-prompt injection, layer 2 costs a request per assistant
 	 * message. A second `select` rather than four entries in the first one —
 	 * they are one choice, and cycling blind through four states on a single
 	 * "toggle" entry is worse than being shown them.
@@ -1093,18 +1152,20 @@ export default function piSnippetTui(pi: any): void {
 	/**
 	 * Pick the second model.
 	 *
-	 * In the TUI this prefills `/snippets model <current pin>` in the composer
-	 * and hands focus back, rather than opening a blocking dialog: `ui.input()`
-	 * has no autocomplete (`ExtensionUIDialogOptions` offers a timeout and an
-	 * abort signal, nothing else), and only a slash command's own
-	 * `getArgumentCompletions` gets pi's tab-completing dropdown — the same one
-	 * `/model` uses. Elsewhere (RPC, print) there is no composer to prefill, so
-	 * this keeps the old typed prompt, which is also what scripted callers
-	 * (`docs/rpc.md`) already drive.
+	 * In the TUI this prefills `/snippets model ` (always blank, never the
+	 * current pin — picking "change" means you're about to replace it, so
+	 * there's nothing worth pre-filling) in the composer and hands focus back,
+	 * rather than opening a blocking dialog: `ui.input()` has no autocomplete
+	 * (`ExtensionUIDialogOptions` offers a timeout and an abort signal, nothing
+	 * else), and only a slash command's own `getArgumentCompletions` gets pi's
+	 * tab-completing dropdown — the same one `/model` uses. Elsewhere (RPC,
+	 * print) there is no composer to prefill, so this keeps the old typed
+	 * prompt, which is also what scripted callers (`docs/rpc.md`) already
+	 * drive.
 	 */
 	const pickModel = async (ctx: any): Promise<void> => {
 		if (ctx.mode === "tui") {
-			ctx.ui.setEditorText(`/snippets model ${state.inferModel ?? ""}`);
+			ctx.ui.setEditorText("/snippets model ");
 			ctx.ui.notify("Tab-completes provider/id — leave it empty and press Enter to reset to the default");
 			tui?.requestRender?.();
 			return;
@@ -1120,37 +1181,64 @@ export default function piSnippetTui(pi: any): void {
 
 	pi.registerCommand("snippets", {
 		description:
-			"Toggle inline suggestions or their shortcuts; register or remove the click handler; `model` sets the second model",
+			"Toggle inline suggestions or their shortcuts; register or remove the click handler; `model` sets the second model, `style` its reply shape",
 		/**
-		 * Only the `model` subcommand tab-completes, folded in from the former
+		 * `model` and `style` tab-complete; `model` folded in from the former
 		 * standalone `/snippet-model` — two top-level commands for one feature
-		 * was the annoyance being fixed. Per `CombinedAutocompleteProvider`
-		 * (`pi-tui`'s `autocomplete.js`), `prefix` here is everything typed after
-		 * `/snippets ` and a returned `value` replaces that whole span, which is
-		 * why completions below are prefixed back with `model `. `lastCtx` rather
-		 * than a ctx argument for the same reason `/model`'s own completions work
-		 * this way (see interactive-mode.js): `getArgumentCompletions` gets only
-		 * the typed prefix. `syncClicks` sets `lastCtx` on `session_start`, before
-		 * a user could type anything, so a registry is always there by the time
+		 * was the annoyance being fixed, and `style` followed the same shape
+		 * rather than menu-only, so both live A/B arms are scriptable the same
+		 * way. Per `CombinedAutocompleteProvider` (`pi-tui`'s `autocomplete.js`),
+		 * `prefix` here is everything typed after `/snippets ` and a returned
+		 * `value` replaces that whole span, which is why completions below are
+		 * prefixed back with `model ` / `style `. `lastCtx` rather than a ctx
+		 * argument for the same reason `/model`'s own completions work this way
+		 * (see interactive-mode.js): `getArgumentCompletions` gets only the typed
+		 * prefix. `syncClicks` sets `lastCtx` on `session_start`, before a user
+		 * could type anything, so a registry is always there by the time
 		 * completion runs.
 		 */
 		getArgumentCompletions: (prefix: string) => {
 			const spaceIdx = prefix.indexOf(" ");
 			if (spaceIdx === -1) {
-				if (prefix !== "" && !"model".startsWith(prefix)) return null;
-				return [{ value: "model ", label: "model", description: "Set the second model" }];
+				const subcommands = [
+					{ value: "model ", label: "model", description: "Set the second model" },
+					{ value: "style ", label: "style", description: "Set the second model's reply style" },
+				];
+				const matches = subcommands.filter((s) => s.label.startsWith(prefix));
+				return matches.length > 0 ? matches : null;
 			}
-			if (prefix.slice(0, spaceIdx) !== "model") return null;
-			const available: PiModel[] = lastCtx?.modelRegistry?.getAvailable?.() ?? [];
-			if (available.length === 0) return null;
-			const items = modelCompletions(prefix.slice(spaceIdx + 1), available);
-			return items.length > 0 ? items.map((item) => ({ ...item, value: `model ${item.value}` })) : null;
+			const sub = prefix.slice(0, spaceIdx);
+			const query = prefix.slice(spaceIdx + 1);
+			if (sub === "model") {
+				// Nothing typed yet: `modelCompletions("", …)` returns the whole
+				// catalogue unfiltered — hundreds of models, "unusable as a menu"
+				// (that's the reason this is a tab-completer and not a `select`
+				// at all). The dropdown should only come up once there's an
+				// actual filtered suggestion to show, not dump everything on a
+				// bare prefill.
+				if (query === "") return null;
+				const available: PiModel[] = lastCtx?.modelRegistry?.getAvailable?.() ?? [];
+				if (available.length === 0) return null;
+				const items = modelCompletions(query, available);
+				return items.length > 0 ? items.map((item) => ({ ...item, value: `model ${item.value}` })) : null;
+			}
+			if (sub === "style") {
+				// Only two values ever exist, so unlike `model` there is no
+				// catalogue to dump — showing both on an empty query is fine.
+				const matches = INFER_STYLES.filter((style) => style.startsWith(query));
+				return matches.length > 0 ? matches.map((style) => ({ value: `style ${style}`, label: style })) : null;
+			}
+			return null;
 		},
 		handler: async (args: string, ctx: any) => {
 			if (!ctx.hasUI) return;
 			const trimmed = args.trim();
 			if (trimmed === "model" || trimmed.startsWith("model ")) {
 				await applyModelPin(trimmed.slice("model".length).trim(), ctx);
+				return;
+			}
+			if (trimmed === "style" || trimmed.startsWith("style ")) {
+				await applyInferStyle(trimmed.slice("style".length).trim(), ctx);
 				return;
 			}
 			if (flagDisabled) {
@@ -1176,12 +1264,15 @@ export default function piSnippetTui(pi: any): void {
 					`Suggestions: ${MODE_SUMMARY[state.mode]} — change`,
 					`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
 					`Second model: ${model.id}${model.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
+					`Second model style: ${STYLE_SUMMARY[state.inferStyle]} — change`,
 					...clickRows,
 				],
 			);
 			if (!choice) return;
 			if (choice.startsWith("Suggestions:")) {
 				await pickMode(ctx);
+			} else if (choice.startsWith("Second model style:")) {
+				await pickInferStyle(ctx);
 			} else if (choice.startsWith("Second model:")) {
 				await pickModel(ctx);
 			} else if (choice.startsWith("Register click handler")) {
