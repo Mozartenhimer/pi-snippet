@@ -90,12 +90,17 @@ export function buildChipUrl(token: string, msg: string, index: number): string 
  * malformed value must be a miss rather than a coerced index — `NaN`, a
  * negative, or a float would all index into `undefined` eventually, but only
  * by luck.
+ *
+ * The pattern is what enforces that: one to three digits can only produce a
+ * whole number from 0 to 999, so `0` is the single remaining way to name a
+ * chip that does not exist. A `Number.isSafeInteger` check stood beside it
+ * and could not fail for anything the pattern admits.
  */
 export function parseChipPath(path: string): { msg: string; index: number } | null {
 	const match = /^\/?([0-9a-f]{1,16})\/c([0-9]{1,3})$/.exec(path.trim());
 	if (!match) return null;
 	const index = Number(match[2]);
-	if (!Number.isSafeInteger(index) || index < 1) return null;
+	if (index < 1) return null;
 	return { msg: match[1] as string, index };
 }
 

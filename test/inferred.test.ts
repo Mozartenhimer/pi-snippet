@@ -7,6 +7,7 @@ import {
 	locateAnchors,
 	unfence,
 } from "../src/shared/inferred.js";
+import { MAX_SUGGESTIONS_PER_MESSAGE } from "../src/shared/suggestions.js";
 import { mergeSuggestions, toTuiMarkdown } from "../src/shared/tui-markdown.js";
 
 describe("asksSomething", () => {
@@ -186,5 +187,83 @@ describe("mergeSuggestions — layer 1 and layer 2 paint as one stream", () => {
 		expect(
 			toTuiMarkdown("No questions here.", { isStreaming: false, enabled: true }),
 		).toBe("No questions here.");
+	});
+});
+
+/**
+ * Boundary cases the ordinary tests never reach, found by MC/DC. Each one is
+ * a way an anchor could be mislocated: a question mark that sits after a code
+ * block rather than inside one, an occurrence that stops just short of code,
+ * an empty anchor, and the runaway cap.
+ */
+describe("asksSomething — a question outside the code that precedes it", () => {
+	it("sees a question mark that follows a fenced block", () => {
+		expect(asksSomething("```\nrm -rf /\n```\nShall I run that?")).toBe(true);
+	});
+
+	it("sees a question mark that follows an inline span", () => {
+		expect(asksSomething("`git push` next?")).toBe(true);
+	});
+
+	it("still ignores one inside the block", () => {
+		expect(asksSomething("```\nwhat?\n```\nDone.")).toBe(false);
+	});
+});
+
+describe("locateAnchors — boundaries", () => {
+	it("places an anchor that ends immediately before a code span", () => {
+		const text = "Run it now `--force` instead.";
+		expect(locateAnchors(text, ["Run it now"])).toEqual([
+			{ text: "Run it now", start: 0, end: 10, order: 0 },
+		]);
+	});
+
+	it("places an anchor that begins immediately after a code span", () => {
+		const text = "Use `--force` and retry.";
+		const [found] = locateAnchors(text, ["and retry"]);
+		expect(text.slice(found!.start, found!.end)).toBe("and retry");
+	});
+
+	it("drops an empty anchor rather than matching everywhere", () => {
+		expect(locateAnchors("anything at all", [""])).toEqual([]);
+	});
+});
+
+describe("extractAnchors — the runaway cap", () => {
+	it("adds nothing to a message that already carries the maximum chips", () => {
+		const full = Array.from(
+			{ length: MAX_SUGGESTIONS_PER_MESSAGE },
+			(_, i) => `<snippet>reply ${i}</snippet>`,
+		).join(" and also ");
+		const reply = `${full} and also <snippet>one more</snippet>`;
+		expect(extractAnchors(reply, `${full} and also one more`)).toEqual([]);
+	});
+});
+
+describe("mergeSuggestions — an anchor flush against the ends of its text", () => {
+	it("paints an anchor that starts the message", () => {
+		const merged = mergeSuggestions("Rebuild it, or wait?", undefined, ["Rebuild it"]);
+		expect(merged.nodes[0]).toEqual({
+			type: "suggestion",
+			text: "Rebuild it",
+			index: 0,
+			start: 0,
+		});
+	});
+
+	it("paints an anchor that ends the message", () => {
+		const text = "Shall I wait for CI";
+		const merged = mergeSuggestions(text, undefined, ["wait for CI"]);
+		expect(merged.nodes.at(-1)).toEqual({
+			type: "suggestion",
+			text: "wait for CI",
+			index: 0,
+			start: 8,
+		});
+	});
+
+	it("paints an anchor that is the whole message", () => {
+		const merged = mergeSuggestions("ship it", undefined, ["ship it"]);
+		expect(merged.nodes).toEqual([{ type: "suggestion", text: "ship it", index: 0, start: 0 }]);
 	});
 });

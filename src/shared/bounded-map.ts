@@ -21,9 +21,12 @@
  */
 export function putBounded<K, V>(map: Map<K, V>, key: K, value: V, limit: number): void {
 	map.set(key, value);
-	while (map.size > limit) {
-		const oldest = map.keys().next();
-		if (oldest.done) break;
-		map.delete(oldest.value);
+	// Walking the keys rather than repeatedly taking `keys().next()` avoids a
+	// `done` check that could never fire — `map.size > limit` guarantees a key
+	// exists — and deleting the current key during iteration is defined
+	// behavior for a Map.
+	for (const oldest of map.keys()) {
+		if (map.size <= limit) break;
+		map.delete(oldest);
 	}
 }
