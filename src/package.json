@@ -1,0 +1,7 @@
+{
+	"pi": {
+		"extensions": [
+			"extension/pi-snippet-tui.ts"
+		]
+	}
+}
