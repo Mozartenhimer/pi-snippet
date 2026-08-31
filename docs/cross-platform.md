@@ -203,8 +203,8 @@ Facts that shape it:
 - So the handler must be registered on the **Windows** side and relay inward:
   `wsl.exe -d <distro> -e <handler> <url>` runs the existing python3 handler
   inside the distro, where the unix socket is an ordinary local socket. No
-  bridge, no forwarding flag, no per-session setup — strictly better than the
-  SSH case, which needs `ssh -L` today.
+  bridge, no forwarding flag, no per-session setup — like the SSH case since
+  the relay replaced `ssh -L`, and without even the one-time client line.
 - pi already detects this environment for its own keybindings:
   `useWindowsKeybindings()` treats `win32` and `linux + (WSL_DISTRO_NAME ||
   WSL_INTEROP)` alike. The extension's `overSsh()` needs the same companion —

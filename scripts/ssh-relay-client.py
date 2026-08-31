@@ -4,19 +4,25 @@
 Runs inside the *client* container (see scripts/docker-ssh-env.sh); driven by
 scripts/ssh-click-docker.py, which is the thing to run by hand.
 
-The sibling harness (ssh-click-client.py) asserts the shipped `ssh -L` path,
-which costs a flag on every ssh invocation. This asserts the successor
-(docs/ssh-back-handler.md): the click finds no socket on this machine, reads
-the relay host off the client's own config, and tunnels *itself* back through
-a fresh ssh — so the only per-machine setup is the one-time bootstrap line,
-which is taken from where the remote /snippets put it rather than hardcoded.
+The only delivery there is (docs/ssh-back-handler.md): the click finds no
+socket on this machine, reads the relay hosts off the client's own config, and
+tunnels *itself* back through a fresh ssh — so the only per-machine setup is
+the one-time bootstrap line, which is taken from where the remote /snippets put
+it rather than hardcoded. The `ssh -L` forward this used to be tested beside is
+gone; there is no toggle here at all.
 
 Deliberately hostile to a false pass: the local socket directory is removed and
 any forward killed first, so nothing here can succeed by the shipped path.
+
+The phase that matters most is the automatic opt-in, asserted twice: the
+session that was already running starts painting URLs on the next message, and
+a pi restarted on the server (without wiping its agent directory) paints them
+from the first one. Nothing is asked of the user either time. That is what the
+stamp the bootstrap line left there is for.
 """
 import json, os, pty, re, select, shutil, subprocess, sys, time
 
-ROWS, COLS = 30, 200  # wide, so the bootstrap line lands unwrapped
+ROWS, COLS = 30, 800  # wide, so the bootstrap line lands unwrapped
 SUGGESTION = "rebuild the solution"
 REPLY = f"Two ways. Want me to <snippet>{SUGGESTION}</snippet>?"
 HANDLER = os.path.expanduser("~/.local/share/pi-snippet/open-handler")
@@ -40,23 +46,52 @@ remote_env = {
 	"LINES": str(ROWS), "COLUMNS": str(COLS),
 }
 envstr = " ".join(f"{k}={json.dumps(v)}" for k, v in remote_env.items())
-remote_cmd = (
-	"rm -rf /tmp/pi-agent /tmp/pi-snippet.json /tmp/pi-snippet-$(id -u); mkdir -p /tmp/pi-agent; "
+pi_cmd = (
+	"mkdir -p /tmp/pi-agent; "
 	f"env {envstr} pi --no-session --no-extensions "
 	"-e /repo/test/fixtures/mock-llm.js -e /repo/dist/extension/pi-snippet-tui.js "
 	"--provider mockllm --model mock-small"
 )
+RESET = "rm -rf /tmp/pi-agent /tmp/pi-snippet.json /tmp/pi-snippet-$(id -u); "
 
 raw = bytearray()
 DSR = re.compile(rb"\x1b\[6n")
 
-pid, master = pty.fork()
-if pid == 0:
-	os.environ["TERM"] = "xterm-ghostty"
-	os.execvp("ssh", ["ssh", "-tt", "-o", "BatchMode=yes", HOST, remote_cmd])
-
 import fcntl, struct, termios
-fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+
+
+def open_session(reset=True):
+	"""Start pi on the server through a pty, as an interactive user would.
+
+	`reset` wipes the server-side agent directory first — which is why the
+	second session does not: the stamp the bootstrap left there is the thing
+	under test, and deleting it would test nothing at all.
+	"""
+	global pid, master, raw
+	raw = bytearray()
+	pid, master = pty.fork()
+	if pid == 0:
+		os.environ["TERM"] = "xterm-ghostty"
+		os.execvp("ssh", ["ssh", "-tt", "-o", "BatchMode=yes", HOST,
+		                  (RESET if reset else "") + pi_cmd])
+	fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+
+
+def close_session():
+	send(b"\x03")
+	pump(0.5)
+	try:
+		os.close(master)
+	except OSError:
+		pass
+	try:
+		os.kill(pid, 9)
+		os.waitpid(pid, 0)
+	except (OSError, ChildProcessError):
+		pass
+
+
+open_session()
 
 
 def pump(seconds):
@@ -140,6 +175,15 @@ def bail(message):
 check("pi started over ssh", wait_for("Inline suggestions", 30) or wait_for("auto", 10))
 pump(2)
 
+# --- before any setup, a chip over SSH is a bare label ------------------------
+# The click would resolve on this machine, where nothing answers, so a URL here
+# would be a click that dies in silence.
+clear_composer(); send(b"go\r")
+check("assistant replied", wait_for("Two ways", 30))
+pump(3)
+check("chip carries no URL before the client is set up",
+      re.search(r"\x1b\]8;[^;]*;pisnip://", text()) is None)
+
 # --- the one-time bootstrap, taken from where the remote put it ---------------
 clear_composer(); send(b"/snippets\r")
 check("menu opened", wait_for("SSH relay setup", 20))
@@ -148,8 +192,7 @@ send(b"\r")
 check("bootstrap line went to the composer", wait_for("pi-snippet-remotes.json", 20))
 pump(2)
 
-lines = re.findall(r"mkdir -p ~/\.pi/agent && printf [^\r\n\x1b]*pi-snippet-remotes\.json",
-                   flat(text()))
+lines = re.findall(r"mkdir -p ~/\.pi/agent && python3 -c [^\r\n\x1b]*", flat(text()))
 check("bootstrap line is complete and unwrapped", len(lines) > 0)
 if not lines:
 	bail("no bootstrap line on screen")
@@ -168,22 +211,29 @@ try:
 	written = json.load(open(REMOTES))
 except (OSError, ValueError):
 	written = None
-check("client config written by that line", written == {"host": HOST})
+check("client config written by that line", written == {"hosts": [HOST]})
+# The second half of the same line, and the whole point of it: run from here,
+# it proves the alias reaches the server without a password and leaves a stamp
+# there naming this client. Nothing was installed on the server to do it.
+check("bootstrap line carries the ssh-back too", f"ssh {HOST} " in retargeted)
+stamped = subprocess.run(
+	["ssh", "-o", "BatchMode=yes", HOST, "ls /tmp/pi-agent/pi-snippet-relay-clients"],
+	capture_output=True, text=True)
+check("server now has a stamp for this client",
+      stamped.returncode == 0 and stamped.stdout.strip() != "")
+print(f"    stamped={stamped.stdout.strip()!r}", flush=True)
 
-# --- paint URLs (a chip over SSH is bare until the user opts in) --------------
-clear_composer(); send(b"/snippets\r")
-wait_for("Remote clicking", 15)
-check("selected the Remote clicking row", select_row("Remote clicking"))
-send(b"\r")
-check("remote clicking on", wait_for("Remote clicking on", 20))
-check("first enable says no click yet", wait_for("No click yet", 25))
-pump(2)
-
+# --- the next message paints URLs, with nothing asked of the user -------------
+# The stamp the line above left is read on every message, so the session that
+# was already running picks it up: no toggle, no reconnect, no resume. An
+# already-painted message keeps its bare labels — pi caches a finished message
+# on its text — which is why this asserts against a new one.
 clear_composer(); send(b"go\r")
-check("assistant replied", wait_for("Two ways", 30))
+check("assistant replied again", wait_for("Two ways", 30))
+check("session says it can relay now", wait_for("relays clicks back", 20))
 pump(3)
 urls = re.findall(r"\x1b\]8;[^;]*;(pisnip://[^\x1b\x07]+)", text())
-check("chip carries a pisnip:// URL", len(urls) > 0)
+check("chip now carries a pisnip:// URL", len(urls) > 0)
 if not urls:
 	bail("no chip URL painted")
 url = urls[-1]
@@ -193,15 +243,8 @@ print(f"    chip url={url}", flush=True)
 shutil.rmtree(SOCKDIR, ignore_errors=True)
 check("no local socket directory on the client", not os.path.exists(SOCKDIR))
 
-# --- re-arm the verify window, then click -------------------------------------
-clear_composer(); send(b"/snippets\r"); wait_for("Remote clicking", 15)
-select_row("Remote clicking"); send(b"\r")
-check("toggling off reported off", wait_for("Remote clicking off", 20))
-pump(1)
-clear_composer(); send(b"/snippets\r"); wait_for("Remote clicking", 15)
-select_row("Remote clicking"); send(b"\r")
-check("verify window re-armed", wait_for("Remote clicking on", 20))
-
+# --- the click, resolved here and delivered there -----------------------------
+clear_composer()
 before = len(raw)
 started = time.time()
 rc = subprocess.run([HANDLER, url], capture_output=True, timeout=30)
@@ -209,9 +252,48 @@ elapsed = time.time() - started
 print(f"    handler exit={rc.returncode} in {elapsed:.1f}s", flush=True)
 check("handler exited 0 (it relayed over ssh)", rc.returncode == 0)
 check("handler said nothing on the way", rc.stdout == b"" and rc.stderr == b"")
-check("click made the whole trip, with no forward", wait_for("Verified", 25))
+pump(3)
 after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
 check("suggestion text landed in the composer", SUGGESTION in after)
+
+# --- more than one remote: the handler finds the right one by itself ----------
+# The list is the allowlist and the order is a guess, so a host that answers
+# nothing must cost a handshake and not the click.
+CACHE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp",
+                     "pi-snippet-relay-" + url.split("/")[2])
+json.dump({"hosts": ["dark.invalid", HOST]}, open(REMOTES, "w"))
+if os.path.exists(CACHE):
+	os.unlink(CACHE)
+clear_composer()
+before = len(raw)
+started = time.time()
+rc = subprocess.run([HANDLER, url], capture_output=True, timeout=60)
+print(f"    two-host handler exit={rc.returncode} in {time.time() - started:.1f}s", flush=True)
+check("click lands past a host that answers nothing", rc.returncode == 0)
+pump(3)
+after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
+check("suggestion text landed anyway", SUGGESTION in after)
+check("the host that answered is remembered",
+      os.path.exists(CACHE) and open(CACHE).read().strip() == HOST)
+
+# --- the point of the stamp: the next session needs no toggle at all ----------
+close_session()
+open_session(reset=False)
+check("pi restarted on the server", wait_for("Inline suggestions", 30) or wait_for("auto", 10))
+check("second session says it can relay, unprompted",
+      wait_for("relays clicks back", 20))
+clear_composer(); send(b"go\r")
+check("assistant replied in the second session", wait_for("Two ways", 30))
+pump(3)
+auto_urls = re.findall(r"\x1b\]8;[^;]*;(pisnip://[^\x1b\x07]+)", text())
+check("chips carry URLs from the first message, nothing asked", len(auto_urls) > 0)
+if auto_urls:
+	before = len(raw)
+	rc = subprocess.run([HANDLER, auto_urls[-1]], capture_output=True, timeout=30)
+	check("a click on those chips relays and lands", rc.returncode == 0)
+	pump(3)
+	after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
+	check("suggestion text landed in the second session", SUGGESTION in after)
 
 # --- and the unconfigured case still fails quietly ----------------------------
 os.unlink(REMOTES)

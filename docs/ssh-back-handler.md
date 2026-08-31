@@ -1,11 +1,12 @@
 # The ssh-back handler: clicking over SSH without per-session forwards
 
-*Shipped. Register the handler on the **client** machine, and a click that
-finds no local socket relays itself back over SSH to the host the session
-lives on — no per-session forward, no flag, no resume. The manual recipe stays
-beside it: over SSH, `/snippets` → "Remote clicking" paints chip URLs again and
-prints the `ssh -L` argument that carries this session's socket across the
-wire. Both feed the same socket protocol and the same verify window.*
+*Shipped, and now the only way a click crosses the wire. Register the handler
+on the **client** machine, run one line there, and a click that finds no local
+socket relays itself back over SSH to the host the session lives on — no
+per-session forward, no flag, no resume, no toggle. The `ssh -L` recipe this
+document was written beside has since been removed: it reached the same socket
+from the same machines and cost a flag on every connection (see "What it
+replaces" at the end).*
 
 *This document was the design, and is kept as written except where the build
 settled a question differently — those points are marked **As built**. The
@@ -28,9 +29,9 @@ inside (or beside) the pi process.
 
 So the question is never "how does a click become a message" — that machinery
 exists on both ends, unmodified. It is "how does the click cross the wire
-backwards". Two answers exist. The manual forward tunnels the socket through
-the user's own ssh command (shipped). This document tunnels the *click*
-through a fresh ssh invocation instead.
+backwards". Two answers exist. The manual forward tunnelled the socket through
+the user's own ssh command; this tunnels the *click* through a fresh ssh
+invocation instead, and is what shipped.
 
 ## The shape
 
@@ -72,28 +73,66 @@ silently — a regeneration updates both.
    `{ "host": "mybox" }` — an ssh-config alias resolves through the user's own
    `~/.ssh/config`, so keys, ports, and jump hosts are already the user's
    problem, solved the way they already solve them.
+
+   **As built** the file carries a *list* — `{ "hosts": ["mybox", "work"] }`,
+   with the older `{ "host": … }` still read as a one-entry one — and the
+   handler tries them in order until a session answers. Which makes the second
+   remote free: the bootstrap line adds rather than replaces, and so does the
+   `/snippets` row. It is still an allowlist and nothing else; see *Learning
+   the mapping* below for what stops the walk being paid on every click.
 3. `mkdir -p /tmp/pi-snippet-$(id -u)` — or any directory the handler scans.
    The registration flow can do this; it is the same directory the handler
    would use locally anyway.
 
-**As built.** (2) is the `/snippets` row *SSH relay host: … — change*, and it
-also clears: an empty entry deletes the file rather than recording a host that
-means nothing. `PI_SNIPPET_REMOTES` overrides the path, as `PI_SNIPPET_SETTINGS`
+**As built.** (2) is the `/snippets` row *SSH relay hosts: … — add or clear*,
+and it also clears: an empty entry deletes the file rather than recording a
+host that means nothing. `PI_SNIPPET_REMOTES` overrides the path, as `PI_SNIPPET_SETTINGS`
 does for the toggles. (3) turned out to be unnecessary — the handler tries each
 candidate and falls through to the relay when none answers, so a directory that
 does not exist is just another miss. Nothing needs creating on the client.
 
+**As built, and the piece that finishes it.** The client also registers itself
+with the server, in the same one-time line: `ssh <host> 'mkdir -p D && cd D &&
+touch "${SSH_CONNECTION%% *}"'`, where `D` is `pi-snippet-relay-clients` inside
+the server's own agent directory. One empty file per client address — a
+directory of stamps rather than a JSON map because the writer is a shell
+command arriving over `ssh`, and merging is the one thing a one-line shell
+command cannot do safely. Two clients of the same host never overwrite each
+other.
+
+That stamp is what makes the relay cost *nothing* per session. The remote
+session reads it at every session start and after every message
+(`relayClientSeen()`), and paints chip URLs by itself when the client on the
+other end of `SSH_CONNECTION` is one that has registered — no `/snippets`, no
+toggle. It does not expire: what it records is that a connection from that
+client succeeded, which stays true. A client that later stops relaying costs a
+chip that looks clickable and is not, which is the same silence a dead session
+already gives — and an unknown or malformed address falls back to bare labels,
+which is what an SSH session does anyway. A toggle the user works themselves is
+final for the session: the automatic answer never overrides a deliberate *off*.
+
+Two things it deliberately does not do. It never trusts the client to name
+itself — the address is read from `SSH_CONNECTION` *in the remote shell*, which
+is why the ssh-back is single-quoted — and it never registers a client that has
+not connected: the stamp exists because a connection from the client succeeded
+non-interactively, which is exactly what a relayed click needs and what a
+password-prompting alias would fail. The bootstrap line proves the whole path
+at setup time instead of at first click.
+
 The bootstrap is in-band, because the remote pi cannot touch the client
-desktop: the remote `/snippets` → *Remote clicking* entry puts the command to
-run on the client into the composer (the editor, not a toast — toasts clip at
+desktop: the remote `/snippets` puts the command to run on the client into the
+composer (the editor, not a toast — toasts clip at
 the terminal width and coalesce within a render tick, both measured live).
 One copy-paste, once per client machine — not per session, which is the
-entire point.
+entire point. As built it is two commands joined by `&&`: the config write, and
+the ssh-back that stamps this client on the server. The second half is dropped
+(and the toast says so) when the server's agent directory cannot go in a
+single-quoted shell word, which only an exotic `PI_CODING_AGENT_DIR` causes: an
+unpasteable line is worse than a shorter one, and the per-session toggle still
+works.
 
-**As built.** It is its own row, *SSH relay setup*, rather than more output
-from *Remote clicking*: the two write different things to the one composer, and
-a user who wanted the forward should not have to read past the paste for the
-path they did not choose. The line carries the address the client reached this
+**As built.** It is the row *SSH relay setup*, and — since the forward was
+removed — the only row `/snippets` offers over SSH. The line carries the address the client reached this
 host at (`SSH_CONNECTION`'s third field) — the remote knows that much and
 nothing about the client's aliases, so the accompanying toast says to prefer
 one. It is a `printf` into the config file rather than an instruction to run
@@ -135,6 +174,10 @@ connection. Four rules keep that boring:
    any pasteable `pisnip://` link an instruction to SSH somewhere; the config
    file is the allowlist. If per-host disambiguation is ever needed, it is a
    key *into* the config, never a host literal.
+
+   **As built** that is exactly what the token cache under *Learning the
+   mapping* is: the URL's token selects among hosts the config already names,
+   and a cached name that has since left the file selects nothing at all.
 2. **Fixed argv end to end.** The handler execs `ssh` with the URL as one
    argument; nothing is shell-interpolated. One subtlety: `ssh host cmd arg`
    hands `cmd arg` to the *remote* shell as a single command line, so the URL
@@ -180,14 +223,29 @@ collapses it to the socket write. The remote `/snippets` recipe should say so
 in one line rather than trying to configure it (touching the user's ssh
 config is out of bounds for an extension).
 
-## What it replaces, and what it doesn't
+## What it replaced
 
-The manual `ssh -L` forward stays. It needs no client config file, works
-today, and suits a user who wants the tunnel visible in their own ssh
-invocation. The relay replaces its *per-session* cost — no flag, no resume
-dance, no token in the command line — with a one-time per-client setup. Both
-paths feed the same socket protocol, the same verify window in `/snippets`,
-and the same Alt+N fallback underneath.
+The manual `ssh -L` forward was kept beside this at first — it needed no client
+config file, it worked, and it suited a user who wanted the tunnel visible in
+their own ssh invocation. It is gone now. Both paths always fed the same socket
+protocol from the same pair of machines; the forward's price was per session
+(a flag on every connection, a resume after every reconnect, a socket named by
+a token that dies with the process) against the relay's one paste per client
+machine. With the automatic opt-in above there was nothing left for a toggle to
+choose between, so the toggle, the recipe, the verify window and the harness
+that drove them went too.
+
+Two things went with it, and neither is coming back on its own:
+
+- A client that can only ssh back **interactively** — a password-only login —
+  has no way in, because the relay runs `BatchMode=yes` precisely so a click
+  can never hang on a prompt. A key or an agent-forwarded identity is now a
+  requirement, not a convenience.
+- Anyone who preferred the tunnel visible in their own command line has no such
+  option; what the relay does is visible in the handler and in this document
+  instead.
+
+`Alt+N` is unaffected and remains the in-band path that needs no wire at all.
 
 ## Testing
 
@@ -203,11 +261,17 @@ notifications).
 builds them, `scripts/ssh-click-docker.py` drives them — because a relay to
 `localhost` can pass while the click never leaves the machine, and the whole
 feature is the wire. `ssh-relay-client.py` removes the local socket directory
-and kills any forward before it clicks, so nothing there can succeed by the
-shipped path; `ssh-click-client.py` asserts that shipped path beside it. The
-bootstrap line is not hardcoded in the harness — it is scraped out of the
+before it clicks, so nothing there can answer by accident, and asserts the
+honest default first: a chip painted before the bootstrap line is run carries
+no URL at all. The bootstrap line is not hardcoded in the harness — it is scraped out of the
 composer where *SSH relay setup* put it and then run, so the paste a user is
 given is the paste that is tested.
+
+**As built** the harness asserts the automatic opt-in twice, which is the point
+of the whole thing: the session that was already running starts painting URLs
+on the next message, and a pi restarted on the server (*without* wiping its
+agent directory) paints them from the first — landing a real click both times,
+with nothing asked of the user.
 
 `test/ssh-relay.test.ts` covers what does not need two machines by *running*
 the generated handler with a recording `ssh` stub on its PATH: the local socket
@@ -215,7 +279,10 @@ still wins over the relay, the relay argv carries `BatchMode=yes` and the
 timeout, a malformed URL exits before anything shells out, a relay failure is a
 quiet non-zero, and the unconfigured case writes the stamp file once. Those
 tests skip where python3 is absent rather than passing silently — `npm test`
-may not assume an interpreter it does not install.
+may not assume an interpreter it does not install. The remote halves are run the same
+way: the relay one-liner against a live socket (it delivers, and stamps the
+client), and the ssh-back through `bash -c` (the quoting is the thing under
+test, so it is not reassembled by hand).
 
 ## Open questions
 
@@ -223,9 +290,18 @@ may not assume an interpreter it does not install.
   an macOS client needs its own dispatch (Launch Services + a stub app).
   Out of scope here, but the config file and relay protocol should not
   assume Linux on the *client* beyond the handler itself.
-- **Multiple simultaneous remotes.** One default host covers the ordinary
-  case. Per-token overrides in the config map are the escape hatch; whether
-  they are ever worth UI is deferred until someone needs them.
-- **Learning the mapping.** The remote pi knows which host it is on
-  (`SSH_CONNECTION`) and could print it for the config; it cannot write the
-  client's config. Keep it that way.
+- **Multiple simultaneous remotes.** *Answered.* The config carries a list and
+  the handler walks it, so a click on a chip from any of them lands on the one
+  whose session answers. There are no per-token entries in the file and there
+  should not be: a token is a session, sessions are many and short, and a file
+  the user edits should hold the machines they use.
+- **Learning the mapping.** *Answered, and it is the handler that learns it.*
+  Which host answered for a token is written to
+  `$XDG_RUNTIME_DIR/pi-snippet-relay-<token>` and read back to put that host
+  first, so the walk above is paid once per session rather than once per click.
+  A hint about *order* only: a remembered name no longer in the config file is
+  ignored, which keeps the file the allowlist and a tampered cache worth
+  nothing, and the runtime directory expires it for free at logout. What stays
+  true is the rule this question was really about — the remote pi knows which
+  host it is on and offers it for the config; it never writes that config
+  itself. The stamp it *does* receive (above) travels the other way.

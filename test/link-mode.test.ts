@@ -13,7 +13,7 @@
  * parentheses when the terminal has no OSC 8, so a `pisnip://` URL on such a
  * terminal would trail every chip on screen.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,7 +48,7 @@ afterEach(() => {
 function setup(
 	settings: Partial<typeof DEFAULT_SETTINGS>,
 	env: Record<string, string>,
-	opts: { selectReply?: string } = {},
+	opts: { selectReply?: string | ((options: string[]) => string | undefined) } = {},
 ) {
 	writeFileSync(
 		process.env.PI_SNIPPET_SETTINGS!,
@@ -101,6 +101,7 @@ function setup(
 
 	const tui = new FakeTui();
 	const offered: string[] = [];
+	const titles: string[] = [];
 	const notes: string[] = [];
 	const editors: string[] = [];
 	const ctx: any = {
@@ -116,9 +117,14 @@ function setup(
 				notes.push(message);
 			},
 			setStatus: () => {},
-			select: async (_title: string, choices: string[]) => {
+			select: async (title: string, choices: string[]) => {
+				titles.push(title);
 				offered.push(...choices);
-				return opts.selectReply;
+				// A function answers each select by what it was offered, which is
+				// how a test drives a row and then the picker behind it.
+				return typeof opts.selectReply === "function"
+					? opts.selectReply(choices)
+					: opts.selectReply;
 			},
 			setFooter: (factory?: any) => {
 				if (factory) factory(tui);
@@ -136,7 +142,13 @@ function setup(
 		tui,
 		notes,
 		editors,
+		titles,
 		say,
+		/**
+		 * A session beginning — where the extension decides, among other
+		 * things, whether this client has earned chip URLs without asking.
+		 */
+		start: (reason = "startup") => handlers.get("session_start")!({ reason }, ctx),
 		menu: async () => {
 			offered.length = 0;
 			await command!("", ctx);
@@ -186,6 +198,26 @@ describe("clicking on by default, by the terminal", () => {
 		expect(choices).toContainEqual(expect.stringContaining("Register click handler"));
 	});
 
+	it("gives the click socket back when suggestions are turned off", async () => {
+		// The listener is cheap but not free, and nothing can paint a URL that
+		// names it once the layer is off — so it does not stay bound.
+		const sockets = mkdtempSync(join(tmpdir(), "pi-snippet-sock-"));
+		const h = setup(
+			{},
+			{ TERM_PROGRAM: "ghostty", PI_SNIPPET_SOCKET_DIR: sockets },
+			{
+				selectReply: (options) =>
+					options.find((o) => o.startsWith("Suggestions:"))
+					?? options.find((o) => o.startsWith("off —")),
+			},
+		);
+		h.say(CHIPPED);
+		expect(h.render(CHIPPED)).toMatch(/\]\(pisnip:\/\//);
+		expect(readdirSync(sockets)).toHaveLength(1);
+		await h.menu(); // Suggestions → off
+		expect(readdirSync(sockets)).toHaveLength(0);
+	});
+
 	it("offers removal to someone with a handler, instead", async () => {
 		process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
 		const h = setup({}, { TERM_PROGRAM: "ghostty" });
@@ -211,36 +243,64 @@ describe("over SSH", () => {
 		expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
 	});
 
-	it("offers remote clicking instead of desktop registration", async () => {
+	it("offers the one-time relay setup instead of desktop registration", async () => {
+		// The desktop that would dispatch a click is the user's own machine, so
+		// registering a handler here would write into a desktop nobody is
+		// looking at. What this side can offer is the line to run there.
 		const h = setup({}, SSH_ENV);
 		const choices = await h.menu();
-		expect(choices).toContainEqual(expect.stringContaining("Remote clicking: off"));
+		expect(choices).toContainEqual(expect.stringContaining("SSH relay setup"));
 		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
 	});
 
-	it("enabling paints URLs, prints the forward line, and verifies on a real click", async () => {
-		const h = setup({}, SSH_ENV, { selectReply: "Remote clicking: on" });
-		const pending = h.menu();
-		// The enable path ends in a verify window waiting for a click; deliver
-		// one through the socket it just opened, in the handler's wire format —
-		// exactly how a click forwarded over ssh -L arrives.
-		await new Promise((resolve) => setTimeout(resolve, 300));
-		const recipe = h.editors.find((text) => text.includes("-L "));
-		expect(recipe).toMatch(/mkdir -p \/tmp\/pi-snippet-\$\(id -u\) && ssh -L \/tmp\/pi-snippet-\$\(id -u\)\/[0-9a-f]{8}\.sock:(\S+) <host>/);
-		const socketPath = recipe!.match(/ssh -L \/tmp\/pi-snippet-\$\(id -u\)\/[0-9a-f]{8}\.sock:(\S+)/)![1]!;
-		await new Promise<void>((resolve, reject) => {
-			const s = connect(socketPath, () => {
-				s.write("00000000/c1\n");
-				s.end();
-				resolve();
-			});
-			s.on("error", reject);
+	/** A client that has set relayed clicking up with this host. */
+	const stampClient = (address: string): void => {
+		const dir = process.env.PI_SNIPPET_RELAY_CLIENTS!;
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, address), "", "utf8");
+	};
+
+	const CONNECTION = { TERM_PROGRAM: "ghostty", SSH_CONNECTION: "10.1.0.7 51234 10.1.0.9 22" };
+
+	describe("the relay, once the client has been set up", () => {
+		// The relay costs nothing per session, so neither should turning it on:
+		// a stamp left here by the client is the evidence that a chip URL will
+		// reach somebody, and it is the only thing this decision rests on.
+		it("paints URLs from the session start, with nothing asked of the user", async () => {
+			stampClient("10.1.0.7");
+			const h = setup({}, CONNECTION);
+			h.start();
+			h.say(CHIPPED);
+			expect(h.render(CHIPPED)).toMatch(/\]\(pisnip:\/\/[0-9a-f]{8}\/[0-9a-f]{8}\/c1\)/);
+			expect(h.notes.join("\n")).toContain("relays clicks back");
+			const choices = await h.menu();
+			// And says which delivery is painting them, because "on" with no
+			// forward in sight reads like a bug to anyone who set one up before.
+			expect(h.titles.join("\n")).toContain("relayed back over SSH");
+			expect(choices).toContainEqual(expect.stringContaining("set up already"));
 		});
-		await pending;
-		expect(h.render(CHIPPED)).toMatch(/\]\(pisnip:\/\/[0-9a-f]{8}\/[0-9a-f]{8}\/c1\)/);
-		expect(h.notes.join("\n")).toContain("Verified:");
-		// And off again: bare labels, socket closed, nothing left to hang vitest.
-		await h.menu();
-		expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
+
+		it("keeps the honest default for a client it has never heard from", () => {
+			stampClient("10.1.0.8"); // some other machine, same host
+			const h = setup({}, CONNECTION);
+			h.start();
+			h.say(CHIPPED);
+			expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
+			expect(h.notes.join("\n")).not.toContain("relays clicks back");
+		});
+
+		it("says nothing twice, and nothing at all off SSH", () => {
+			stampClient("10.1.0.7");
+			const local = setup({}, { TERM_PROGRAM: "ghostty" });
+			local.start();
+			// A stamp is about clicks arriving from elsewhere; here the desktop
+			// is the one in front of the user and clicking was never off.
+			expect(local.notes.join("\n")).not.toContain("relays clicks back");
+
+			const h = setup({}, CONNECTION);
+			h.start();
+			h.start("resume");
+			expect(h.notes.filter((note) => note.includes("relays clicks back"))).toHaveLength(1);
+		});
 	});
 });

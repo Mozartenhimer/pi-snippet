@@ -587,27 +587,41 @@ from silence, which is the difference from macOS.
 
 **Over SSH** the delivery path inverts: the click is resolved on the machine
 in front of the user, whose desktop has no socket for this session — the
-socket lives here. Without an explicit opt-in the chips therefore paint as
-bare labels (`Alt+N` still works — it is in-band), and `/snippets` offers
-*Remote clicking*: session-scoped, it paints URLs again and puts the
-`ssh -L` command that forwards this session's socket to the client into the
-composer, verified by the user's own first click.
+socket lives here. Without evidence that a click can get back, the chips
+therefore paint as bare labels (`Alt+N` still works — it is in-band), and
+`/snippets` offers *SSH relay setup*: the one-time line to run on the client,
+which is the whole of the setup and the whole of the UI.
 
-Two deliveries reach that socket, and the opt-in above governs only whether
-URLs are painted — not which one carries the click:
+**One delivery, and no toggle.** The handler on the client, having found no
+local socket, reads the hosts from `~/.pi/agent/pi-snippet-remotes.json` and
+tunnels the click back through a fresh `ssh`, which runs a fixed,
+self-contained python one-liner that writes to the socket on the far end
+(`docs/ssh-back-handler.md`). Nothing is installed remotely. More than one host
+is ordinary and needs no choosing: they are tried in order until a session
+answers, and which one did is remembered per session token in the runtime
+directory so the walk is paid once rather than per click. That memory only
+reorders the list — a name no longer in the file is ignored, so the file stays
+the allowlist.
 
-1. **The forward.** The `ssh -L` recipe above, run by the user. No client
-   configuration, visible in their own ssh invocation, and paid for on every
-   connection and every resume.
-2. **The relay** (`docs/ssh-back-handler.md`). The handler on the client, having
-   found no local socket, reads a host from `~/.pi/agent/pi-snippet-remotes.json`
-   and tunnels the click back through a fresh `ssh`, which runs a fixed,
-   self-contained python one-liner that writes to the socket on the far end.
-   Nothing is installed remotely. One paste per client machine, nothing per
-   session; `/snippets` over SSH offers *SSH relay setup*, which puts that
-   paste — carrying the address the client reached this host at, from
-   `SSH_CONNECTION` — into the composer, and `/snippets` on the client offers
-   *SSH relay host* to set or clear it.
+The evidence that turns the bare labels back into URLs is a stamp the client
+leaves here: the bootstrap line's second half ssh-es straight back, writing
+`pi-snippet-relay-clients/<address>` in this host's agent directory. A session
+whose `SSH_CONNECTION` names a stamped client paints URLs — in the session that
+is already running, from the next message, and in every session after it, from
+the first. It is never taken from anything the client *says*, only from the far
+end of a connection it actually made, and it does not expire, because what it
+records — that such a connection succeeded — does not either. `/snippets` on
+the client offers *SSH relay hosts* to add one by hand or clear the list.
+
+**The `ssh -L` forward is gone.** It was the first delivery and the reason the
+opt-in above used to be a per-session toggle: a socket forward named by this
+session's token, re-established on every connection and every resume, with a
+verify window because the user's own first click was the only probe. The relay
+reaches the same socket from the same machines with none of that. What went
+with it: a client that cannot ssh back non-interactively — a password-only
+login, since the relay runs `BatchMode=yes` — no longer has a way in, and
+neither does anyone who wanted the tunnel visible in their own ssh invocation.
+Both were judged worth the one delivery path.
 
 The host never comes from the URL: a hostname in a chip URL would make any
 pasteable `pisnip://` link an instruction to SSH somewhere, so the config file
