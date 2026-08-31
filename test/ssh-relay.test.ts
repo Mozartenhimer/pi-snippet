@@ -85,6 +85,36 @@ describe("the relay host on file", () => {
 		expect(remotesPath({ ...env, PI_SNIPPET_REMOTES: explicit })).toBe(explicit);
 		expect(remotesPath(env)).toBe(join(home, "agent", "pi-snippet-remotes.json"));
 	});
+
+	it("treats an empty PI_SNIPPET_REMOTES as no override at all", () => {
+		// An exported-but-empty variable is the ordinary shape of "unset" in a
+		// shell, and a relay host written to "" would be written nowhere.
+		expect(remotesPath({ ...env, PI_SNIPPET_REMOTES: "" })).toBe(
+			join(home, "agent", "pi-snippet-remotes.json"),
+		);
+	});
+
+	it("reads nothing out of valid JSON that is not an object", () => {
+		mkdirSync(join(home, "agent"), { recursive: true });
+		for (const body of ["123", '"mybox"', "true"]) {
+			writeFileSync(remotesPath(env), body, "utf8");
+			expect(readRelayHost(env), body).toBeNull();
+		}
+	});
+
+	it("clears a host that was never written, without complaining", () => {
+		// Clearing is idempotent: the state the user asked for is the state they
+		// are already in, and a missing file is not a failure to report.
+		expect(writeRelayHost("", env)).toBe(true);
+		expect(readRelayHost(env)).toBeNull();
+	});
+
+	it("refuses to record a host the handler would refuse to use", () => {
+		// Checked on the way in as well as on the way out — a value that cannot
+		// be relayed to should never reach the file in the first place.
+		expect(writeRelayHost("mybox; id", env)).toBe(false);
+		expect(readRelayHost(env)).toBeNull();
+	});
 });
 
 describe("the relay command", () => {
