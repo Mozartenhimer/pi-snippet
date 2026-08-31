@@ -45,6 +45,7 @@
  */
 
 import { fuzzyFilter } from "@earendil-works/pi-tui";
+import { putBounded } from "../shared/bounded-map.js";
 import {
 	buildInferPrompt,
 	extractAnchors,
@@ -238,12 +239,7 @@ export class InferenceEngine {
 	}
 
 	private remember(key: string, value: string[]): void {
-		this.cache.set(key, value);
-		while (this.cache.size > CACHE_LIMIT) {
-			const oldest = this.cache.keys().next();
-			if (oldest.done) break;
-			this.cache.delete(oldest.value);
-		}
+		putBounded(this.cache, key, value, CACHE_LIMIT);
 	}
 
 	/**

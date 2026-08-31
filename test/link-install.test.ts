@@ -135,6 +135,16 @@ describe("uninstall", () => {
 		expect(result.clean).toBe(false);
 	});
 
+	it("does not report a mimeapps.list that never named us as removed", () => {
+		install(env);
+		const path = mimeappsLocations(env)[0]!;
+		seedMimeapps(path, ["[Default Applications]", "text/plain=org.gnome.gedit.desktop", ""].join("\n"));
+		const result = uninstall(env);
+		expect(result.removed).not.toContain(path);
+		expect(read(path)).toContain("text/plain=org.gnome.gedit.desktop");
+		expect(result.clean).toBe(true);
+	});
+
 	it("is idempotent on a machine that was never installed", () => {
 		const result = uninstall(env);
 		expect(result.removed).toEqual([]);

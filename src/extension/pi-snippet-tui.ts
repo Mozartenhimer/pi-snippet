@@ -33,6 +33,7 @@
  * when it stops) and held in extension state, never built during
  * transformation (PRD §5.2 hard rule).
  */
+import { putBounded } from "../shared/bounded-map.js";
 import { DigitChord } from "../shared/digit-chord.js";
 import { asksSomething } from "../shared/inferred.js";
 import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix, MAX_SUGGESTIONS_PER_MESSAGE } from "../shared/suggestions.js";
@@ -63,6 +64,13 @@ interface TextBlock {
 /** What a closing tag starts with; `</snippet   >` is legal, so match the head. */
 const CLOSE_TAG_PREFIX = `</${SNIPPET_TAG}`;
 
+/**
+ * Two tables for the same four modes, which is not an oversight: the picker has
+ * a whole line per option and can afford to say what the mode does, while the
+ * `/snippets` menu shows the current mode inside a line that already carries a
+ * stat and a click status. One table would either truncate the explanation or
+ * push the menu line past the terminal width.
+ */
 /** How the mode picker names each mode, and what the label promises. */
 const MODE_LABEL: Record<SnippetMode, string> = {
 	off: "off — no chips at all",
@@ -283,12 +291,7 @@ export default function piSnippetTui(pi: any): void {
 	const LINK_TARGET_LIMIT = 64;
 	const rememberLinkTargets = (text: string, chips: string[]): void => {
 		if (text.length === 0) return;
-		linkTargets.set(messageKey(text), { chips });
-		while (linkTargets.size > LINK_TARGET_LIMIT) {
-			const oldest = linkTargets.keys().next();
-			if (oldest.done) break;
-			linkTargets.delete(oldest.value);
-		}
+		putBounded(linkTargets, messageKey(text), { chips }, LINK_TARGET_LIMIT);
 	};
 
 	/**
@@ -331,6 +334,10 @@ export default function piSnippetTui(pi: any): void {
 		for (const block of message.content) {
 			if (block.type !== "text") continue;
 			const raw = block.text ?? "";
+			// Both shapes, even though they are the same string for most blocks:
+			// the caller hashes each form, and a duplicate hash costs one wasted
+			// map write, while a missing one costs a chip that is addressable but
+			// never painted. Cheap in the direction that fails safely.
 			forms.push(raw, raw.trim());
 			if (opts?.streaming) {
 				forms.push(visibleStreamingPrefix(raw), visibleStreamingPrefix(raw.trim()));
@@ -619,6 +626,13 @@ export default function piSnippetTui(pi: any): void {
 		state.addressable = [];
 		if (!isEnabled()) return;
 		const branch = ctx.sessionManager.getBranch();
+		// Two passes over the same array on purpose, because they answer
+		// different questions: *every* assistant message has to be re-indexed for
+		// clicking, while only the last one decides what Alt+N addresses. Folding
+		// them together would mean either indexing only the tip (a click on older
+		// scrollback then resolves against an empty map) or letting an older
+		// message's chips win the numbering.
+		//
 		// Every assistant message in the branch gets repainted through the
 		// transformer on resume/fork/reload, each with the URL it had before —
 		// messageKey and (as of the session-id token) linkToken are both
@@ -797,23 +811,19 @@ export default function piSnippetTui(pi: any): void {
 		const layer1 = parseSuggestions(messageText(message)).suggestions.length;
 		if (layer1 + known.length >= MAX_SUGGESTIONS_PER_MESSAGE) return;
 		const next = [...known, anchor];
-		inferred.set(raw, next);
-		while (inferred.size > INFERRED_LIMIT) {
-			const oldest = inferred.keys().next();
-			if (oldest.done) break;
-			inferred.delete(oldest.value);
-		}
+		putBounded(inferred, raw, next, INFERRED_LIMIT);
 		// Index the answer under every form of the message the transformer can
 		// be handed (a trimmed block among them) — without this the chips stay
-		// addressable but never paint.
+		// addressable but never paint. Deliberately a second map rather than a
+		// lookup through the first: `inferred` is keyed by the message text the
+		// second model was asked about, which is what the engine's cache and the
+		// sequence checks above are keyed by too, while this one is keyed by the
+		// hash of whatever fragment the transformer happens to be handed. One map
+		// cannot be both without the transformer having to guess which shape of
+		// the message it is looking at.
 		for (const form of messageForms(message)) {
 			if (form.length === 0) continue;
-			inferredByForm.set(messageKey(form), next);
-			while (inferredByForm.size > INFERRED_LIMIT) {
-				const oldest = inferredByForm.keys().next();
-				if (oldest.done) break;
-				inferredByForm.delete(oldest.value);
-			}
+			putBounded(inferredByForm, messageKey(form), next, INFERRED_LIMIT);
 		}
 		indexMessageForLinks(message);
 		setAddressable(suggestionsFromMessage(message));
@@ -1045,11 +1055,15 @@ export default function piSnippetTui(pi: any): void {
 	 * persistence that did not happen.
 	 */
 	const persist = (): string => {
+		// The three persisted fields, passed straight from state: `saveSettings`
+		// is what decides the file's shape (it drops an undefined `inferModel`
+		// rather than writing a null), so spelling the same normalization out
+		// here again would just be a second place to keep it in step.
 		const ok = saveSettings(
 			{
 				mode: state.mode,
 				hotkeysEnabled: state.hotkeysEnabled,
-				...(state.inferModel ? { inferModel: state.inferModel } : {}),
+				inferModel: state.inferModel,
 			},
 			settingsFile,
 		);
@@ -1191,28 +1205,31 @@ export default function piSnippetTui(pi: any): void {
 				ctx.ui.notify("Inline suggestions are off for this session (--no-suggestions)");
 				return;
 			}
-				const clickRows = overSsh()
-					? [
+			// At most one click row, chosen three ways. Over SSH the desktop that
+			// would dispatch a click is the user's own machine, so the only thing
+			// this session can offer is the socket forward; off Linux there is no
+			// handler to register at all; otherwise it is register-or-remove —
+			// one condition, not the two inverted copies of it this used to ask.
+			const clickRows = overSsh()
+				? [
 						`Remote clicking: ${remoteClicks ? "on" : "off"} — ${
 							remoteClicks
 								? "print the forward line again and verify a click"
 								: "make Ctrl+click work over SSH (forwards this session's socket)"
-							}`,
-					  ]
-					: [
-						...(process.platform === "linux" && !linkInstall.isInstalled()
-							? ["Register click handler — one-time desktop setup, needed before Ctrl+click works"]
-							: []),
-						...(process.platform === "linux" && linkInstall.isInstalled()
-							? ["Remove click handler — unregister pisnip:// from the desktop"]
-							: []),
-					  ];
+						}`,
+					]
+				: process.platform !== "linux"
+					? []
+					: linkInstall.isInstalled()
+						? ["Remove click handler — unregister pisnip:// from the desktop"]
+						: ["Register click handler — one-time desktop setup, needed before Ctrl+click works"];
+			const model = effectiveModel();
 			const choice = await ctx.ui.select(
 				`${snippetStats(ctx)} — ${clickStatusLabel()}`,
 				[
 					`Suggestions: ${MODE_SUMMARY[state.mode]} — change`,
 					`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
-					`Second model: ${effectiveModel().id}${effectiveModel().fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
+					`Second model: ${model.id}${model.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
 					...clickRows,
 				],
 			);
