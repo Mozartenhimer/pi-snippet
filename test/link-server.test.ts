@@ -111,6 +111,21 @@ describe("the click socket", () => {
 		},
 	);
 
+	it("is idempotent: a second start returns the path the first one bound", () => {
+		const inserted: string[] = [];
+		const server = serverFor({ inserted });
+		try {
+			const first = server.start();
+			expect(first).not.toBeNull();
+			// Nothing rebinds and nothing moves — `syncClicks` calls `start()`
+			// whenever it runs, and `installClickHandler` calls it again.
+			expect(server.start()).toBe(first);
+			expect(server.socketPath).toBe(first);
+		} finally {
+			server.stop();
+		}
+	});
+
 	it("starts over debris from a killed session", () => {
 		const inserted: string[] = [];
 		const first = serverFor({ inserted });

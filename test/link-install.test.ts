@@ -18,6 +18,7 @@ import {
 	install,
 	isInstalled,
 	mimeappsLocations,
+	probe,
 	uninstall,
 } from "../src/extension/link-install.js";
 
@@ -239,5 +240,67 @@ describe("isInstalled — half of an installation", () => {
 		install(env);
 		rmSync(join(env.XDG_DATA_HOME!, "applications", "pi-snippet-open.desktop"));
 		expect(isInstalled(env)).toBe(false);
+	});
+});
+
+/**
+ * Firing the URL at an opener.
+ *
+ * `probe` is the one part of registration that leaves the process, and nothing
+ * had ever run it: the container has a real `gio` and a real `gdbus`, so a test
+ * that let it reach them would dispatch a live URL at whatever desktop was
+ * listening. `PATH` is replaced rather than prepended to for that reason —
+ * every opener the probe tries is then one of these or genuinely absent.
+ */
+describe("probing the openers", () => {
+	const realPath = process.env.PATH ?? "";
+
+	afterEach(() => {
+		process.env.PATH = realPath;
+	});
+
+	/** A bin directory holding only what is named, and a PATH holding only it. */
+	function onlyOnPath(files: Record<string, string>): void {
+		const bin = join(home, "probe-bin");
+		mkdirSync(bin, { recursive: true });
+		for (const [name, body] of Object.entries(files)) {
+			writeFileSync(join(bin, name), body, "utf8");
+			chmodSync(join(bin, name), 0o755);
+		}
+		process.env.PATH = bin;
+	}
+
+	it("names every opener that is not installed, and finds none", async () => {
+		onlyOnPath({});
+		const result = await probe("pisnip://a1b2c3d4/deadbeef/c1", async () => true);
+		expect(result.opener).toBeNull();
+		expect(result.tried).toEqual(["gdbus (absent)", "gio (absent)", "xdg-open (absent)"]);
+	});
+
+	it("tells an opener that failed apart from one that is missing", async () => {
+		onlyOnPath({ "xdg-open": "#!/bin/sh\nexit 3\n" });
+		const result = await probe("pisnip://a1b2c3d4/deadbeef/c1", async () => true);
+		expect(result.opener).toBeNull();
+		expect(result.tried).toEqual(["gdbus (absent)", "gio (absent)", "xdg-open (failed)"]);
+	});
+
+	it("reports the opener whose dispatch came back", async () => {
+		onlyOnPath({ "xdg-open": "#!/bin/sh\nexit 0\n" });
+		const result = await probe("pisnip://a1b2c3d4/deadbeef/c1", async () => true);
+		expect(result.opener).toBe("xdg-open");
+		// Only the openers before it were tried; it is the last word.
+		expect(result.tried).toEqual(["gdbus (absent)", "gio (absent)"]);
+	});
+
+	it("keeps going past an opener that ran but delivered nothing", async () => {
+		onlyOnPath({ "gio": "#!/bin/sh\nexit 0\n", "xdg-open": "#!/bin/sh\nexit 0\n" });
+		const seen: boolean[] = [];
+		// The first dispatch goes nowhere, the second arrives.
+		const result = await probe("pisnip://a1b2c3d4/deadbeef/c1", async () => {
+			seen.push(true);
+			return seen.length > 1;
+		});
+		expect(result.opener).toBe("xdg-open");
+		expect(result.tried).toEqual(["gdbus (absent)", "gio (no round trip)"]);
 	});
 });

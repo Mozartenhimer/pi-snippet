@@ -273,8 +273,12 @@ export class InferenceEngine {
 		if (this.stoodDown) return null;
 
 		const model = resolveInferenceModel(host, this.getPin());
-		const registry = host.modelRegistry;
-		if (!model || !registry) return null;
+		// A model in hand means there was a registry to resolve it against:
+		// `resolveInferenceModel` returns undefined before anything else when
+		// `host.modelRegistry` is missing, so the `|| !registry` that stood here
+		// could not fire.
+		if (!model) return null;
+		const registry = host.modelRegistry as PiRegistry;
 
 		const run = (async (): Promise<string[] | null> => {
 			const controller = new AbortController();
