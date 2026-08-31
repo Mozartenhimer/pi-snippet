@@ -92,24 +92,24 @@ candidate and falls through to the relay when none answers, so a directory that
 does not exist is just another miss. Nothing needs creating on the client.
 
 **As built, and the piece that finishes it.** The client also registers itself
-with the server, in the same one-time line: `ssh <host> 'mkdir -p D && touch
-D/"${SSH_CONNECTION%% *}"'`, where `D` is `pi-snippet-relay-clients` inside the
-server's own agent directory. One empty file per client address, its mtime the
-last time that client was heard from — a directory of stamps rather than a JSON
-map because the two writers that are not this code are a shell and a python
-one-liner running through `ssh`, and merging is the one thing a one-line shell
+with the server, in the same one-time line: `ssh <host> 'mkdir -p D && cd D &&
+touch "${SSH_CONNECTION%% *}"'`, where `D` is `pi-snippet-relay-clients` inside
+the server's own agent directory. One empty file per client address — a
+directory of stamps rather than a JSON map because the writer is a shell
+command arriving over `ssh`, and merging is the one thing a one-line shell
 command cannot do safely. Two clients of the same host never overwrite each
-other, and freshness is `mtime`.
+other.
 
 That stamp is what makes the relay cost *nothing* per session. The remote
 session reads it at every session start and after every message
-(`relayClientSeen()`, 30-day expiry), and paints chip URLs by itself when the
-client on the other end of `SSH_CONNECTION` is one it has heard a relayed click
-from — no `/snippets`, no toggle. Every relayed click re-stamps, so an active
-client never ages out; an expired, unknown or malformed one falls back to the
-honest default of bare labels, which is what an SSH session does anyway. A
-toggle the user works themselves is final for the session: the automatic answer
-never overrides a deliberate *off*.
+(`relayClientSeen()`), and paints chip URLs by itself when the client on the
+other end of `SSH_CONNECTION` is one that has registered — no `/snippets`, no
+toggle. It does not expire: what it records is that a connection from that
+client succeeded, which stays true. A client that later stops relaying costs a
+chip that looks clickable and is not, which is the same silence a dead session
+already gives — and an unknown or malformed address falls back to bare labels,
+which is what an SSH session does anyway. A toggle the user works themselves is
+final for the session: the automatic answer never overrides a deliberate *off*.
 
 Two things it deliberately does not do. It never trusts the client to name
 itself — the address is read from `SSH_CONNECTION` *in the remote shell*, which

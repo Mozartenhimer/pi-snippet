@@ -13,7 +13,7 @@
  * parentheses when the terminal has no OSC 8, so a `pisnip://` URL on such a
  * terminal would trail every chip on screen.
  */
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -226,16 +226,11 @@ describe("over SSH", () => {
 		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
 	});
 
-	/** A client this host has heard a relayed click from, at a chosen age. */
-	const stampClient = (address: string, ageMs = 0): void => {
+	/** A client that has set relayed clicking up with this host. */
+	const stampClient = (address: string): void => {
 		const dir = process.env.PI_SNIPPET_RELAY_CLIENTS!;
 		mkdirSync(dir, { recursive: true });
-		const path = join(dir, address);
-		writeFileSync(path, "", "utf8");
-		if (ageMs > 0) {
-			const when = new Date(Date.now() - ageMs);
-			utimesSync(path, when, when);
-		}
+		writeFileSync(join(dir, address), "", "utf8");
 	};
 
 	const CONNECTION = { TERM_PROGRAM: "ghostty", SSH_CONNECTION: "10.1.0.7 51234 10.1.0.9 22" };
@@ -265,14 +260,6 @@ describe("over SSH", () => {
 			h.say(CHIPPED);
 			expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
 			expect(h.notes.join("\n")).not.toContain("relays clicks back");
-		});
-
-		it("lets a client it has not heard from in a month go quiet again", () => {
-			stampClient("10.1.0.7", 31 * 24 * 60 * 60 * 1000);
-			const h = setup({}, CONNECTION);
-			h.start();
-			h.say(CHIPPED);
-			expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
 		});
 
 		it("never overrides a deliberate off, this session or the next", async () => {

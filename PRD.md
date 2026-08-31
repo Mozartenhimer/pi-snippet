@@ -594,14 +594,14 @@ puts the `ssh -L` command that forwards this session's socket to the client
 into the composer, verified by the user's own first click.
 
 That evidence, when it exists, makes the opt-in unnecessary: a client that has
-relayed a click back to this host leaves a stamp in its agent directory
-(`pi-snippet-relay-clients/<address>`, mtime-dated, 30-day expiry), and a
-session whose `SSH_CONNECTION` names a stamped client paints URLs from the
-start — no toggle, in this session or any after it. The stamp is written by
-the client, over ssh, either by the ssh-back half of the one-time bootstrap
-line or by the last click it relayed; it is never taken from anything the
-client *says*, only from the far end of a connection it actually made. A
-deliberate *off* is final for the session: the automatic answer never
+set relaying up with this host leaves a stamp in its agent directory
+(`pi-snippet-relay-clients/<address>`), and a session whose `SSH_CONNECTION`
+names a stamped client paints URLs from the start — no toggle, in this session
+or any after it. The stamp is written by the client, over ssh, by the ssh-back
+half of the one-time bootstrap line; it is never taken from anything the client
+*says*, only from the far end of a connection it actually made, and it does not
+expire, because what it records — that such a connection succeeded — does not
+either. A deliberate *off* is final for the session: the automatic answer never
 overrides an answer the user gave.
 
 Two deliveries reach that socket, and the opt-in above governs only whether

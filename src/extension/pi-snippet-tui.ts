@@ -286,15 +286,12 @@ export default function piSnippetTui(pi: any): void {
 	let remoteClicksRelayed = false;
 
 	/**
-	 * The address this session's client is connected from, per `SSH_CONNECTION`.
-	 *
-	 * The first field is the client, the third is this host (`sshServerHost()`
-	 * uses that one for the bootstrap line). Empty when the variable is unset —
-	 * `SSH_TTY` alone still means SSH, and means nothing is known about who is
-	 * at the other end.
+	 * A field of `SSH_CONNECTION`: 0 is the client, 2 is this host. Empty when
+	 * the variable is unset — `SSH_TTY` alone still means SSH, and means nothing
+	 * is known about either end.
 	 */
-	const sshClientAddress = (): string =>
-		(process.env.SSH_CONNECTION ?? "").split(/\s+/, 1).join("");
+	const sshConnection = (field: number): string =>
+		(process.env.SSH_CONNECTION ?? "").split(/\s+/)[field] ?? "";
 
 	/**
 	 * Paint chip URLs without being asked, when the relay is known to work for
@@ -310,7 +307,7 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const autoRemoteClicks = (ctx: any): void => {
 		if (!overSsh() || remoteClicks || remoteClicksChosen) return;
-		if (!linkInstall.relayClientSeen(sshClientAddress())) return;
+		if (!linkInstall.relayClientSeen(sshConnection(0))) return;
 		remoteClicks = true;
 		remoteClicksRelayed = true;
 		ctx.ui?.notify?.(
@@ -1122,10 +1119,8 @@ export default function piSnippetTui(pi: any): void {
 	 * is on, and must not write the client's config (docs/ssh-back-handler.md).
 	 */
 	const sshServerHost = (): string => {
-		const address = (process.env.SSH_CONNECTION ?? "").split(/\s+/)[2];
-		return address !== undefined && linkInstall.isRelayHost(address)
-			? address
-			: linkInstall.HOST_PLACEHOLDER;
+		const address = sshConnection(2);
+		return linkInstall.isRelayHost(address) ? address : linkInstall.HOST_PLACEHOLDER;
 	};
 
 	/**
@@ -1146,9 +1141,8 @@ export default function piSnippetTui(pi: any): void {
 		// alias works without a password and leaves the stamp `autoRemoteClicks`
 		// reads. From then on this host paints chip URLs for that client on its
 		// own, in this session and every one after it.
-		const register = linkInstall.relayRegisterCommand(host);
-		const parts = [linkInstall.relayConfigCommand(host), register];
-		ctx.ui.setEditorText(parts.filter((part): part is string => part !== null).join(" && "));
+		const bootstrap = linkInstall.relayBootstrapLine(host);
+		ctx.ui.setEditorText(bootstrap.line);
 		tui?.requestRender?.();
 		const named =
 			host === linkInstall.HOST_PLACEHOLDER
@@ -1156,9 +1150,9 @@ export default function piSnippetTui(pi: any): void {
 				: `(an ~/.ssh/config alias is usually better than ${host})`;
 		ctx.ui.notify(
 			`Run that on your machine ${named}. Register the click handler there once, and chips need no forward — `
-				+ (register === null
-					? "then turn remote clicking on here."
-					: "and no toggle here, in this session or the next."),
+				+ (bootstrap.stamps
+					? "and no toggle here, in this session or the next."
+					: "then turn remote clicking on here."),
 		);
 	};
 
@@ -1191,9 +1185,7 @@ export default function piSnippetTui(pi: any): void {
 		// Adding rather than replacing: one machine in front of several remotes
 		// is ordinary, and the handler tries them in order until a session
 		// answers, so naming a second one must not cost the first.
-		const written =
-			host === "" ? linkInstall.writeRelayHosts([]) : linkInstall.addRelayHost(host);
-		if (!written) {
+		if (!linkInstall.addRelayHost(host)) {
 			ctx.ui.notify(`Could not write ${linkInstall.remotesPath()}`, "warning");
 			return;
 		}
