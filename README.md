@@ -45,6 +45,35 @@ or keep loading it per run with `pi -e /path/to/pi-snippet/src/extension/pi-snip
 - **`Alt+N`** inserts the Nth suggestion of the most recent message. Beyond ten, hold Alt and type two digits; `Alt+0` means the tenth. A chip goes live the moment its closing tag arrives, so you can answer while the model is still writing, and numbering never shifts as more suggestions stream in.
 - **`/snippets`** chooses where chips come from — `off`, `tags only`, `tags + second model`, or `second model only` — and registers or removes the click handler. The choices are remembered in `~/.pi/agent/pi-snippet.json`. `--no-suggestions` disables everything for one session.
 
+## Over SSH: built, and never once used by a human
+
+Over SSH the click resolves on the machine in front of you, whose desktop has
+no socket for the session — that lives on the server. So chips paint as bare
+labels there until the client has registered itself, and `/snippets` offers one
+row, *SSH relay setup*, which puts a single line in the composer to run on your
+own machine. It writes the server into `~/.pi/agent/pi-snippet-remotes.json`
+and ssh-es straight back to leave a stamp saying this client can relay. From
+then on chips carry URLs in every session on that host — no toggle, no flag, no
+resume, nothing per session — and a click that finds no local socket tunnels
+itself back through a fresh `ssh` running a fixed python one-liner. Nothing is
+installed on the server, and the hosts a click may go to come from that config
+file, never from the URL.
+
+**Nobody has actually done this.** It is asserted end to end by an automated
+harness — two containers, real sshd, real pi on the server, real handler
+dispatch on the client, 29 checks including the bare-label default, the paste,
+the click, and a restarted session picking the stamp back up — and by the unit
+tests. That is not the same as a person connecting from their laptop to their
+own box and clicking a chip. Until someone does, treat all of the above as
+unproven: the failure modes are quiet by design, so the way it breaks for you
+will probably be a chip that does nothing.
+
+Two things it needs, both easy to miss: the click handler registered on the
+*client* (`/snippets` → *Register click handler* there, Linux only), and an ssh
+back to the server that works without typing anything — the relay runs
+`BatchMode=yes` so a click can never hang on a password prompt. The `ssh -L`
+socket forward that used to be the other way in has been removed.
+
 ## Inferred chips: not Fully baked yet
 
 Besides the tags the model writes itself, a second small model can read each finished message and add more tags. The mode exists and might work if you hold it right.
@@ -55,7 +84,13 @@ The model wraps reply-shaped spans of its prose in `<snippet>` tags. The extensi
 
 ## Roadmap
 
-- **SSH.** Clicking works locally today; the goal is for it to work fully over SSH too, with the terminal resolving the click on the client. The design sketch is in `docs/ssh-back-handler.md`.
+- **Someone using the SSH path for real.** It is written, documented
+  (`docs/ssh-back-handler.md`) and covered by a two-container harness, and no
+  human has been through it once. That is the next thing it needs, ahead of any
+  more code.
+- **macOS and Windows clients.** The handler is Linux-only — `xdg-open` and
+  `mimeapps.list` — so a Mac or Windows client cannot receive the click at all,
+  over SSH or otherwise. `docs/cross-platform.md` has what each would take.
 
 ## Tests
 
