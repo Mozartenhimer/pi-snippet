@@ -1147,9 +1147,8 @@ export default function piSnippetTui(pi: any): void {
 		// reads. From then on this host paints chip URLs for that client on its
 		// own, in this session and every one after it.
 		const register = linkInstall.relayRegisterCommand(host);
-		const setup =
-			`mkdir -p ~/.pi/agent && printf '{"host":"%s"}\\n' ${host} > ~/.pi/agent/pi-snippet-remotes.json`;
-		ctx.ui.setEditorText(register === null ? setup : `${setup} && ${register}`);
+		const parts = [linkInstall.relayConfigCommand(host), register];
+		ctx.ui.setEditorText(parts.filter((part): part is string => part !== null).join(" && "));
 		tui?.requestRender?.();
 		const named =
 			host === linkInstall.HOST_PLACEHOLDER
@@ -1163,20 +1162,25 @@ export default function piSnippetTui(pi: any): void {
 		);
 	};
 
+	/** The relay list as the menu and its toasts say it. */
+	const relayHostList = (hosts: string[]): string =>
+		hosts.length === 0 ? "none" : hosts.join(", ");
+
 	/**
-	 * Set or clear the host that clicks are relayed to when no local socket
-	 * answers — the client half of the same feature.
+	 * Add to, or clear, the hosts that clicks are relayed to when no local
+	 * socket answers — the client half of the same feature.
 	 *
 	 * Only ever a host, never a URL and never anything a shell could act on:
 	 * the value reaches an `ssh` argv inside the handler, so it is checked here
-	 * as well as there. An empty entry clears the file rather than writing a
-	 * host that means nothing.
+	 * as well as there. An entry adds to the list rather than replacing it,
+	 * since a second remote is ordinary and the handler walks them in order; an
+	 * empty entry clears the file rather than writing a host that means nothing.
 	 */
 	const pickRelayHost = async (ctx: any): Promise<void> => {
-		const current = linkInstall.readRelayHost();
+		const current = linkInstall.readRelayHosts();
 		const entry = await ctx.ui.input(
-			`Relay clicks for remote sessions to (currently ${current ?? "not set"})`,
-			"an ~/.ssh/config alias or hostname — leave empty to clear",
+			`Relay clicks for remote sessions to (currently ${relayHostList(current)})`,
+			"an ~/.ssh/config alias or hostname — adds to the list; empty clears it",
 		);
 		if (entry === undefined) return; // cancelled
 		const host = entry.trim();
@@ -1184,14 +1188,19 @@ export default function piSnippetTui(pi: any): void {
 			ctx.ui.notify(`Not a hostname or ssh alias: ${host}`, "warning");
 			return;
 		}
-		if (!linkInstall.writeRelayHost(host)) {
+		// Adding rather than replacing: one machine in front of several remotes
+		// is ordinary, and the handler tries them in order until a session
+		// answers, so naming a second one must not cost the first.
+		const written =
+			host === "" ? linkInstall.writeRelayHosts([]) : linkInstall.addRelayHost(host);
+		if (!written) {
 			ctx.ui.notify(`Could not write ${linkInstall.remotesPath()}`, "warning");
 			return;
 		}
 		ctx.ui.notify(
 			host === ""
-				? "SSH relay host cleared — clicks on remote sessions go back to failing quietly"
-				: `Clicks that find no local session now relay to ${host}`,
+				? "SSH relay hosts cleared — clicks on remote sessions go back to failing quietly"
+				: `Clicks that find no local session now try ${relayHostList(linkInstall.readRelayHosts())}`,
 		);
 	};
 
@@ -1382,7 +1391,7 @@ export default function piSnippetTui(pi: any): void {
 								// Which host a click goes back to when nothing local
 								// answers. Only useful once something dispatches
 								// pisnip:// to the handler.
-								`SSH relay host: ${linkInstall.readRelayHost() ?? "not set"} — change`,
+								`SSH relay hosts: ${relayHostList(linkInstall.readRelayHosts())} — add or clear`,
 							]
 						: ["Register click handler — one-time desktop setup, needed before Ctrl+click works"];
 			const model = effectiveModel();
@@ -1404,7 +1413,7 @@ export default function piSnippetTui(pi: any): void {
 				await toggleRemoteClicking(ctx);
 			} else if (choice.startsWith("SSH relay setup")) {
 				showRelaySetup(ctx);
-			} else if (choice.startsWith("SSH relay host:")) {
+			} else if (choice.startsWith("SSH relay hosts:")) {
 				await pickRelayHost(ctx);
 			} else if (choice.startsWith("Register click handler")) {
 				await installClickHandler(ctx);

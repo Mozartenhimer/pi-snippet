@@ -21,7 +21,7 @@ bootstrap line left there is for.
 """
 import json, os, pty, re, select, shutil, subprocess, sys, time
 
-ROWS, COLS = 30, 400  # wide, so the bootstrap line lands unwrapped
+ROWS, COLS = 30, 800  # wide, so the bootstrap line lands unwrapped
 SUGGESTION = "rebuild the solution"
 REPLY = f"Two ways. Want me to <snippet>{SUGGESTION}</snippet>?"
 HANDLER = os.path.expanduser("~/.local/share/pi-snippet/open-handler")
@@ -182,7 +182,7 @@ send(b"\r")
 check("bootstrap line went to the composer", wait_for("pi-snippet-remotes.json", 20))
 pump(2)
 
-lines = re.findall(r"mkdir -p ~/\.pi/agent && printf [^\r\n\x1b]*", flat(text()))
+lines = re.findall(r"mkdir -p ~/\.pi/agent && python3 -c [^\r\n\x1b]*", flat(text()))
 check("bootstrap line is complete and unwrapped", len(lines) > 0)
 if not lines:
 	bail("no bootstrap line on screen")
@@ -201,7 +201,7 @@ try:
 	written = json.load(open(REMOTES))
 except (OSError, ValueError):
 	written = None
-check("client config written by that line", written == {"host": HOST})
+check("client config written by that line", written == {"hosts": [HOST]})
 # The second half of the same line, and the whole point of it: run from here,
 # it proves the alias reaches the server without a password and leaves a stamp
 # there naming this client. Nothing was installed on the server to do it.
@@ -255,6 +255,26 @@ check("handler said nothing on the way", rc.stdout == b"" and rc.stderr == b"")
 check("click made the whole trip, with no forward", wait_for("Verified", 25))
 after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
 check("suggestion text landed in the composer", SUGGESTION in after)
+
+# --- more than one remote: the handler finds the right one by itself ----------
+# The list is the allowlist and the order is a guess, so a host that answers
+# nothing must cost a handshake and not the click.
+CACHE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp",
+                     "pi-snippet-relay-" + url.split("/")[2])
+json.dump({"hosts": ["dark.invalid", HOST]}, open(REMOTES, "w"))
+if os.path.exists(CACHE):
+	os.unlink(CACHE)
+clear_composer()
+before = len(raw)
+started = time.time()
+rc = subprocess.run([HANDLER, url], capture_output=True, timeout=60)
+print(f"    two-host handler exit={rc.returncode} in {time.time() - started:.1f}s", flush=True)
+check("click lands past a host that answers nothing", rc.returncode == 0)
+pump(3)
+after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
+check("suggestion text landed anyway", SUGGESTION in after)
+check("the host that answered is remembered",
+      os.path.exists(CACHE) and open(CACHE).read().strip() == HOST)
 
 # --- the point of the stamp: the next session needs no toggle at all ----------
 close_session()

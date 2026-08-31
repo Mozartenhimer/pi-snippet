@@ -32,15 +32,17 @@ import {
 	HOST_PLACEHOLDER,
 	install,
 	isClientAddress,
+	addRelayHost,
 	isRelayHost,
 	RELAY_CLIENT_TTL_MS,
-	readRelayHost,
+	readRelayHosts,
 	relayClientSeen,
 	relayClientsDir,
 	relayCommand,
+	relayConfigCommand,
 	relayRegisterCommand,
 	remotesPath,
-	writeRelayHost,
+	writeRelayHosts,
 } from "../src/extension/link-install.js";
 
 const hasPython = spawnSync("python3", ["-c", "pass"]).status === 0;
@@ -78,12 +80,53 @@ describe("the relay host on file", () => {
 		expect(isRelayHost("h".repeat(256))).toBe(false);
 	});
 
-	it("round-trips through the file, and clears with an empty host", () => {
-		expect(readRelayHost(env)).toBeNull();
-		expect(writeRelayHost("mybox", env)).toBe(true);
-		expect(readRelayHost(env)).toBe("mybox");
-		expect(writeRelayHost("", env)).toBe(true);
-		expect(readRelayHost(env)).toBeNull();
+	it("round-trips through the file, and clears with an empty list", () => {
+		expect(readRelayHosts(env)).toEqual([]);
+		expect(writeRelayHosts(["mybox"], env)).toBe(true);
+		expect(readRelayHosts(env)).toEqual(["mybox"]);
+		expect(writeRelayHosts([], env)).toBe(true);
+		expect(readRelayHosts(env)).toEqual([]);
+	});
+
+	it("keeps every host named, newest first, without duplicating one", () => {
+		// One machine in front of several remotes is the ordinary case; naming
+		// the second must not cost the first, and naming the same one twice
+		// must not grow the list the handler walks.
+		expect(addRelayHost("mybox", env)).toBe(true);
+		expect(addRelayHost("work", env)).toBe(true);
+		expect(readRelayHosts(env)).toEqual(["work", "mybox"]);
+		expect(addRelayHost("mybox", env)).toBe(true);
+		expect(readRelayHosts(env)).toEqual(["mybox", "work"]);
+	});
+
+	it("still reads the single-host file earlier versions wrote", () => {
+		mkdirSync(join(home, "agent"), { recursive: true });
+		writeFileSync(remotesPath(env), '{"host":"mybox"}', "utf8");
+		expect(readRelayHosts(env)).toEqual(["mybox"]);
+		// And adding to it migrates rather than dropping what was there.
+		expect(addRelayHost("work", env)).toBe(true);
+		expect(readRelayHosts(env)).toEqual(["work", "mybox"]);
+	});
+
+	it("drops the entries it cannot use and keeps the rest", () => {
+		// A file with one bad name in it should still relay to the good ones —
+		// but never to the bad one, and never to a host that is not a host.
+		mkdirSync(join(home, "agent"), { recursive: true });
+		writeFileSync(
+			remotesPath(env),
+			JSON.stringify({ hosts: ["good", "a b", 5, null, "good", "evil;id"], host: "legacy" }),
+			"utf8",
+		);
+		expect(readRelayHosts(env)).toEqual(["good", "legacy"]);
+		// `hosts` of the wrong type is not a list at all, and says nothing about
+		// `host` beside it.
+		writeFileSync(remotesPath(env), JSON.stringify({ hosts: "mybox", host: "legacy" }), "utf8");
+		expect(readRelayHosts(env)).toEqual(["legacy"]);
+	});
+
+	it("refuses to write a list carrying a host the handler would refuse", () => {
+		expect(writeRelayHosts(["good", "evil;id"], env)).toBe(false);
+		expect(readRelayHosts(env)).toEqual([]);
 	});
 
 	it("reads nothing out of a malformed or hostile file", () => {
@@ -91,7 +134,7 @@ describe("the relay host on file", () => {
 		const path = remotesPath(env);
 		for (const body of ["", "{", "[]", "null", '{"host":5}', '{"host":"a b"}', '{"nope":"x"}']) {
 			writeFileSync(path, body, "utf8");
-			expect(readRelayHost(env), body).toBeNull();
+			expect(readRelayHosts(env), body).toEqual([]);
 		}
 	});
 
@@ -113,22 +156,22 @@ describe("the relay host on file", () => {
 		mkdirSync(join(home, "agent"), { recursive: true });
 		for (const body of ["123", '"mybox"', "true"]) {
 			writeFileSync(remotesPath(env), body, "utf8");
-			expect(readRelayHost(env), body).toBeNull();
+			expect(readRelayHosts(env), body).toEqual([]);
 		}
 	});
 
-	it("clears a host that was never written, without complaining", () => {
+	it("clears a list that was never written, without complaining", () => {
 		// Clearing is idempotent: the state the user asked for is the state they
 		// are already in, and a missing file is not a failure to report.
-		expect(writeRelayHost("", env)).toBe(true);
-		expect(readRelayHost(env)).toBeNull();
+		expect(writeRelayHosts([], env)).toBe(true);
+		expect(readRelayHosts(env)).toEqual([]);
 	});
 
 	it("refuses to record a host the handler would refuse to use", () => {
 		// Checked on the way in as well as on the way out — a value that cannot
 		// be relayed to should never reach the file in the first place.
-		expect(writeRelayHost("mybox; id", env)).toBe(false);
-		expect(readRelayHost(env)).toBeNull();
+		expect(addRelayHost("mybox; id", env)).toBe(false);
+		expect(readRelayHosts(env)).toEqual([]);
 	});
 });
 
@@ -302,6 +345,55 @@ describe("the server's memory of a client", () => {
 	});
 });
 
+describe("the client half of the bootstrap line", () => {
+	/** What that half writes, read the way the handler reads it. */
+	const onFile = (): unknown => {
+		try {
+			return JSON.parse(readFileSync(join(home, ".pi", "agent", "pi-snippet-remotes.json"), "utf8"));
+		} catch {
+			return null;
+		}
+	};
+
+	it("refuses a host it would be pasting into a shell", () => {
+		expect(relayConfigCommand("mybox; id")).toBeNull();
+		expect(relayConfigCommand(HOST_PLACEHOLDER)).toContain(HOST_PLACEHOLDER);
+	});
+
+	it.skipIf(!hasPython)("adds each host named, keeping the ones already there", () => {
+		// Run as the user runs it: this is a line pasted into a shell, and the
+		// merge in it is the reason a second remote costs nothing.
+		const run = (host: string) =>
+			spawnSync("bash", ["-c", relayConfigCommand(host)!], {
+				env: { HOME: home, PATH: process.env.PATH ?? "" },
+				encoding: "utf8",
+			});
+		expect(run("mybox").status).toBe(0);
+		expect(onFile()).toEqual({ hosts: ["mybox"] });
+		expect(run("work").status).toBe(0);
+		expect(onFile()).toEqual({ hosts: ["work", "mybox"] });
+		// Twice for the same host is not two entries.
+		expect(run("mybox").status).toBe(0);
+		expect(onFile()).toEqual({ hosts: ["mybox", "work"] });
+	});
+
+	it.skipIf(!hasPython)("migrates the single-host file earlier versions wrote", () => {
+		mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+		writeFileSync(
+			join(home, ".pi", "agent", "pi-snippet-remotes.json"),
+			'{"host":"work"}',
+			"utf8",
+		);
+		expect(
+			spawnSync("bash", ["-c", relayConfigCommand("mybox")!], {
+				env: { HOME: home, PATH: process.env.PATH ?? "" },
+				encoding: "utf8",
+			}).status,
+		).toBe(0);
+		expect(onFile()).toEqual({ hosts: ["mybox", "work"] });
+	});
+});
+
 describe("the ssh-back that leaves the stamp", () => {
 	it("names the host, the directory, and takes the address from the far end", () => {
 		const command = relayRegisterCommand("mybox", env)!;
@@ -311,7 +403,7 @@ describe("the ssh-back that leaves the stamp", () => {
 		// — the client cannot name itself, which is the whole security story of
 		// this stamp.
 		expect(command).toContain('\'mkdir -p ');
-		expect(command).toContain('touch ');
+		expect(command).toContain('&& cd ');
 		expect(command).toContain('"${SSH_CONNECTION%% *}"');
 		expect(command).toContain(relayClientsDir(env));
 	});
@@ -393,7 +485,7 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 	};
 
 	it("delivers to a live local socket and never relays", async () => {
-		writeRelayHost("mybox", env);
+		writeRelayHosts(["mybox"], env);
 		const lines: string[] = [];
 		const server: Server = createServer((socket) => {
 			socket.setEncoding("utf8");
@@ -413,7 +505,7 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 	});
 
 	it("relays through ssh when nothing local answers", () => {
-		writeRelayHost("mybox", env);
+		writeRelayHosts(["mybox"], env);
 		const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
 		expect(result.status).toBe(0);
 		const argv = sshArgv();
@@ -447,7 +539,7 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 	});
 
 	it("refuses a malformed URL before anything can shell out", () => {
-		writeRelayHost("mybox", env);
+		writeRelayHosts(["mybox"], env);
 		for (const url of [
 			"pisnip://a1b2c3d4/nothex/c1",
 			"pisnip://a1b2c3d4/0f3e2a91/c1;id",
@@ -464,7 +556,7 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 	});
 
 	it("passes a relay failure through as a quiet non-zero exit", () => {
-		writeRelayHost("mybox", env);
+		writeRelayHosts(["mybox"], env);
 		writeFileSync(join(binDir, "ssh"), "#!/bin/sh\nexit 255\n", "utf8");
 		chmodSync(join(binDir, "ssh"), 0o755);
 		const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
@@ -475,9 +567,81 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 		expect(result.stderr).toBe("");
 	});
 
+	describe("more than one remote", () => {
+		/** An `ssh` that answers for one host only, and records every attempt. */
+		const sshAnswering = (host: string, mode = 0o755): void => {
+			// One line per attempt, naming the host only: the argv is asserted
+			// against the plain stub above, and the relay command in it spans
+			// lines, which no line-oriented log survives.
+			writeFileSync(
+				join(binDir, "ssh"),
+				`#!/usr/bin/env python3\nimport sys\n`
+					+ `open(${JSON.stringify(sshLog)}, "a").write(sys.argv[5] + "\\n")\n`
+					+ `sys.exit(0 if sys.argv[5] == ${JSON.stringify(host)} else 255)\n`,
+				"utf8",
+			);
+			chmodSync(join(binDir, "ssh"), mode);
+		};
+		/** The host each recorded attempt went to, in order. */
+		const tried = (): string[] => {
+			try {
+				return readFileSync(sshLog, "utf8").split("\n").filter((line) => line !== "");
+			} catch {
+				return [];
+			}
+		};
+		/** Where the handler remembers which host answered for this session. */
+		const cache = () => join(runtime, "pi-snippet-relay-a1b2c3d4");
+
+		it("walks the list until a session answers, then goes straight there", () => {
+			// The list is what makes a second remote free to add; the memory is
+			// what stops every click on it paying for the dead hosts ahead of it.
+			writeRelayHosts(["dark", "good"], env);
+			sshAnswering("good");
+			expect(runHandler("pisnip://a1b2c3d4/0f3e2a91/c3").status).toBe(0);
+			expect(tried()).toEqual(["dark", "good"]);
+			expect(readFileSync(cache(), "utf8")).toBe("good");
+
+			rmSync(sshLog);
+			expect(runHandler("pisnip://a1b2c3d4/0f3e2a91/c4").status).toBe(0);
+			expect(tried()).toEqual(["good"]);
+		});
+
+		it("never relays anywhere the file does not name, whatever it remembers", () => {
+			// The memory is a hint about order and nothing more: the file stays
+			// the allowlist, so a tampered cache buys no new destination.
+			writeRelayHosts(["good"], env);
+			writeFileSync(cache(), "evil", "utf8");
+			sshAnswering("good");
+			expect(runHandler("pisnip://a1b2c3d4/0f3e2a91/c3").status).toBe(0);
+			expect(tried()).toEqual(["good"]);
+		});
+
+		it("stays quiet when none of them answers, and remembers nothing", () => {
+			writeRelayHosts(["dark", "darker"], env);
+			sshAnswering("nobody");
+			const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
+			expect(result.status).toBe(1);
+			expect(result.stdout).toBe("");
+			expect(tried()).toEqual(["dark", "darker"]);
+			expect(existsSync(cache())).toBe(false);
+		});
+
+		it("carries on past an ssh it could not run at all", () => {
+			// An `ssh` the OS refuses to exec is one host that cannot be reached,
+			// not an answer about any of the others — and not a traceback.
+			writeRelayHosts(["dark", "good"], env);
+			sshAnswering("good", 0o644);
+			const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
+			expect(result.status).toBe(1);
+			expect(result.stderr).toBe("");
+			expect(tried()).toEqual([]);
+		});
+	});
+
 	it("ignores a host the file should never have carried", () => {
 		mkdirSync(join(home, "agent"), { recursive: true });
-		writeFileSync(remotesPath(env), '{"host":"mybox; id"}', "utf8");
+		writeFileSync(remotesPath(env), '{"hosts":["mybox; id"]}', "utf8");
 		const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
 		expect(result.status).toBe(1);
 		expect(sshArgv()).toBeNull();

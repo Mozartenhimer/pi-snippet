@@ -611,9 +611,14 @@ URLs are painted — not which one carries the click:
    configuration, visible in their own ssh invocation, and paid for on every
    connection and every resume.
 2. **The relay** (`docs/ssh-back-handler.md`). The handler on the client, having
-   found no local socket, reads a host from `~/.pi/agent/pi-snippet-remotes.json`
-   and tunnels the click back through a fresh `ssh`, which runs a fixed,
-   self-contained python one-liner that writes to the socket on the far end.
+   found no local socket, reads the hosts from
+   `~/.pi/agent/pi-snippet-remotes.json` and tunnels the click back through a
+   fresh `ssh`, which runs a fixed, self-contained python one-liner that writes
+   to the socket on the far end. More than one host is ordinary and needs no
+   choosing: they are tried in order until a session answers, and which one did
+   is remembered per session token in the runtime directory so the walk is paid
+   once rather than per click. That memory only reorders the list — a name no
+   longer in the file is ignored, so the file stays the allowlist.
    Nothing is installed remotely. One paste per client machine, nothing per
    session; `/snippets` over SSH offers *SSH relay setup*, which puts that
    paste — carrying the address the client reached this host at, from

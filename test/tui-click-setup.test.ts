@@ -399,7 +399,7 @@ describe("the ssh-back relay", () => {
 				await pi.run("", ctx);
 				// A runnable line, in the composer rather than a toast: it has to
 				// survive being read and copied to another machine.
-				expect(editorText()).toContain('printf \'{"host":"%s"}');
+				expect(editorText()).toContain("python3 -c");
 				expect(editorText()).toContain("10.0.0.2");
 				expect(editorText()).toContain("~/.pi/agent/pi-snippet-remotes.json");
 				// The remote knows the address and nothing about the client's aliases.
@@ -422,7 +422,7 @@ describe("the ssh-back relay", () => {
 				expect(editorText()).toContain("&& ssh 10.0.0.2 \'mkdir -p ");
 				// The stamp directory is this session\'s own — the line targets the
 				// agent directory pi is actually running out of, not a guess at it.
-				expect(editorText()).toContain(`touch ${process.env.PI_SNIPPET_RELAY_CLIENTS}/`);
+				expect(editorText()).toContain(`cd ${process.env.PI_SNIPPET_RELAY_CLIENTS} &&`);
 				expect(editorText()).toContain('"${SSH_CONNECTION%% *}"');
 				expect(notices.join(" ")).toContain("no toggle here");
 			} finally {
@@ -479,12 +479,11 @@ describe("the ssh-back relay", () => {
 		});
 	});
 
-	describe("the relay host, from the client side", () => {
-		const ROW = "SSH relay host: not set — change";
-		const HOST_ROW = (options: string[]) => options.find((o) => o.startsWith("SSH relay host:"));
+	describe("the relay hosts, from the client side", () => {
+		const ROW = "SSH relay hosts: none — add or clear";
 
 		it("is offered once a handler is installed, showing what is on file", async () => {
-			writeFileSync(process.env.PI_SNIPPET_REMOTES!, '{"host":"mybox"}\n', "utf8");
+			writeFileSync(process.env.PI_SNIPPET_REMOTES!, '{"hosts":["mybox","work"]}\n', "utf8");
 			install();
 			const seen: string[] = [];
 			const pi = makeFakePi();
@@ -494,7 +493,7 @@ describe("the ssh-back relay", () => {
 			});
 			try {
 				await pi.run("", ctx);
-				expect(seen).toContain("SSH relay host: mybox — change");
+				expect(seen).toContain("SSH relay hosts: mybox, work — add or clear");
 			} finally {
 				pi.shutdown();
 			}
@@ -505,15 +504,31 @@ describe("the ssh-back relay", () => {
 			const { ctx, notices } = makeCtx(() => ROW, () => "  mybox  ");
 			try {
 				await pi.run("", ctx);
-				expect(written()).toEqual({ host: "mybox" });
-				expect(notices.join(" ")).toContain("relay to mybox");
+				expect(written()).toEqual({ hosts: ["mybox"] });
+				expect(notices.join(" ")).toContain("now try mybox");
+			} finally {
+				pi.shutdown();
+			}
+		});
+
+		it("adds to the list rather than replacing it", async () => {
+			// Someone with two remotes named the second one; the first must still
+			// be there, and the newest is tried first because it is the one they
+			// were just thinking about.
+			writeFileSync(process.env.PI_SNIPPET_REMOTES!, '{"hosts":["work"]}\n', "utf8");
+			const pi = makeFakePi();
+			const { ctx, notices } = makeCtx(() => "SSH relay hosts: work — add or clear", () => "mybox");
+			try {
+				await pi.run("", ctx);
+				expect(written()).toEqual({ hosts: ["mybox", "work"] });
+				expect(notices.join(" ")).toContain("now try mybox, work");
 			} finally {
 				pi.shutdown();
 			}
 		});
 
 		it("clears on an empty entry, and says clicks go back to failing quietly", async () => {
-			writeFileSync(process.env.PI_SNIPPET_REMOTES!, '{"host":"mybox"}\n', "utf8");
+			writeFileSync(process.env.PI_SNIPPET_REMOTES!, '{"hosts":["mybox"]}\n', "utf8");
 			const pi = makeFakePi();
 			const { ctx, notices } = makeCtx(() => ROW, () => "   ");
 			try {

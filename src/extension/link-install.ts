@@ -92,39 +92,76 @@ export function isRelayHost(host: string): boolean {
 	return /^[A-Za-z0-9._@-]{1,255}$/.test(host);
 }
 
-/** The configured relay host, or null when there is none to use. */
-export function readRelayHost(env: NodeJS.ProcessEnv = process.env): string | null {
+/**
+ * The hosts a click may be relayed to, in the order to try them.
+ *
+ * A list rather than the single host this started as, because one machine in
+ * front of several remotes is the ordinary case and hand-editing a file to
+ * switch between them is not a feature. It stays an allowlist: the handler
+ * tries these and only these, so nothing a URL carries can point a click at a
+ * host the user never named.
+ *
+ * `{ "host": "…" }` — what earlier versions wrote, and what a hand-written
+ * file most likely says — is read as a one-entry list, after any `hosts`.
+ * Malformed entries are dropped rather than refused: a file with one bad name
+ * in it should still relay to the good ones.
+ */
+export function readRelayHosts(env: NodeJS.ProcessEnv = process.env): string[] {
+	let listed: unknown[] = [];
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(remotesPath(env), "utf8"));
-		if (typeof parsed !== "object" || parsed === null) return null;
-		const host = (parsed as { host?: unknown }).host;
-		if (typeof host !== "string" || !isRelayHost(host)) return null;
-		return host;
+		if (typeof parsed !== "object" || parsed === null) return [];
+		const hosts = (parsed as { hosts?: unknown }).hosts;
+		const single = (parsed as { host?: unknown }).host;
+		if (Array.isArray(hosts)) listed = hosts;
+		if (typeof single === "string") listed = [...listed, single];
 	} catch {
-		return null;
+		return [];
 	}
+	const hosts: string[] = [];
+	for (const host of listed) {
+		if (typeof host !== "string" || !isRelayHost(host)) continue;
+		if (!hosts.includes(host)) hosts.push(host);
+	}
+	return hosts;
 }
 
 /**
- * Record the relay host, or clear it when handed an empty string.
+ * Record the relay hosts, or clear them when handed an empty list.
  *
  * Nothing here is allowed to be fatal, same rule as the rest of this module:
  * an unwritable agent directory costs the relay, not the session.
  */
-export function writeRelayHost(host: string, env: NodeJS.ProcessEnv = process.env): boolean {
+export function writeRelayHosts(hosts: string[], env: NodeJS.ProcessEnv = process.env): boolean {
 	const path = remotesPath(env);
 	try {
-		if (host === "") {
+		if (hosts.length === 0) {
 			if (existsSync(path)) unlinkSync(path);
 			return true;
 		}
-		if (!isRelayHost(host)) return false;
+		if (hosts.some((host) => !isRelayHost(host))) return false;
 		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify({ host }, null, 2)}\n`, "utf8");
+		writeFileSync(path, `${JSON.stringify({ hosts }, null, 2)}\n`, "utf8");
 		return true;
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Add a host to the front of the list, keeping the rest.
+ *
+ * The front because the one just named is the one being set up, and the
+ * handler tries them in order until a session answers — so a fresh entry costs
+ * nothing to be wrong about, and being right saves a round trip. Adding is
+ * what the bootstrap line does too: a second remote must not cost the first.
+ */
+export function addRelayHost(host: string, env: NodeJS.ProcessEnv = process.env): boolean {
+	if (!isRelayHost(host)) return false;
+	return writeRelayHosts(
+		[host, ...readRelayHosts(env).filter((known) => known !== host)],
+		env,
+	);
 }
 
 /**
@@ -177,6 +214,31 @@ export function relayClientSeen(address: string, env: NodeJS.ProcessEnv = proces
 }
 
 /**
+ * The client half of the bootstrap: record this host in the client's relay
+ * list, keeping whatever is already there.
+ *
+ * A python one-liner rather than the `printf` this used to be, because adding
+ * is the whole point — a second remote must not cost the first, and merging is
+ * the one thing a short shell command cannot do. It runs in the *client's own*
+ * shell (nothing re-parses it on another machine), so a double-quoted word with
+ * python's own apostrophes inside is safe here in a way it would not be in
+ * `relayRegisterCommand()`.
+ *
+ * Null for a host that is neither a hostname nor the placeholder the user is
+ * told to replace — the same rule as everywhere else this value appears.
+ */
+export function relayConfigCommand(host: string): string | null {
+	if (!isRelayHost(host) && host !== HOST_PLACEHOLDER) return null;
+	return (
+		`mkdir -p ~/.pi/agent && python3 -c "import json,os;h='${host}';`
+		+ `p=os.path.expanduser('~/.pi/agent/${REMOTES_FILE}');`
+		+ `d=json.load(open(p)) if os.path.exists(p) else {};`
+		+ `k=[x for x in (d.get('hosts') or [d.get('host')]) if x and x!=h];`
+		+ `json.dump({'hosts':[h]+k},open(p,'w'))"`
+	);
+}
+
+/**
  * The ssh-back that makes this host remember the client, as one shell word for
  * the client to run — the automatic half of the bootstrap.
  *
@@ -198,7 +260,9 @@ export function relayRegisterCommand(
 	const dir = relayClientsDir(env);
 	if (!isRelayHost(host) && host !== HOST_PLACEHOLDER) return null;
 	if (!/^[A-Za-z0-9._/@+-]{1,4096}$/.test(dir)) return null;
-	return `ssh ${host} 'mkdir -p ${dir} && touch ${dir}/"\${SSH_CONNECTION%% *}"'`;
+	// `cd` rather than a second copy of the path: this line is pasted by hand,
+	// and every character of it is read by someone deciding whether to trust it.
+	return `ssh ${host} 'mkdir -p ${dir} && cd ${dir} && touch "\${SSH_CONNECTION%% *}"'`;
 }
 
 /**
@@ -403,17 +467,62 @@ def remotes_path():
     return override or os.path.join(agent_dir(), "${REMOTES_FILE}")
 
 
-def relay_host():
+def relay_hosts():
+    """Every host this click may be sent to, in the order to try them.
+
+    The file is the allowlist, so nothing outside it is ever tried — and a
+    malformed entry is dropped rather than failing the lot: one bad name should
+    not cost the good ones. An ssh-config alias or a plain hostname is all a
+    name may be; anything a shell could act on is refused rather than quoted
+    around, because these values reach an ssh argv.
+    """
     try:
         with open(remotes_path(), "r") as fh:
-            host = json.load(fh).get("host")
+            data = json.load(fh)
+        listed = data.get("hosts")
+        single = data.get("host")
     except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(listed, list):
+        listed = []
+    if isinstance(single, str):
+        listed = listed + [single]
+    hosts = []
+    for host in listed:
+        if not isinstance(host, str) or not re.match(r"^[A-Za-z0-9._@-]{1,255}$", host):
+            continue
+        if host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def cache_path():
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    return os.path.join(runtime, "pi-snippet-relay-%s" % u.netloc)
+
+
+def remembered(hosts):
+    """Which host answered for this session last time.
+
+    Only ever a hint about *order*: a name that is no longer in the file is
+    ignored, so a tampered cache cannot send a click anywhere the user has not
+    named. Without it, a click on a second remote pays a dead ssh handshake for
+    every host ahead of it in the list, on every click.
+    """
+    try:
+        with open(cache_path(), "r") as fh:
+            host = fh.read().strip()
+    except OSError:
         return None
-    # An ssh-config alias or a plain hostname. Anything a shell could act on is
-    # refused rather than quoted around: this value reaches an ssh argv.
-    if not isinstance(host, str) or not re.match(r"^[A-Za-z0-9._@-]{1,255}$", host):
-        return None
-    return host
+    return host if host in hosts else None
+
+
+def remember(host):
+    try:
+        with open(cache_path(), "w") as fh:
+            fh.write(host)
+    except OSError:
+        pass
 
 
 def explain_once():
@@ -447,22 +556,30 @@ def explain_once():
         pass  # no notify-send, or no display: degrade to the old silence
 
 
-host = relay_host()
-if host is None:
+hosts = relay_hosts()
+if not hosts:
     explain_once()
     sys.exit(1)
-try:
-    # BatchMode so a click never hangs on a password or a host-key prompt, and
-    # two timeouts so a dark host costs seconds rather than a stuck process.
-    done = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", host,
-         ${JSON.stringify(relayCommand())}, url],
-        timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-except (OSError, subprocess.SubprocessError):
-    sys.exit(1)
+first = remembered(hosts)
+if first is not None:
+    hosts = [first] + [host for host in hosts if host != first]
+for host in hosts:
+    try:
+        # BatchMode so a click never hangs on a password or a host-key prompt,
+        # and two timeouts so a dark host costs seconds rather than a stuck
+        # process — which is also what makes trying several of them bearable.
+        done = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", host,
+             ${JSON.stringify(relayCommand())}, url],
+            timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        continue
+    if done.returncode == 0:
+        remember(host)
+        sys.exit(0)
 # Configured but unreachable is the same situation as dead scrollback: the user
 # has already opted in, and there is nothing left to configure. Quiet either way.
-sys.exit(done.returncode)
+sys.exit(1)
 `;
 }
 

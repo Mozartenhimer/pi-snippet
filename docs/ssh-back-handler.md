@@ -73,13 +73,20 @@ silently — a regeneration updates both.
    `{ "host": "mybox" }` — an ssh-config alias resolves through the user's own
    `~/.ssh/config`, so keys, ports, and jump hosts are already the user's
    problem, solved the way they already solve them.
+
+   **As built** the file carries a *list* — `{ "hosts": ["mybox", "work"] }`,
+   with the older `{ "host": … }` still read as a one-entry one — and the
+   handler tries them in order until a session answers. Which makes the second
+   remote free: the bootstrap line adds rather than replaces, and so does the
+   `/snippets` row. It is still an allowlist and nothing else; see *Learning
+   the mapping* below for what stops the walk being paid on every click.
 3. `mkdir -p /tmp/pi-snippet-$(id -u)` — or any directory the handler scans.
    The registration flow can do this; it is the same directory the handler
    would use locally anyway.
 
-**As built.** (2) is the `/snippets` row *SSH relay host: … — change*, and it
-also clears: an empty entry deletes the file rather than recording a host that
-means nothing. `PI_SNIPPET_REMOTES` overrides the path, as `PI_SNIPPET_SETTINGS`
+**As built.** (2) is the `/snippets` row *SSH relay hosts: … — add or clear*,
+and it also clears: an empty entry deletes the file rather than recording a
+host that means nothing. `PI_SNIPPET_REMOTES` overrides the path, as `PI_SNIPPET_SETTINGS`
 does for the toggles. (3) turned out to be unnecessary — the handler tries each
 candidate and falls through to the relay when none answers, so a directory that
 does not exist is just another miss. Nothing needs creating on the client.
@@ -169,6 +176,10 @@ connection. Four rules keep that boring:
    any pasteable `pisnip://` link an instruction to SSH somewhere; the config
    file is the allowlist. If per-host disambiguation is ever needed, it is a
    key *into* the config, never a host literal.
+
+   **As built** that is exactly what the token cache under *Learning the
+   mapping* is: the URL's token selects among hosts the config already names,
+   and a cached name that has since left the file selects nothing at all.
 2. **Fixed argv end to end.** The handler execs `ssh` with the URL as one
    argument; nothing is shell-interpolated. One subtlety: `ssh host cmd arg`
    hands `cmd arg` to the *remote* shell as a single command line, so the URL
@@ -265,9 +276,18 @@ test, so it is not reassembled by hand).
   an macOS client needs its own dispatch (Launch Services + a stub app).
   Out of scope here, but the config file and relay protocol should not
   assume Linux on the *client* beyond the handler itself.
-- **Multiple simultaneous remotes.** One default host covers the ordinary
-  case. Per-token overrides in the config map are the escape hatch; whether
-  they are ever worth UI is deferred until someone needs them.
-- **Learning the mapping.** The remote pi knows which host it is on
-  (`SSH_CONNECTION`) and could print it for the config; it cannot write the
-  client's config. Keep it that way.
+- **Multiple simultaneous remotes.** *Answered.* The config carries a list and
+  the handler walks it, so a click on a chip from any of them lands on the one
+  whose session answers. There are no per-token entries in the file and there
+  should not be: a token is a session, sessions are many and short, and a file
+  the user edits should hold the machines they use.
+- **Learning the mapping.** *Answered, and it is the handler that learns it.*
+  Which host answered for a token is written to
+  `$XDG_RUNTIME_DIR/pi-snippet-relay-<token>` and read back to put that host
+  first, so the walk above is paid once per session rather than once per click.
+  A hint about *order* only: a remembered name no longer in the config file is
+  ignored, which keeps the file the allowlist and a tampered cache worth
+  nothing, and the runtime directory expires it for free at logout. What stays
+  true is the rule this question was really about — the remote pi knows which
+  host it is on and offers it for the config; it never writes that config
+  itself. The stamp it *does* receive (above) travels the other way.
