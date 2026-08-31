@@ -31,6 +31,7 @@
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { INFER_STYLES, type InferStyle } from "../shared/inferred.js";
 
 /**
  * Which of the two suggestion layers run.
@@ -38,8 +39,9 @@ import { dirname, join } from "node:path";
  * They are independent, so the setting is the four combinations rather than
  * an on/off plus a sub-switch: layer 1 is the primary model tagging its own
  * replies (which costs a system-prompt injection), layer 2 is a second model
- * tagging them afterwards (which costs a request per question-bearing
- * message). Wanting exactly one of those is an ordinary preference — `infer`
+ * tagging them afterwards (which costs a request per assistant message —
+ * there is no question-mark gate). Wanting exactly one of those is an
+ * ordinary preference — `infer`
  * in particular is the way to get chips without putting anything in the
  * primary model's prompt.
  */
@@ -66,12 +68,20 @@ export interface SnippetSettings {
 	 * remembers which model it was pointed at.
 	 */
 	inferModel?: string;
+	/**
+	 * Which shape the second model replies in — `reemit` (re-emit the message
+	 * with more `<snippet>` tags added) or `options` (list bare reply lines;
+	 * every verbatim occurrence lights up). A live A/B, not a settled default:
+	 * both stay reachable from `/snippets` so real use can tell them apart.
+	 */
+	inferStyle: InferStyle;
 }
 
 export const DEFAULT_SETTINGS: SnippetSettings = {
 	mode: "both",
 	hotkeysEnabled: true,
 	inferModel: undefined,
+	inferStyle: "reemit",
 };
 
 /**
@@ -124,6 +134,7 @@ function merge(raw: unknown): SnippetSettings {
 	// thing, so that one is read across; every other dead key stays dead.
 	else if (source.enabled === false) settings.mode = "off";
 	if (typeof source.inferModel === "string" && source.inferModel.trim() !== "") settings.inferModel = source.inferModel;
+	if (INFER_STYLES.includes(source.inferStyle as InferStyle)) settings.inferStyle = source.inferStyle as InferStyle;
 	return settings;
 }
 
@@ -155,6 +166,7 @@ export function saveSettings(settings: SnippetSettings, path: string = settingsP
 		const body: SnippetSettings = {
 			mode: settings.mode,
 			hotkeysEnabled: settings.hotkeysEnabled,
+			inferStyle: settings.inferStyle,
 			...(settings.inferModel ? { inferModel: settings.inferModel } : {}),
 		};
 		writeFileSync(temp, `${JSON.stringify(body, null, "\t")}\n`, "utf8");

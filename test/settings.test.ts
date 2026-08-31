@@ -28,6 +28,7 @@ describe("settings file", () => {
 			mode: "infer",
 			hotkeysEnabled: false,
 			inferModel: "openrouter/qwen/qwen3.7-flash",
+			inferStyle: "options",
 		};
 		expect(saveSettings(settings, file)).toBe(true);
 		expect(loadSettings(file)).toEqual(settings);
@@ -69,6 +70,16 @@ describe("settings file", () => {
 		expect(loadSettings(file).mode).toBe(DEFAULT_SETTINGS.mode);
 	});
 
+	it("keeps a recognised inferStyle", () => {
+		writeFileSync(file, JSON.stringify({ inferStyle: "options" }), "utf8");
+		expect(loadSettings(file).inferStyle).toBe("options");
+	});
+
+	it("defaults an inferStyle it does not recognise", () => {
+		writeFileSync(file, JSON.stringify({ inferStyle: "sideways" }), "utf8");
+		expect(loadSettings(file).inferStyle).toBe(DEFAULT_SETTINGS.inferStyle);
+	});
+
 	it("reads a boolean `enabled: false` from before the modes as `off`", () => {
 		// The one legacy key worth carrying across: silently turning suggestions
 		// back on for someone who had switched them off is the wrong default.
@@ -103,6 +114,7 @@ describe("settings file", () => {
 		saveSettings(DEFAULT_SETTINGS, file);
 		expect(Object.keys(JSON.parse(readFileSync(file, "utf8"))).sort()).toEqual([
 			"hotkeysEnabled",
+			"inferStyle",
 			"mode",
 		]);
 	});

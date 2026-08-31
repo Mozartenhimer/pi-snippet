@@ -8,6 +8,7 @@ import {
 	resolvePin,
 	type PiModel,
 } from "../src/extension/infer.js";
+import { INFER_OPTIONS_SYSTEM_PROMPT, INFER_SYSTEM_PROMPT } from "../src/shared/inferred.js";
 
 const MODEL: PiModel = { id: "qwen/qwen3.7-flash", provider: "openrouter" };
 const SONNET: PiModel = { id: "claude-sonnet-5", provider: "anthropic" };
@@ -281,6 +282,76 @@ describe("InferenceEngine", () => {
 		});
 		expect(await engine.infer("still asking?", h, [])).toBeNull();
 		expect(engine.stoodDown).toBe(false); // one strike of three
+	});
+});
+
+describe("InferenceEngine — reply style", () => {
+	it("defaults to the reemit prompt and extraction when no style is supplied", async () => {
+		let seen: string | undefined;
+		const engine = new InferenceEngine();
+		const h = host({
+			stream: (_model, context) => {
+				seen = context.systemPrompt;
+				return eventStream(deltas(REPLY));
+			},
+		});
+		expect(await engine.infer(MESSAGE, h, [])).toEqual(["rebuild", "commit"]);
+		expect(seen).toBe(INFER_SYSTEM_PROMPT);
+	});
+
+	it("uses the options prompt and extraction when the style is options", async () => {
+		let seen: string | undefined;
+		const engine = new InferenceEngine(undefined, () => "options");
+		const h = host({
+			stream: (_model, context) => {
+				seen = context.systemPrompt;
+				return eventStream(deltas("rebuild\ncommit"));
+			},
+		});
+		expect(await engine.infer(MESSAGE, h, [])).toEqual(["rebuild", "commit"]);
+		expect(seen).toBe(INFER_OPTIONS_SYSTEM_PROMPT);
+	});
+
+	it("keys the cache by style, so switching styles asks again for the same message", async () => {
+		let calls = 0;
+		let style: "reemit" | "options" = "reemit";
+		const engine = new InferenceEngine(undefined, () => style);
+		const h = host({
+			stream: () => {
+				calls++;
+				return eventStream(deltas(style === "reemit" ? REPLY : "rebuild\ncommit"));
+			},
+		});
+		expect(await engine.infer(MESSAGE, h, [])).toEqual(["rebuild", "commit"]);
+		style = "options";
+		expect(await engine.infer(MESSAGE, h, [])).toEqual(["rebuild", "commit"]);
+		expect(calls).toBe(2); // not served from the reemit answer's cache entry
+	});
+
+	it("holds the options style's last streamed line back until the reply completes, then still reports it", async () => {
+		const at: Array<{ anchor: string; afterChunk: number }> = [];
+		let chunkCount = 0;
+		const engine = new InferenceEngine(undefined, () => "options");
+		const h = host({
+			stream: () =>
+				(async function* () {
+					for (const chunk of ["rebuild\n", "com", "mit"]) {
+						chunkCount++;
+						yield { type: "text_delta", delta: chunk };
+					}
+				})(),
+		});
+		const anchors = await engine.infer(MESSAGE, h, [], (anchor) => {
+			at.push({ anchor, afterChunk: chunkCount });
+		});
+		expect(anchors).toEqual(["rebuild", "commit"]);
+		// "rebuild" is a complete line the moment its newline arrives; "commit"
+		// has no trailing newline until the stream ends, so it must never fire
+		// as the partial word "com" and must still be painted once the reply
+		// is known to be finished.
+		expect(at.some((e) => e.anchor === "com")).toBe(false);
+		expect(at.find((e) => e.anchor === "rebuild")?.afterChunk).toBe(1);
+		expect(at.find((e) => e.anchor === "commit")?.afterChunk).toBe(3);
 	});
 });
 

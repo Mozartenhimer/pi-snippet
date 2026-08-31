@@ -607,9 +607,11 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 		}
 	});
 
-	it("keeps a statement at not sent — the gate never asks the second model", () => {
-		// A reachable model, so the gate is the only thing that stops this: the
-		// line has to say "not sent", not "unavailable".
+	it("sends even a plain status update — there is no question-mark gate", () => {
+		// A reachable model and a message with no question mark at all: the
+		// old gate would have left this "not sent" forever. It should read
+		// "sent (waiting)" the instant the message ends, the same as a
+		// question would.
 		const { registry } = makeInferRegistry([MESSAGE]);
 		const { pi, handlers } = makeFakePi();
 		piSnippetTui(pi);
@@ -623,7 +625,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 				{ message: partial("Build is green. Deployed at noon.") },
 				ctx,
 			);
-			expect(statusLine(ctx).at(-1)).toBe("snippet: not sent");
+			expect(statusLine(ctx).at(-1)).toBe("snippet: sent (waiting)");
 		} finally {
 			delete process.env.PI_SNIPPET_MODEL;
 		}

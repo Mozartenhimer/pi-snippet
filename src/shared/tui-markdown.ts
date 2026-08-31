@@ -18,7 +18,7 @@
  * (the stored message keeps its raw tags and never gains markup).
  */
 import { buildChipUrl, messageKey } from "./link-url.js";
-import { locateAnchors, type LocatedAnchor } from "./inferred.js";
+import { locateAllOccurrences, locateAnchors, type InferStyle } from "./inferred.js";
 import {
 	parseSuggestions,
 	type SuggestNode,
@@ -52,6 +52,12 @@ export interface TuiRenderOptions {
 	 * tagged ones. Nothing distinguishes them from layer-1 chips in the output.
 	 */
 	inferred?: readonly string[];
+	/**
+	 * How `inferred` is located in the text — `reemit`'s anchors paint once,
+	 * at their first verbatim spot; `options`' paint at every verbatim spot,
+	 * all under the same chip number. Defaults to `reemit`, the original shape.
+	 */
+	inferStyle?: InferStyle;
 }
 
 const SUPERSCRIPTS = ["⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"] as const;
@@ -89,13 +95,15 @@ export function chipLabel(oneBasedNumber: number, text: string): string {
  * trade working as intended.
  *
  * An anchor that lands inside a tagged chip, inside code, or on top of an
- * earlier anchor is dropped by `locateAnchors`: the failure mode is a missing
- * chip, never a doubled or shifted one.
+ * earlier anchor (or, in the `options` style, an earlier occurrence of
+ * itself) is dropped by the locate step: the failure mode is a missing chip,
+ * never a doubled or shifted one.
  */
 export function mergeSuggestions(
 	text: string,
 	opts?: SuggestOptions,
 	inferred?: readonly string[],
+	inferStyle: InferStyle = "reemit",
 ): { nodes: SuggestNode[]; suggestions: string[] } {
 	const base = parseSuggestions(text, opts);
 	if (!inferred || inferred.length === 0) return base;
@@ -103,10 +111,13 @@ export function mergeSuggestions(
 	const tagged = base.nodes
 		.filter((n) => n.type === "suggestion")
 		.map((n) => ({ text: n.text, start: n.start, end: n.start + n.text.length }));
-	// Document order, whatever order the anchors arrived in: `locateAnchors`
+	// Document order, whatever order the anchors arrived in: the locate step
 	// sorts by position and carries each anchor's arrival rank in `order`,
-	// which is what the numbering below reads.
-	const located = locateAnchors(text, inferred, tagged);
+	// which is what the numbering below reads. `options` locates every
+	// occurrence of a line under that same rank, which is how two spots in
+	// the text end up sharing one chip number.
+	const located =
+		inferStyle === "options" ? locateAllOccurrences(text, inferred, tagged) : locateAnchors(text, inferred, tagged);
 	if (located.length === 0) return base;
 
 	// Re-tile the text. An anchor always sits inside a run of ordinary text
@@ -165,7 +176,7 @@ function escapeLinkLabel(text: string): string {
 
 export function toTuiMarkdown(rawText: string, opts: TuiRenderOptions): string {
 	const text = opts.isStreaming ? visibleStreamingPrefix(rawText, opts.parse) : rawText;
-	const { nodes } = mergeSuggestions(text, opts.parse, opts.inferred);
+	const { nodes } = mergeSuggestions(text, opts.parse, opts.inferred, opts.inferStyle);
 	let out = "";
 	for (const node of nodes) {
 		if (node.type === "text" || !opts.enabled) {

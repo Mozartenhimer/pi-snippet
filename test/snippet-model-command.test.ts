@@ -79,11 +79,14 @@ afterEach(() => {
 });
 
 describe("/snippets model completions", () => {
-	it("suggests the `model` subcommand itself while nothing has been typed yet", async () => {
+	it("suggests both subcommands while nothing has been typed yet", async () => {
 		const { pi, commands } = makeFakePi();
 		piSnippetTui(pi);
 		const items: any[] = await commands.get("snippets").getArgumentCompletions("");
-		expect(items).toEqual([{ value: "model ", label: "model", description: "Set the second model" }]);
+		expect(items).toEqual([
+			{ value: "model ", label: "model", description: "Set the second model" },
+			{ value: "style ", label: "style", description: "Set the second model's reply style" },
+		]);
 	});
 
 	it("filters the registry with pi's own fuzzy matcher, best match first", async () => {
@@ -132,6 +135,140 @@ describe("/snippets model completions", () => {
 		piSnippetTui(pi);
 		handlers.get("session_start")!({}, makeCtx().ctx);
 		expect(await commands.get("snippets").getArgumentCompletions("model ")).toBeNull();
+	});
+});
+
+describe("/snippets style completions", () => {
+	it("offers both styles on a bare `style ` — only two ever exist, no catalogue to dump", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		expect(await commands.get("snippets").getArgumentCompletions("style ")).toEqual([
+			{ value: "style reemit", label: "reemit" },
+			{ value: "style options", label: "options" },
+		]);
+	});
+
+	it("filters by the typed prefix", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		expect(await commands.get("snippets").getArgumentCompletions("style opt")).toEqual([
+			{ value: "style options", label: "options" },
+		]);
+	});
+
+	it("returns null when nothing matches", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		expect(await commands.get("snippets").getArgumentCompletions("style bogus")).toBeNull();
+	});
+});
+
+describe("/snippets style handler", () => {
+	it("applies a valid style and persists it", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		await commands.get("snippets").handler("style options", seen.ctx);
+
+		expect(seen.notices[0]).toContain("Second model style: options list");
+		expect(loadSettings(file).inferStyle).toBe("options");
+	});
+
+	it("rejects an unrecognised style without changing anything", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		await commands.get("snippets").handler("style bogus", seen.ctx);
+
+		expect(seen.notices[0]).toContain("not a second-model style");
+		expect(loadSettings(file).inferStyle).toBe(DEFAULT_SETTINGS.inferStyle);
+	});
+
+	it("stays quiet when the style is the one already stored", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		await commands.get("snippets").handler("style reemit", seen.ctx); // already the default
+		expect(seen.notices.length).toBe(0);
+	});
+
+	it("bare `style`, with nothing after it, is rejected the same as an unknown value", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		await commands.get("snippets").handler("style", seen.ctx);
+
+		expect(seen.notices[0]).toContain("not a second-model style");
+		expect(loadSettings(file).inferStyle).toBe(DEFAULT_SETTINGS.inferStyle);
+	});
+});
+
+describe("/snippets menu: Second model style — change", () => {
+	it("opens a picker offering both styles, marking the current one", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx({ pick: "Second model style:" });
+		await commands.get("snippets").handler("", seen.ctx);
+
+		expect(seen.menu()).toEqual([
+			"tag re-emit — rewrites the message with more <snippet> tags added (current)",
+			"options list — lists bare reply lines; every match in the message lights up",
+		]);
+	});
+
+	it("switching styles persists and rearms the second model", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		let opened = 0;
+		await commands.get("snippets").handler("", {
+			...seen.ctx,
+			ui: {
+				...seen.ctx.ui,
+				select: async (_t: string, options: string[]) =>
+					opened++ === 0
+						? options.find((o) => o.startsWith("Second model style:"))
+						: options.find((o) => o.startsWith("options list")),
+			},
+		});
+
+		expect(loadSettings(file).inferStyle).toBe("options");
+	});
+
+	it("changes nothing when the style picker is dismissed", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		let opened = 0;
+		await commands.get("snippets").handler("", {
+			...seen.ctx,
+			ui: {
+				...seen.ctx.ui,
+				select: async (_t: string, options: string[]) =>
+					opened++ === 0 ? options.find((o) => o.startsWith("Second model style:")) : undefined,
+			},
+		});
+
+		expect(loadSettings(file).inferStyle).toBe(DEFAULT_SETTINGS.inferStyle);
+	});
+
+	it("changes nothing when the style picker answers with something no label matches", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		let opened = 0;
+		await commands.get("snippets").handler("", {
+			...seen.ctx,
+			ui: {
+				...seen.ctx.ui,
+				select: async (_t: string, options: string[]) =>
+					opened++ === 0
+						? options.find((o) => o.startsWith("Second model style:"))
+						: "not a style",
+			},
+		});
+
+		expect(loadSettings(file).inferStyle).toBe(DEFAULT_SETTINGS.inferStyle);
 	});
 });
 
