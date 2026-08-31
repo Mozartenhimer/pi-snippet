@@ -99,12 +99,25 @@ export function writeRelayHost(host: string, env: NodeJS.ProcessEnv = process.en
 	}
 }
 
+/**
+ * An XDG directory from the environment, or the spec's default.
+ *
+ * A conditional rather than `value || fallback` so there is one decision here
+ * rather than two conditions that cannot be told apart: the fallback is always
+ * a non-empty path, so `a || b` has no false outcome at all and neither side
+ * of it can be shown to drive the answer. Empty-string handling is the same
+ * either way — an unset-or-empty XDG variable means "use the default".
+ */
+function envDir(value: string | undefined, fallback: string): string {
+	return value ? value : fallback;
+}
+
 function dataHome(env: NodeJS.ProcessEnv): string {
-	return env.XDG_DATA_HOME || join(homedir(), ".local", "share");
+	return envDir(env.XDG_DATA_HOME, join(homedir(), ".local", "share"));
 }
 
 function configHome(env: NodeJS.ProcessEnv): string {
-	return env.XDG_CONFIG_HOME || join(homedir(), ".config");
+	return envDir(env.XDG_CONFIG_HOME, join(homedir(), ".config"));
 }
 
 /**
@@ -416,34 +429,34 @@ function stripHandler(lines: string[]): { lines: string[]; changed: boolean } {
 	return { lines: kept, changed };
 }
 
-function cleanMimeapps(path: string): "cleaned" | "unchanged" | "failed" {
+/**
+ * Drop our id from one `key=value;value` file, whatever the file is for.
+ *
+ * The two kinds of file this runs against — every `mimeapps.list` gio consults,
+ * and `mimeinfo.cache` — had a function each, identical but for their return
+ * types. They are the same edit for the same reason: the scheme entry is a
+ * `;`-separated list, ours has to come out of it, and anything else on the line
+ * has to survive.
+ *
+ * `mimeinfo.cache` gets this treatment because `update-desktop-database`, which
+ * would regenerate it properly, is an optional tool — where it is absent a stale
+ * cache still lists a desktop file that is no longer there, so `gio mime` keeps
+ * recommending it. That is precisely what "I removed it and it's still
+ * registered" looks like from the outside.
+ *
+ * `"unchanged"` covers both "no such file" and "the file never named us": the
+ * caller reports what it removed, and a file it did not have to touch is not a
+ * removal.
+ */
+function stripHandlerFrom(path: string): "cleaned" | "unchanged" | "failed" {
 	try {
 		if (!existsSync(path)) return "unchanged";
 		const { lines, changed } = stripHandler(readFileSync(path, "utf8").split("\n"));
-		if (changed) writeFileSync(path, lines.join("\n"), "utf8");
+		if (!changed) return "unchanged";
+		writeFileSync(path, lines.join("\n"), "utf8");
 		return "cleaned";
 	} catch {
 		return "failed";
-	}
-}
-
-/**
- * Drop our id from `mimeinfo.cache` by hand.
- *
- * `update-desktop-database` regenerates the whole file, which is preferred —
- * but it is an optional tool, and where it is absent a stale cache still lists
- * this desktop file for the scheme, so `gio mime` keeps recommending an entry
- * whose file is gone. That is precisely what "I removed it and it's still
- * registered" looks like from the outside.
- */
-function cleanMimeInfoCache(path: string): boolean {
-	try {
-		if (!existsSync(path)) return false;
-		const { lines, changed } = stripHandler(readFileSync(path, "utf8").split("\n"));
-		if (changed) writeFileSync(path, lines.join("\n"), "utf8");
-		return true;
-	} catch {
-		return false;
 	}
 }
 
@@ -478,7 +491,7 @@ export function uninstall(env: NodeJS.ProcessEnv = process.env): UninstallResult
 	}
 
 	for (const path of mimeappsLocations(env)) {
-		const outcome = cleanMimeapps(path);
+		const outcome = stripHandlerFrom(path);
 		if (outcome === "cleaned") removed.push(path);
 		else if (outcome === "failed") warnings.push(`could not clean ${path}`);
 	}
@@ -486,8 +499,11 @@ export function uninstall(env: NodeJS.ProcessEnv = process.env): UninstallResult
 	// where update-desktop-database is absent (or fails) a stale cache keeps
 	// recommending a desktop file that is no longer there, which is precisely
 	// what "I removed it and it's still registered" looks like from outside.
+	// The cache's outcome is not reported: it is a derived file, so failing to
+	// scrub it is only a problem if the desktop still answers with our id — which
+	// is what the query below actually checks.
 	run("update-desktop-database", [dirname(desktopPath(env))]);
-	cleanMimeInfoCache(cachePath(env));
+	stripHandlerFrom(cachePath(env));
 
 	// Ask, rather than assume. An empty query answer is the success case; our
 	// id still in it means a location we could not clean survived.

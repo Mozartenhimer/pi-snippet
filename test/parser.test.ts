@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	fencedRegions,
 	MAX_SUGGESTIONS_PER_MESSAGE,
 	parseSuggestions,
 	visibleStreamingPrefix,
@@ -153,6 +154,17 @@ describe("parseSuggestions — edge case matrix (PRD §11)", () => {
 		expect(chipTexts("`code` then <snippet>a real one</snippet>")).toEqual(["a real one"]);
 	});
 
+	it("a backtick run of the wrong length does not close a code span", () => {
+		// The span opened by one backtick is closed only by a run of exactly one,
+		// so the ``  in the middle is span content and the tag inside it is inert.
+		expect(chipTexts("`a``b<snippet>x</snippet>`")).toEqual([]);
+	});
+
+	it("an unclosed tag leaves the following text node anchored at the content", () => {
+		const res = parseSuggestions("<snippet>hanging");
+		expect(res.nodes).toEqual([{ type: "text", text: "hanging", start: 9 }]);
+	});
+
 	it("content spanning a blank line: plain text, no chip", () => {
 		const res = parseSuggestions("<snippet>first part\n\nsecond paragraph</snippet>");
 		expect(res.suggestions).toEqual([]);
@@ -235,6 +247,25 @@ describe("visibleStreamingPrefix — streaming buffer (PRD §7, 10.7)", () => {
 	it("hides a partial close tag mid-suggestion", () => {
 		expect(visibleStreamingPrefix("ok <snippet>go</")).toBe("ok ");
 	});
+
+	it("a lone backtick does not stop the scan", () => {
+		// The backtick opens no span (nothing closes it), so it is a literal run
+		// and the unclosed tag after it must still be hidden.
+		expect(visibleStreamingPrefix("a ` b <snippet>go")).toBe("a ` b ");
+	});
+
+	it("shows a close tag that never had an open", () => {
+		const s = "done</snippet> and on to the next thing";
+		expect(visibleStreamingPrefix(s)).toBe(s);
+	});
+
+	it("keeps hiding when a second tag opens after one gave up", () => {
+		// The first construct is past any length a chip could be, so it resolves
+		// as text and the scan continues into it — where a fresh open tag is
+		// hidden as usual.
+		const s = `before <snippet>${"y".repeat(200)} <snippet>short`;
+		expect(visibleStreamingPrefix(s)).toBe(`before <snippet>${"y".repeat(200)} `);
+	});
 });
 
 describe("parse of streamed-then-finalized text", () => {
@@ -246,5 +277,74 @@ describe("parse of streamed-then-finalized text", () => {
 		const res = parseSuggestions(aborted);
 		expect(res.suggestions).toEqual([]);
 		expect(res.nodes.map((n) => n.text).join("")).toBe("Sure — want me to rebuild the sol");
+	});
+});
+
+/**
+ * Fence and backtick edge cases, reached by MC/DC rather than by a bug report.
+ *
+ * `npm run test:mcdc` showed these conditions had never been both true and
+ * false across the whole suite: an opening fence rejected for backticks in its
+ * info string, a closing candidate rejected for its char, its length or its
+ * trailing text, and a run of backticks that never closes. Each is a way the
+ * scanner can misjudge where code ends — and a tag inside code that is judged
+ * to be prose becomes a chip the model never asked for.
+ */
+describe("fencedRegions — what does and does not close a fence", () => {
+	it("refuses to open a ``` fence whose info string contains a backtick", () => {
+		// ```` ```js `x` ```` is inline code in a paragraph, not a code block.
+		const text = "```js `x`\n<snippet>still a chip</snippet>\n";
+		expect(fencedRegions(text)).toEqual([]);
+		expect(chipTexts(text)).toEqual(["still a chip"]);
+	});
+
+	it("opens a ~~~ fence, whose info string may contain backticks", () => {
+		const text = "~~~js `x`\n<snippet>inert</snippet>\n~~~\n";
+		expect(fencedRegions(text)).toHaveLength(1);
+		expect(chipTexts(text)).toEqual([]);
+	});
+
+	it("does not close a ``` fence with a ~~~ line", () => {
+		const text = "```\ncode\n~~~\n<snippet>inert</snippet>\n";
+		expect(fencedRegions(text)).toEqual([{ start: 0, end: text.length }]);
+		expect(chipTexts(text)).toEqual([]);
+	});
+
+	it("does not close a longer fence with a shorter marker", () => {
+		const text = "````\n```\n<snippet>inert</snippet>\n````\ndone\n";
+		const [region] = fencedRegions(text);
+		expect(text.slice(region!.start, region!.end)).toBe("````\n```\n<snippet>inert</snippet>\n````");
+		expect(chipTexts(text)).toEqual([]);
+	});
+
+	it("does not close a fence with a marker that carries an info string", () => {
+		const text = "```\ncode\n``` trailing\n<snippet>inert</snippet>\n";
+		expect(fencedRegions(text)).toEqual([{ start: 0, end: text.length }]);
+		expect(chipTexts(text)).toEqual([]);
+	});
+
+	it("treats an unclosed run of backticks as literal text, not a span", () => {
+		// No second run of exactly two, so ``foo is a literal run: everything
+		// after it is ordinary prose and its tags are real.
+		const text = "``foo <snippet>a chip</snippet>";
+		expect(chipTexts(text)).toEqual(["a chip"]);
+		expect(flatText(text)).toBe("``foo [a chip]");
+	});
+});
+
+describe("visibleStreamingPrefix — a `<` that cannot become a tag", () => {
+	it("shows a stray `<snippet` followed by `>` as text", () => {
+		// `<snippetx>` is not an open tag and cannot become one: the `>` closed
+		// the possibility. It is prose and must appear immediately.
+		expect(visibleStreamingPrefix("see <snippetx> here")).toBe("see <snippetx> here");
+	});
+
+	it("shows a stray `<snippet` followed by another `<` as text", () => {
+		expect(visibleStreamingPrefix("see <snippet<b")).toBe("see <snippet<b");
+	});
+
+	it("still withholds a `<snippet` that could yet become a tag", () => {
+		expect(visibleStreamingPrefix("see <snippet")).toBe("see ");
+		expect(visibleStreamingPrefix("see <snippet class=")).toBe("see ");
 	});
 });

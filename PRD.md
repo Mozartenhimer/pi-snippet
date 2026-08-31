@@ -580,7 +580,10 @@ path hands the click back to it:
 
 Support on terminals other than Ghostty — gnome-terminal in particular — is
 catalogued in `docs/linux-terminals.md`. Design, measurements and open items:
-`docs/terminal-resolved-clicks.md`.
+`docs/terminal-resolved-clicks.md`. What Windows would take, and what Linux is
+still missing, is `docs/cross-platform.md` — Windows Terminal paints and
+dispatches, and its per-click confirmation is a `safeUriSchemes` setting away
+from silence, which is the difference from macOS.
 
 **Over SSH** the delivery path inverts: the click is resolved on the machine
 in front of the user, whose desktop has no socket for this session — the

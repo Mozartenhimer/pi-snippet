@@ -128,6 +128,9 @@ interface TagPatterns {
 	close: RegExp;
 	closeGlobal: () => RegExp;
 	openGlobal: () => RegExp;
+	/** `<tag` and `</tag`: what a still-growing tag looks like mid-stream. */
+	openPrefix: string;
+	closePrefix: string;
 }
 
 function tagPatterns(tagName: string): TagPatterns {
@@ -137,14 +140,28 @@ function tagPatterns(tagName: string): TagPatterns {
 		close: new RegExp(`^</${t}\\s*>`),
 		closeGlobal: () => new RegExp(`</${t}\\s*>`, "g"),
 		openGlobal: () => new RegExp(`<${t}(?:\\s[^<>]*)?>`, "g"),
+		openPrefix: `<${tagName}`,
+		closePrefix: `</${tagName}`,
 	};
 }
 
-/** Length of the inline code span starting at `pos` (backtick run), or 0. */
-function codeSpanLength(text: string, pos: number): number {
-	if (text[pos] !== "`") return 0;
+/** Length of the run of backticks starting at `pos`, which is at least one. */
+function backtickRunLength(text: string, pos: number): number {
 	let n = 1;
 	while (text[pos + n] === "`") n++;
+	return n;
+}
+
+/**
+ * Length of the inline code span opening at `pos`, or 0 when the run of
+ * backticks there is never closed by a run of the same length.
+ *
+ * Callers have already established that `text[pos]` is a backtick; the guard
+ * that re-checked it was unreachable, and the run length it then recomputed is
+ * `backtickRunLength`'s job.
+ */
+function codeSpanLength(text: string, pos: number): number {
+	const n = backtickRunLength(text, pos);
 	// Find the next run of exactly n backticks.
 	let i = pos + n;
 	while (i < text.length) {
@@ -161,13 +178,109 @@ function codeSpanLength(text: string, pos: number): number {
 }
 
 /**
+ * One shape found while walking assistant markdown.
+ *
+ * The two readers of this file — the parser and the streaming gate — have to
+ * walk the same things: fenced code, inline code spans, literal backtick runs,
+ * and the states a tag can be in. They differ only in what they *do* at each
+ * shape, so the walk lives in `scan` once and each caller decides what a token
+ * means. Before this, both carried their own copy of the walk, and the three
+ * copies of the backtick dance alone were the most duplicated logic in the
+ * codebase.
+ *
+ * A generator rather than a callback per token, because the streaming gate's
+ * whole job is to *stop* at the first thing it must hide: with a generator that
+ * is a plain `break`, where a callback would need a sentinel return threaded
+ * back out through the walker.
+ */
+type ScanToken =
+	/**
+	 * Ordinary text — plain characters, a fenced block, a code span, or a
+	 * literal backtick run, coalesced into the longest run available. Never
+	 * parsed for tags: the fence and code-span rules (§5.3 1–2) are applied
+	 * here, once, so neither caller can disagree about them.
+	 */
+	| { kind: "text"; start: number; end: number }
+	/** A close tag with no open before it. Rule 4: both callers drop it. */
+	| { kind: "strayClose"; start: number; end: number }
+	/** A complete construct. `end` is past the close tag. */
+	| { kind: "chip"; start: number; end: number; contentStart: number; contentEnd: number }
+	/**
+	 * An open tag whose close never arrived. The scan resumes at `contentStart`,
+	 * so the content comes back as ordinary tokens — which is exactly rule 3,
+	 * "opening tag dropped, inner text is ordinary text", applied by the walk
+	 * itself rather than by each caller.
+	 */
+	| { kind: "unclosed"; start: number; contentStart: number }
+	/**
+	 * A `<` that is not a tag. `couldBecomeTag` is true when more streamed input
+	 * could still grow it into one — the single piece of information the
+	 * streaming gate needs and the parser has no use for.
+	 */
+	| { kind: "stray"; start: number; end: number; couldBecomeTag: boolean };
+
+function* scan(text: string, pat: TagPatterns): Generator<ScanToken> {
+	const fences = fencedRegions(text);
+	/** Start of the text run being coalesced, or -1 when there is none open. */
+	let runStart = -1;
+	let i = 0;
+
+	while (i < text.length) {
+		const fence = inRegion(fences, i);
+		if (fence) {
+			if (runStart === -1) runStart = i;
+			i = fence.end;
+			continue;
+		}
+		const ch = text[i]!;
+		if (ch === "`") {
+			// A span when something closes it, otherwise the literal run — either
+			// way it is text, and the tags inside it are inert.
+			if (runStart === -1) runStart = i;
+			const span = codeSpanLength(text, i);
+			i += span > 0 ? span : backtickRunLength(text, i);
+			continue;
+		}
+		if (ch !== "<") {
+			if (runStart === -1) runStart = i;
+			i++;
+			continue;
+		}
+		const rest = text.slice(i);
+		const closeM = pat.close.exec(rest);
+		const openM = closeM ? null : pat.open.exec(rest);
+		const closeAt = openM ? findClose(text, i + openM[0].length, pat, fences) : undefined;
+		if (runStart !== -1) {
+			yield { kind: "text", start: runStart, end: i };
+			runStart = -1;
+		}
+		if (closeM) {
+			yield { kind: "strayClose", start: i, end: i + closeM[0].length };
+			i += closeM[0].length;
+		} else if (openM) {
+			const contentStart = i + openM[0].length;
+			if (closeAt) {
+				yield { kind: "chip", start: i, end: closeAt.end, contentStart, contentEnd: closeAt.start };
+				i = closeAt.end;
+			} else {
+				yield { kind: "unclosed", start: i, contentStart };
+				i = contentStart;
+			}
+		} else {
+			yield { kind: "stray", start: i, end: i + 1, couldBecomeTag: couldBecomeTag(rest, pat) };
+			i++;
+		}
+	}
+	if (runStart !== -1) yield { kind: "text", start: runStart, end: i };
+}
+
+/**
  * Parse assistant markdown into text and suggestion nodes.
  * Pure function of its inputs.
  */
 export function parseSuggestions(text: string, opts?: SuggestOptions): ParseResult {
 	const { tagName, maxLength, maxPerMessage, acceptedSoFar } = resolveOpts(opts);
 	const pat = tagPatterns(tagName);
-	const fences = fencedRegions(text);
 
 	const nodes: SuggestNode[] = [];
 	const suggestions: string[] = [];
@@ -175,7 +288,6 @@ export function parseSuggestions(text: string, opts?: SuggestOptions): ParseResu
 	let buf = "";
 	/** Where `buf` began in `text`; kept alongside it so text nodes carry offsets. */
 	let bufStart = 0;
-	let i = 0;
 
 	const flush = () => {
 		if (buf.length > 0) {
@@ -183,68 +295,49 @@ export function parseSuggestions(text: string, opts?: SuggestOptions): ParseResu
 			buf = "";
 		}
 	};
-	/** Append to the buffer, remembering where a fresh run began. */
+	/**
+	 * Append to the buffer, remembering where a fresh run began.
+	 *
+	 * Runs are concatenated across whatever was dropped between them (a stray
+	 * close tag, an unclosed open tag), so a text node's `start` is where its
+	 * first surviving character was, not where every later one is — which is
+	 * what makes a dropped tag invisible in the offsets a chip is measured
+	 * against.
+	 */
 	const keep = (chunk: string, from: number) => {
 		if (buf.length === 0) bufStart = from;
 		buf += chunk;
 	};
 
-	while (i < text.length) {
-		const fence = inRegion(fences, i);
-		if (fence) {
-			keep(text.slice(i, fence.end), i);
-			i = fence.end;
-			continue;
-		}
-		const ch = text[i]!;
-		if (ch === "`") {
-			const spanLen = codeSpanLength(text, i);
-			if (spanLen > 0) {
-				keep(text.slice(i, i + spanLen), i);
-				i += spanLen;
-			} else {
-				// Literal backtick run.
-				let n = 1;
-				while (text[i + n] === "`") n++;
-				keep(text.slice(i, i + n), i);
-				i += n;
-			}
-			continue;
-		}
-		if (ch === "<") {
-			const rest = text.slice(i);
-			const closeM = pat.close.exec(rest);
-			if (closeM) {
-				// Close tag with no open: dropped silently.
-				i += closeM[0].length;
-				continue;
-			}
-			const openM = pat.open.exec(rest);
-			if (openM) {
-				const contentStart = i + openM[0].length;
-				const closeAt = findClose(text, contentStart, pat, fences);
-				if (!closeAt) {
-					// Unclosed: drop the open tag, inner text flows as ordinary text.
-					i = contentStart;
-					if (buf.length === 0) bufStart = contentStart;
-					continue;
-				}
-				let content = text.slice(contentStart, closeAt.start);
-				// Nested opens are invalid: strip them from the content.
-				content = content.replace(pat.openGlobal(), "");
+	for (const token of scan(text, pat)) {
+		switch (token.kind) {
+			// A `<` that never became a tag is just text; the scan separates the
+			// two only because the streaming gate has to tell them apart.
+			case "text":
+			case "stray":
+				keep(text.slice(token.start, token.end), token.start);
+				break;
+			// Rules 3 and 4. Neither leaves anything behind: an unclosed tag's
+			// content arrives as ordinary tokens right after this.
+			case "strayClose":
+			case "unclosed":
+				break;
+			case "chip": {
+				// Nested opens are invalid (rule 5): strip them from the content.
+				const content = text
+					.slice(token.contentStart, token.contentEnd)
+					.replace(pat.openGlobal(), "");
 				const trimmed = content.trim();
-				const afterClose = closeAt.end;
-				if (trimmed.length === 0) {
-					// Empty or whitespace-only: dropped entirely.
-					i = afterClose;
-					continue;
-				}
-				const invalid =
-					trimmed.length > maxLength || /\n[ \t]*\n/.test(content) || accepted >= maxPerMessage;
-				if (invalid) {
-					keep(content, contentStart);
-					i = afterClose;
-					continue;
+				// Empty or whitespace-only: dropped entirely (rule 6).
+				if (trimmed.length === 0) break;
+				if (
+					trimmed.length > maxLength ||
+					/\n[ \t]*\n/.test(content) ||
+					accepted >= maxPerMessage
+				) {
+					// Rules 7–9: the tags go, the content stays as ordinary text.
+					keep(content, token.contentStart);
+					break;
 				}
 				flush();
 				// Offset of the trimmed content: skip the leading whitespace that
@@ -254,19 +347,13 @@ export function parseSuggestions(text: string, opts?: SuggestOptions): ParseResu
 					type: "suggestion",
 					text: trimmed,
 					index: accepted,
-					start: contentStart + lead,
+					start: token.contentStart + lead,
 				});
 				suggestions.push(trimmed);
 				accepted++;
-				i = afterClose;
-				continue;
+				break;
 			}
-			keep(ch, i);
-			i++;
-			continue;
 		}
-		keep(ch, i);
-		i++;
 	}
 	flush();
 	return { nodes, suggestions };
@@ -311,65 +398,22 @@ const STREAM_RESOLVE_SLACK = 40;
  */
 export function visibleStreamingPrefix(text: string, opts?: SuggestOptions): string {
 	const { tagName, maxLength } = resolveOpts(opts);
-	const pat = tagPatterns(tagName);
-	const fences = fencedRegions(text);
-	const openPrefix = `<${tagName}`;
-	const closePrefix = `</${tagName}`;
-
-	let i = 0;
-	while (i < text.length) {
-		const fence = inRegion(fences, i);
-		if (fence) {
-			// Inside an (possibly still-open) fence: nothing to hide, it's code.
-			i = fence.end;
-			continue;
+	// Everything this function used to do itself — fences, code spans, backtick
+	// runs, matching tags — is the scan's. What is left is the one decision that
+	// is actually about streaming: where to cut.
+	for (const token of scan(text, tagPatterns(tagName))) {
+		if (token.kind === "unclosed") {
+			// A construct grown past anything a chip could be can only ever
+			// resolve as ordinary text, so show it and keep scanning — the scan
+			// has already resumed inside it, where a later tag can still hide.
+			if (text.length - token.contentStart <= maxLength + STREAM_RESOLVE_SLACK) {
+				return text.slice(0, token.start);
+			}
+		} else if (token.kind === "stray" && token.couldBecomeTag) {
+			// A partial tag at the end of the stream: `<sn`, `</snip` …
+			return text.slice(0, token.start);
 		}
-		const ch = text[i]!;
-		if (ch === "`") {
-			const spanLen = codeSpanLength(text, i);
-			if (spanLen > 0) {
-				i += spanLen;
-			} else {
-				let n = 1;
-				while (text[i + n] === "`") n++;
-				i += n;
-			}
-			continue;
-		}
-		if (ch === "<") {
-			const rest = text.slice(i);
-			// Complete close tag with no matching open: skip past.
-			const closeM = pat.close.exec(rest);
-			if (closeM) {
-				i += closeM[0].length;
-				continue;
-			}
-			const openM = pat.open.exec(rest);
-			if (openM) {
-				const contentStart = i + openM[0].length;
-				const closeAt = findClose(text, contentStart, pat, fences);
-				if (closeAt) {
-					i = closeAt.end;
-					continue;
-				}
-				// Open tag, close not yet arrived.
-				const pending = text.length - contentStart;
-				if (pending > maxLength + STREAM_RESOLVE_SLACK) {
-					// Can never be a valid chip; resolve as text and show it.
-					i = contentStart;
-					continue;
-				}
-				return text.slice(0, i);
-			}
-			// Partial tag at end of stream? Only a suffix with no `>` yet can
-			// still grow into a tag.
-			if (couldBecomeTag(rest, openPrefix, closePrefix)) {
-				return text.slice(0, i);
-			}
-			i++;
-			continue;
-		}
-		i++;
+		// Everything else is either finished markup or text: safe to paint.
 	}
 	return text;
 }
@@ -378,8 +422,8 @@ export function visibleStreamingPrefix(text: string, opts?: SuggestOptions): str
  * True when `rest` (which starts with `<`) is a prefix of a possible open or
  * close tag that has not yet seen its terminating `>`.
  */
-function couldBecomeTag(rest: string, openPrefix: string, closePrefix: string): boolean {
-	for (const prefix of [openPrefix, closePrefix]) {
+function couldBecomeTag(rest: string, pat: TagPatterns): boolean {
+	for (const prefix of [pat.openPrefix, pat.closePrefix]) {
 		if (rest.length < prefix.length) {
 			if (prefix.startsWith(rest)) return true;
 		} else if (rest.startsWith(prefix)) {

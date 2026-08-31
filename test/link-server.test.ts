@@ -111,6 +111,21 @@ describe("the click socket", () => {
 		},
 	);
 
+	it("is idempotent: a second start returns the path the first one bound", () => {
+		const inserted: string[] = [];
+		const server = serverFor({ inserted });
+		try {
+			const first = server.start();
+			expect(first).not.toBeNull();
+			// Nothing rebinds and nothing moves — `syncClicks` calls `start()`
+			// whenever it runs, and `installClickHandler` calls it again.
+			expect(server.start()).toBe(first);
+			expect(server.socketPath).toBe(first);
+		} finally {
+			server.stop();
+		}
+	});
+
 	it("starts over debris from a killed session", () => {
 		const inserted: string[] = [];
 		const first = serverFor({ inserted });
@@ -159,5 +174,69 @@ describe("where the two sides agree to meet", () => {
 
 	it("still names a directory when the session has no runtime dir at all", () => {
 		expect(socketDirCandidates({}).length).toBeGreaterThan(0);
+	});
+});
+
+/**
+ * A click arrives as one line, but a socket is a stream: the line can arrive
+ * in pieces, and something that is not the handler can write without ever
+ * sending one. MC/DC showed neither arm had been taken — every existing test
+ * writes its line in a single `end()`.
+ */
+describe("a click that arrives in pieces", () => {
+	/** Write in chunks, pausing between them so each lands as its own `data`. */
+	function sendChunked(path: string, chunks: string[]): Promise<void> {
+		return new Promise((resolve, reject) => {
+			const socket = connect(path, async () => {
+				for (const chunk of chunks) {
+					socket.write(chunk);
+					await new Promise((r) => setTimeout(r, 10));
+				}
+				socket.end();
+			});
+			socket.on("close", () => resolve());
+			socket.on("error", reject);
+		});
+	}
+
+	it("waits for the newline before acting on what it has", async () => {
+		const inserted: string[] = [];
+		const server = serverFor({ inserted });
+		const path = server.start()!;
+		try {
+			await sendChunked(path, ["0f3e2a", "91/c", "2\n"]);
+			await new Promise((r) => setTimeout(r, 50));
+			expect(inserted).toEqual(["chip 2"]);
+		} finally {
+			server.stop();
+		}
+	});
+
+	it("hangs up on a writer that sends no newline at all", async () => {
+		const inserted: string[] = [];
+		const server = serverFor({ inserted });
+		const path = server.start()!;
+		try {
+			// Well past the 512-byte ceiling, and never a line to act on.
+			await sendChunked(path, ["x".repeat(600)]);
+			await new Promise((r) => setTimeout(r, 50));
+			expect(inserted).toEqual([]);
+		} finally {
+			server.stop();
+		}
+	});
+});
+
+describe("socketDirCandidates — a platform with no getuid", () => {
+	it("still names a per-user temp dir", () => {
+		const real = process.getuid;
+		try {
+			// Windows has no getuid; the fallback keeps the shape of the name.
+			(process as { getuid?: () => number }).getuid = undefined;
+			const [candidate] = socketDirCandidates({} as NodeJS.ProcessEnv);
+			expect(candidate).toBe(join(tmpdir(), "pi-snippet-0"));
+		} finally {
+			(process as { getuid?: () => number }).getuid = real;
+		}
 	});
 });

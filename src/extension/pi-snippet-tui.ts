@@ -33,9 +33,10 @@
  * when it stops) and held in extension state, never built during
  * transformation (PRD §5.2 hard rule).
  */
+import { putBounded } from "../shared/bounded-map.js";
 import { DigitChord } from "../shared/digit-chord.js";
 import { asksSomething } from "../shared/inferred.js";
-import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix, MAX_SUGGESTIONS_PER_MESSAGE } from "../shared/suggestions.js";
+import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix } from "../shared/suggestions.js";
 import { mergeSuggestions, toTuiMarkdown } from "../shared/tui-markdown.js";
 import {
 	DEFAULT_INFER_MODEL,
@@ -63,6 +64,13 @@ interface TextBlock {
 /** What a closing tag starts with; `</snippet   >` is legal, so match the head. */
 const CLOSE_TAG_PREFIX = `</${SNIPPET_TAG}`;
 
+/**
+ * Two tables for the same four modes, which is not an oversight: the picker has
+ * a whole line per option and can afford to say what the mode does, while the
+ * `/snippets` menu shows the current mode inside a line that already carries a
+ * stat and a click status. One table would either truncate the explanation or
+ * push the menu line past the terminal width.
+ */
 /** How the mode picker names each mode, and what the label promises. */
 const MODE_LABEL: Record<SnippetMode, string> = {
 	off: "off — no chips at all",
@@ -141,10 +149,8 @@ export default function piSnippetTui(pi: any): void {
 	const inferred = new Map<string, string[]>();
 	const INFERRED_LIMIT = 64;
 	/** Anchors inferred for a message so far, by its stripped text. */
-	const inferredFor = (message?: { content?: TextBlock[] }): string[] => {
-		if (!message) return [];
-		return inferred.get(messageText(message)) ?? [];
-	};
+	const inferredFor = (message: { content?: TextBlock[] }): string[] =>
+		inferred.get(messageText(message)) ?? [];
 	/**
 	 * The same anchors, indexed by the hash of every shape of the message the
 	 * markdown transformer might be handed. pi renders an assistant message one
@@ -207,10 +213,14 @@ export default function piSnippetTui(pi: any): void {
 	let lastStatusCtx: any = null;
 
 	const syncInferStatus = (ctx?: any): void => {
+		// One guard, not two: there is nothing to paint without a ctx and
+		// nothing to paint outside the TUI, and the optional chain covers the
+		// first case — the `if (!c) return` that stood here could not fire
+		// anyway, since every caller either passes a ctx or runs after one that
+		// did.
 		const c = ctx ?? lastStatusCtx;
-		if (!c) return;
+		if (c?.mode !== "tui") return;
 		lastStatusCtx = c;
-		if (c.mode !== "tui") return;
 		if (!inferOn()) inferStatus = "off";
 		let text: string | undefined;
 		if (inferStatus === "idle") text = "snippet: not sent";
@@ -282,13 +292,7 @@ export default function piSnippetTui(pi: any): void {
 	const linkTargets = new Map<string, { chips: string[] }>();
 	const LINK_TARGET_LIMIT = 64;
 	const rememberLinkTargets = (text: string, chips: string[]): void => {
-		if (text.length === 0) return;
-		linkTargets.set(messageKey(text), { chips });
-		while (linkTargets.size > LINK_TARGET_LIMIT) {
-			const oldest = linkTargets.keys().next();
-			if (oldest.done) break;
-			linkTargets.delete(oldest.value);
-		}
+		putBounded(linkTargets, messageKey(text), { chips }, LINK_TARGET_LIMIT);
 	};
 
 	/**
@@ -302,10 +306,12 @@ export default function piSnippetTui(pi: any): void {
 	 * numbering in the URL and the numbering on screen the same numbering.
 	 */
 	const indexMessageForLinks = (
-		message: { content?: TextBlock[] } | undefined,
+		message: { content?: TextBlock[] },
 		opts?: { streaming?: boolean },
 	): void => {
-		if (!message || !Array.isArray(message.content)) return;
+		// The shape check lives in `messageForms`, which answers with no forms
+		// for a message whose content is not an array — so a copy of it here
+		// could only ever agree with it.
 		const anchors = inferredFor(message);
 		for (const form of messageForms(message, opts)) {
 			if (form.length === 0) continue;
@@ -323,14 +329,18 @@ export default function piSnippetTui(pi: any): void {
 	 * blocks would miss the trim.
 	 */
 	const messageForms = (
-		message: { content?: TextBlock[] } | undefined,
+		message: { content?: TextBlock[] },
 		opts?: { streaming?: boolean },
 	): string[] => {
 		const forms: string[] = [];
-		if (!message || !Array.isArray(message.content)) return forms;
+		if (!Array.isArray(message.content)) return forms;
 		for (const block of message.content) {
 			if (block.type !== "text") continue;
 			const raw = block.text ?? "";
+			// Both shapes, even though they are the same string for most blocks:
+			// the caller hashes each form, and a duplicate hash costs one wasted
+			// map write, while a missing one costs a chip that is addressable but
+			// never painted. Cheap in the direction that fails safely.
 			forms.push(raw, raw.trim());
 			if (opts?.streaming) {
 				forms.push(visibleStreamingPrefix(raw), visibleStreamingPrefix(raw.trim()));
@@ -382,7 +392,8 @@ export default function piSnippetTui(pi: any): void {
 			return linkTargets.get(msg)?.chips[index - 1];
 		},
 		onActivate: (text) => {
-			if (!lastCtx) return;
+			// `syncClicks` sets `lastCtx` in the same call that starts the
+			// listener, so nothing can arrive here before there is one.
 			insertText(lastCtx, text);
 			// A socket callback is even further outside pi's render pass than a
 			// consumed keystroke: without this the text sits invisibly in the
@@ -399,8 +410,10 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const chord = new DigitChord({
 		onCommit: (value) => {
-			const text = state.addressable[value - 1];
-			if (text === undefined || !lastCtx) return;
+			// `chordState` commits only a number inside the addressable range it
+			// was given, so the slot is always filled; `lastCtx` is set before a
+			// keystroke can reach the chord at all.
+			const text = state.addressable[value - 1] as string;
 			insertText(lastCtx, text);
 			tui?.requestRender?.();
 		},
@@ -549,10 +562,12 @@ export default function piSnippetTui(pi: any): void {
 	 * what keeps Alt+N from ever inserting half a sentence.
 	 */
 	const suggestionsFromMessage = (
-		message?: { role?: string; content?: TextBlock[] },
+		message: { role?: string; content?: TextBlock[] },
 		opts?: { streaming?: boolean },
 	): string[] => {
-		if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return [];
+		// Every caller has already established this is the assistant's; only the
+		// content's shape is still open.
+		if (!Array.isArray(message.content)) return [];
 		const anchors = inferredFor(message);
 		if (opts?.streaming) {
 			const suggestions: string[] = [];
@@ -569,8 +584,8 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/** The message text, in document order. */
-	const messageText = (message?: { content?: TextBlock[] }): string => {
-		if (!message || !Array.isArray(message.content)) return "";
+	const messageText = (message: { content?: TextBlock[] }): string => {
+		if (!Array.isArray(message.content)) return "";
 		return message.content
 			.filter((block) => block.type === "text")
 			.map((block) => block.text ?? "")
@@ -619,6 +634,13 @@ export default function piSnippetTui(pi: any): void {
 		state.addressable = [];
 		if (!isEnabled()) return;
 		const branch = ctx.sessionManager.getBranch();
+		// Two passes over the same array on purpose, because they answer
+		// different questions: *every* assistant message has to be re-indexed for
+		// clicking, while only the last one decides what Alt+N addresses. Folding
+		// them together would mean either indexing only the tip (a click on older
+		// scrollback then resolves against an empty map) or letting an older
+		// message's chips win the numbering.
+		//
 		// Every assistant message in the branch gets repainted through the
 		// transformer on resume/fork/reload, each with the URL it had before —
 		// messageKey and (as of the session-id token) linkToken are both
@@ -792,28 +814,25 @@ export default function piSnippetTui(pi: any): void {
 		const known = inferred.get(raw) ?? [];
 		if (known.includes(anchor)) return;
 		if (seq !== latestAssistantSeq) return; // a newer message owns the numbering now
-		// Keep two-digit addressing meaningful: layer 1 has first claim on the
-		// numbers, and the runaway guard caps what the keyboard can reach.
-		const layer1 = parseSuggestions(messageText(message)).suggestions.length;
-		if (layer1 + known.length >= MAX_SUGGESTIONS_PER_MESSAGE) return;
+		// No cap here: `extractAnchors` (shared/inferred.ts) counts the message's
+		// own tags as already-accepted and stops at MAX_SUGGESTIONS_PER_MESSAGE,
+		// so it never offers an anchor that would take the numbering past what
+		// two-digit addressing reaches. A second copy of the same arithmetic
+		// against the same two numbers could not disagree with it.
 		const next = [...known, anchor];
-		inferred.set(raw, next);
-		while (inferred.size > INFERRED_LIMIT) {
-			const oldest = inferred.keys().next();
-			if (oldest.done) break;
-			inferred.delete(oldest.value);
-		}
+		putBounded(inferred, raw, next, INFERRED_LIMIT);
 		// Index the answer under every form of the message the transformer can
 		// be handed (a trimmed block among them) — without this the chips stay
-		// addressable but never paint.
+		// addressable but never paint. Deliberately a second map rather than a
+		// lookup through the first: `inferred` is keyed by the message text the
+		// second model was asked about, which is what the engine's cache and the
+		// sequence checks above are keyed by too, while this one is keyed by the
+		// hash of whatever fragment the transformer happens to be handed. One map
+		// cannot be both without the transformer having to guess which shape of
+		// the message it is looking at.
 		for (const form of messageForms(message)) {
 			if (form.length === 0) continue;
-			inferredByForm.set(messageKey(form), next);
-			while (inferredByForm.size > INFERRED_LIMIT) {
-				const oldest = inferredByForm.keys().next();
-				if (oldest.done) break;
-				inferredByForm.delete(oldest.value);
-			}
+			putBounded(inferredByForm, messageKey(form), next, INFERRED_LIMIT);
 		}
 		indexMessageForLinks(message);
 		setAddressable(suggestionsFromMessage(message));
@@ -854,12 +873,17 @@ export default function piSnippetTui(pi: any): void {
 		queueInference(event.message, ctx);
 	});
 
+	// pi's /hotkeys table gives every registerShortcut call its own row (no
+	// "hidden" option exists, and there's no unregister), and all ten digits
+	// must be bound for the chord in digit-chord.ts to see every keystroke —
+	// so ten rows are unavoidable. Only one needs the full explanation.
 	for (let n = 0; n <= 9; n++) {
+		const suggestion = n === 0 ? 10 : n;
 		pi.registerShortcut(`alt+${n}`, {
 			description:
-				n === 0
-					? "Insert suggestion 10 (or extend a two-digit number)"
-					: `Insert suggestion ${n} (hold Alt and type two digits for 10+)`,
+				n === 1
+					? "Insert suggestion 1 (hold Alt and type two digits for 10+, e.g. Alt+1 Alt+0)"
+					: `Insert suggestion ${suggestion}`,
 			handler: (ctx: any) => {
 				if (!isEnabled() || !state.hotkeysEnabled || !ctx.hasUI) return;
 				lastCtx = ctx;
@@ -1111,11 +1135,15 @@ export default function piSnippetTui(pi: any): void {
 	 * persistence that did not happen.
 	 */
 	const persist = (): string => {
+		// The three persisted fields, passed straight from state: `saveSettings`
+		// is what decides the file's shape (it drops an undefined `inferModel`
+		// rather than writing a null), so spelling the same normalization out
+		// here again would just be a second place to keep it in step.
 		const ok = saveSettings(
 			{
 				mode: state.mode,
 				hotkeysEnabled: state.hotkeysEnabled,
-				...(state.inferModel ? { inferModel: state.inferModel } : {}),
+				inferModel: state.inferModel,
 			},
 			settingsFile,
 		);
@@ -1257,35 +1285,41 @@ export default function piSnippetTui(pi: any): void {
 				ctx.ui.notify("Inline suggestions are off for this session (--no-suggestions)");
 				return;
 			}
-				const clickRows = overSsh()
-					? [
+			// The click rows, chosen three ways. Over SSH the desktop that would
+			// dispatch a click is the user's own machine, so this session can only
+			// offer the socket forward and the line that sets the relay up there;
+			// off Linux there is no handler to register at all; otherwise it is
+			// register-or-remove — one condition, not the two inverted copies of
+			// it this used to ask — plus the relay host once a handler exists.
+			const clickRows = overSsh()
+				? [
 						`Remote clicking: ${remoteClicks ? "on" : "off"} — ${
 							remoteClicks
 								? "print the forward line again and verify a click"
 								: "make Ctrl+click work over SSH (forwards this session's socket)"
-							}`,
+						}`,
+						// The client half of relayed clicking lives on the client;
+						// what this side can offer is the one-time line to run there.
 						"SSH relay setup — the one-time command to run on your machine, instead of a forward",
-					  ]
-					: [
-						...(process.platform === "linux" && !linkInstall.isInstalled()
-							? ["Register click handler — one-time desktop setup, needed before Ctrl+click works"]
-							: []),
-						...(process.platform === "linux" && linkInstall.isInstalled()
-							? ["Remove click handler — unregister pisnip:// from the desktop"]
-							: []),
-						// The client half of relayed clicking: which host a click
-						// goes back to when nothing local answers. Only useful
-						// once something dispatches pisnip:// to the handler.
-						...(process.platform === "linux" && linkInstall.isInstalled()
-							? [`SSH relay host: ${linkInstall.readRelayHost() ?? "not set"} — change`]
-							: []),
-					  ];
+					]
+				: process.platform !== "linux"
+					? []
+					: linkInstall.isInstalled()
+						? [
+								"Remove click handler — unregister pisnip:// from the desktop",
+								// Which host a click goes back to when nothing local
+								// answers. Only useful once something dispatches
+								// pisnip:// to the handler.
+								`SSH relay host: ${linkInstall.readRelayHost() ?? "not set"} — change`,
+							]
+						: ["Register click handler — one-time desktop setup, needed before Ctrl+click works"];
+			const model = effectiveModel();
 			const choice = await ctx.ui.select(
 				`${snippetStats(ctx)} — ${clickStatusLabel()}`,
 				[
 					`Suggestions: ${MODE_SUMMARY[state.mode]} — change`,
 					`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
-					`Second model: ${effectiveModel().id}${effectiveModel().fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
+					`Second model: ${model.id}${model.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
 					...clickRows,
 				],
 			);

@@ -143,3 +143,63 @@ describe("DigitChord", () => {
 		}
 	});
 });
+
+/**
+ * The states no gesture produces but the function still has to answer for.
+ * `chordState` is exported and called from two surfaces; MC/DC showed these
+ * arms had never been taken.
+ */
+describe("chordState — degenerate inputs", () => {
+	it("addresses nothing with no digits typed", () => {
+		expect(chordState("", 4)).toEqual({ value: null, canExtend: true });
+		expect(chordState("", 0)).toEqual({ value: null, canExtend: false });
+	});
+
+	it("addresses nothing for a run of zeros", () => {
+		// "0" alone means ten; "00" is a number below the first suggestion. It
+		// can still extend — "001" is not yet ruled out — but addresses nothing
+		// on its own.
+		expect(chordState("00", 20)).toEqual({ value: null, canExtend: true });
+	});
+
+	it("addresses nothing for digits that are not a number", () => {
+		expect(chordState("x", 4)).toEqual({ value: null, canExtend: false });
+	});
+});
+
+describe("DigitChord — settling on nothing", () => {
+	it("rejects digits that address nothing, and commits nothing", () => {
+		const onCommit = vi.fn();
+		const onReject = vi.fn();
+		const chord = new DigitChord({ onCommit, onReject });
+		chord.press(9, 3);
+		expect(onCommit).not.toHaveBeenCalled();
+		expect(onReject).toHaveBeenCalledWith("9");
+	});
+
+	it("does nothing on a release with no digits pending", () => {
+		const onCommit = vi.fn();
+		const onReject = vi.fn();
+		const onPending = vi.fn();
+		const chord = new DigitChord({ onCommit, onReject, onPending });
+		chord.release(4);
+		expect(onCommit).not.toHaveBeenCalled();
+		expect(onReject).not.toHaveBeenCalled();
+		expect(onPending).not.toHaveBeenCalled();
+	});
+});
+
+describe("DigitChord — the addressable set shrinks under a pending chord", () => {
+	it("rejects held digits that no longer address anything on release", () => {
+		const onCommit = vi.fn();
+		const onReject = vi.fn();
+		// 2 is held rather than committed because 20 is still reachable.
+		const chord = new DigitChord({ onCommit, onReject });
+		chord.press(2, 25);
+		expect(chord.pending).toBe(true);
+		// The message changed under it: only one suggestion is addressable now.
+		chord.release(1);
+		expect(onCommit).not.toHaveBeenCalled();
+		expect(onReject).toHaveBeenCalledWith("2");
+	});
+});

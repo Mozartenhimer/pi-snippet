@@ -309,3 +309,116 @@ describe("modelCompletions", () => {
 		expect(modelCompletions("zzzzzz-nonexistent", available)).toEqual([]);
 	});
 });
+
+/**
+ * The paths a second model can fail down, none of which is visible from
+ * outside: every one of these ends as a silent null, so the only evidence
+ * they behave is a test. MC/DC found each of these arms untaken.
+ */
+describe("InferenceEngine — reaching the model", () => {
+	it("ignores a blank pin and falls through to the next source", () => {
+		// A `/snippets model` value that is only whitespace is not a pin.
+		expect(resolveInferenceModel(host(), "   ")).toEqual(MODEL);
+	});
+
+	it("returns nothing at all when the host has no model registry", async () => {
+		const engine = new InferenceEngine();
+		expect(await engine.infer(MESSAGE, {} as any, [])).toBeNull();
+	});
+
+	it("returns nothing when no model in the catalogue can be reached", async () => {
+		const engine = new InferenceEngine();
+		expect(await engine.infer(MESSAGE, host({ available: [] }), [])).toBeNull();
+	});
+
+	it("shares one in-flight call between concurrent asks for the same message", async () => {
+		let calls = 0;
+		const engine = new InferenceEngine();
+		const h = host({
+			complete: async () => {
+				calls++;
+				await new Promise((r) => setTimeout(r, 5));
+				return { content: [{ type: "text", text: REPLY }], stopReason: "stop" };
+			},
+		});
+		const [a, b] = await Promise.all([engine.infer(MESSAGE, h, []), engine.infer(MESSAGE, h, [])]);
+		expect(a).toEqual(["rebuild", "commit"]);
+		expect(b).toBe(a);
+		expect(calls).toBe(1);
+	});
+});
+
+describe("InferenceEngine — credentials the registry does not have", () => {
+	const captured: any[] = [];
+	const streaming = (credentials: () => any) =>
+		host({
+			credentials,
+			stream: (_m, _c, callOptions) => {
+				captured.push(callOptions);
+				return eventStream(deltas(REPLY, 10));
+			},
+		});
+
+	it("sends no apiKey when the registry reports none", async () => {
+		captured.length = 0;
+		const engine = new InferenceEngine();
+		await engine.infer(MESSAGE, streaming(() => ({ headers: { "x-title": "pi" } })), []);
+		expect(captured[0]).not.toHaveProperty("apiKey");
+		expect(captured[0].headers).toEqual({ "x-title": "pi" });
+	});
+
+	it("sends no headers when the registry reports none", async () => {
+		captured.length = 0;
+		const engine = new InferenceEngine();
+		await engine.infer(MESSAGE, streaming(() => ({ apiKey: "sk-test" })), []);
+		expect(captured[0].apiKey).toBe("sk-test");
+		expect(captured[0]).not.toHaveProperty("headers");
+	});
+
+	it("calls anyway when the registry reports neither", async () => {
+		captured.length = 0;
+		const engine = new InferenceEngine();
+		const anchors = await engine.infer(MESSAGE, streaming(() => ({})), []);
+		expect(captured[0]).not.toHaveProperty("apiKey");
+		expect(anchors).toEqual(["rebuild", "commit"]);
+	});
+});
+
+describe("InferenceEngine — what a stream can send", () => {
+	it("ignores an event that is neither a usable delta nor an error", async () => {
+		const engine = new InferenceEngine();
+		const h = host({
+			stream: () =>
+				(async function* () {
+					yield { type: "start" };
+					yield { type: "text_delta", delta: REPLY };
+					yield { type: "done" };
+				})(),
+		});
+		expect(await engine.infer(MESSAGE, h, [])).toEqual(["rebuild", "commit"]);
+	});
+
+	it("ignores a text_delta whose delta is not a string", async () => {
+		const engine = new InferenceEngine();
+		const h = host({
+			stream: () =>
+				(async function* () {
+					yield { type: "text_delta", delta: 42 };
+					yield { type: "text_delta", delta: REPLY };
+				})(),
+		});
+		expect(await engine.infer(MESSAGE, h, [])).toEqual(["rebuild", "commit"]);
+	});
+
+	it("fails when the registry can neither stream nor complete", async () => {
+		const engine = new InferenceEngine();
+		expect(await engine.infer(MESSAGE, host(), [])).toBeNull();
+		expect(engine.stoodDown).toBe(false); // one strike of three
+	});
+
+	it("fails when a single-shot completion is aborted", async () => {
+		const engine = new InferenceEngine();
+		const h = host({ complete: async () => ({ content: [], stopReason: "aborted" }) });
+		expect(await engine.infer(MESSAGE, h, [])).toBeNull();
+	});
+});

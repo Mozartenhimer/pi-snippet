@@ -103,6 +103,9 @@ export function mergeSuggestions(
 	const tagged = base.nodes
 		.filter((n) => n.type === "suggestion")
 		.map((n) => ({ text: n.text, start: n.start, end: n.start + n.text.length }));
+	// Document order, whatever order the anchors arrived in: `locateAnchors`
+	// sorts by position and carries each anchor's arrival rank in `order`,
+	// which is what the numbering below reads.
 	const located = locateAnchors(text, inferred, tagged);
 	if (located.length === 0) return base;
 
@@ -137,7 +140,10 @@ export function mergeSuggestions(
 		while (nextAnchor < located.length && located[nextAnchor]!.end <= nodeEnd) {
 			const anchor = located[nextAnchor]!;
 			nextAnchor++;
-			if (anchor.start < cursor) continue; // cannot happen, but never double-paint
+			// No overlap check: `locateAnchors` returns anchors in document order
+			// and refuses any that overlaps an earlier one or a tagged chip, so
+			// each anchor starts at or after the cursor the last one left. The
+			// guard that stood here could not fire.
 			const before = text.slice(cursor, anchor.start);
 			if (before.length > 0) nodes.push({ type: "text", text: before, start: cursor });
 			const anchorIndex = acceptedSoFar + layer1Count + (anchor.order ?? 0);

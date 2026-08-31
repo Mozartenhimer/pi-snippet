@@ -122,11 +122,16 @@ export class DigitChord {
 		}
 	}
 
+	/**
+	 * Finish a pending chord. Only reached with digits held: the timer is armed
+	 * only after storing them, and `release` returns early when nothing is
+	 * pending — so the empty-digits guard that used to stand here could never
+	 * fire.
+	 */
 	private settle(count: number): void {
 		const digits = this.digits;
 		this.digits = "";
 		this.callbacks.onPending?.("");
-		if (digits === "") return;
 		const state = chordState(digits, count);
 		if (state.value !== null) this.callbacks.onCommit(state.value);
 		else this.callbacks.onReject?.(digits);

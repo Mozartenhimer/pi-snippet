@@ -45,6 +45,7 @@
  */
 
 import { fuzzyFilter } from "@earendil-works/pi-tui";
+import { putBounded } from "../shared/bounded-map.js";
 import {
 	buildInferPrompt,
 	extractAnchors,
@@ -238,12 +239,7 @@ export class InferenceEngine {
 	}
 
 	private remember(key: string, value: string[]): void {
-		this.cache.set(key, value);
-		while (this.cache.size > CACHE_LIMIT) {
-			const oldest = this.cache.keys().next();
-			if (oldest.done) break;
-			this.cache.delete(oldest.value);
-		}
+		putBounded(this.cache, key, value, CACHE_LIMIT);
 	}
 
 	/**
@@ -277,8 +273,12 @@ export class InferenceEngine {
 		if (this.stoodDown) return null;
 
 		const model = resolveInferenceModel(host, this.getPin());
-		const registry = host.modelRegistry;
-		if (!model || !registry) return null;
+		// A model in hand means there was a registry to resolve it against:
+		// `resolveInferenceModel` returns undefined before anything else when
+		// `host.modelRegistry` is missing, so the `|| !registry` that stood here
+		// could not fire.
+		if (!model) return null;
+		const registry = host.modelRegistry as PiRegistry;
 
 		const run = (async (): Promise<string[] | null> => {
 			const controller = new AbortController();
