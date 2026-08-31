@@ -9,12 +9,17 @@ npm run build          # bundles the TUI extension into dist/
 npm test               # all tests except the live-model e2e
 npm run check          # tsc --noEmit
 npm run test:e2e       # live model through pi RPC (slow, needs a provider)
+npm run test:mcdc      # masking MC/DC over src/ and scripts/mcdc/, by running the suite instrumented
 
 npx vitest run test/parser.test.ts            # one file
 npx vitest run test/tui.test.ts -t "streaming" # one test by name
 ```
 
 `npm test` deliberately uses `--exclude '**/e2e-*.test.ts'` rather than listing files: an earlier hand-written list silently skipped a whole test file for several commits. Don't convert it back to a list.
+
+**`npm run test:mcdc` sits at 100% (379/379 conditions), so any gap it reports is new.** No JavaScript coverage tool measures MC/DC — istanbul's "branch" is decision coverage — so `scripts/mcdc/` instruments a copy of the tree into `.mcdc/` and runs the ordinary suite against it through a vitest alias. What it reports is a condition that cannot be shown to drive its decision on its own, in one of four shapes: never true, never false, no independence pair, decision never evaluated.
+
+Two shapes it flags are unfixable by testing and have to be written differently, which is why none are left: `a || b` where `b` is always truthy has no false outcome at all, so neither operand can have a pair (`link-install.ts`'s `envDir` is the fix — one conditional instead of two conditions), and a guard duplicated from every caller can never fire (several were deleted rather than faked out; each carries a comment saying which caller already checked). Restoring one of those guards "for safety" puts the total back below 100% — say why in a comment if you do.
 
 **Rebuild before any live or pty test.** The harnesses and the e2e test load `dist/extension/pi-snippet-tui.js`, not the TypeScript sources, so a source edit is invisible to them until `npm run build` runs.
 

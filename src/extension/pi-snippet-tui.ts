@@ -36,7 +36,7 @@
 import { putBounded } from "../shared/bounded-map.js";
 import { DigitChord } from "../shared/digit-chord.js";
 import { asksSomething } from "../shared/inferred.js";
-import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix, MAX_SUGGESTIONS_PER_MESSAGE } from "../shared/suggestions.js";
+import { parseSuggestions, SNIPPET_TAG, visibleStreamingPrefix } from "../shared/suggestions.js";
 import { mergeSuggestions, toTuiMarkdown } from "../shared/tui-markdown.js";
 import {
 	DEFAULT_INFER_MODEL,
@@ -149,10 +149,8 @@ export default function piSnippetTui(pi: any): void {
 	const inferred = new Map<string, string[]>();
 	const INFERRED_LIMIT = 64;
 	/** Anchors inferred for a message so far, by its stripped text. */
-	const inferredFor = (message?: { content?: TextBlock[] }): string[] => {
-		if (!message) return [];
-		return inferred.get(messageText(message)) ?? [];
-	};
+	const inferredFor = (message: { content?: TextBlock[] }): string[] =>
+		inferred.get(messageText(message)) ?? [];
 	/**
 	 * The same anchors, indexed by the hash of every shape of the message the
 	 * markdown transformer might be handed. pi renders an assistant message one
@@ -215,10 +213,14 @@ export default function piSnippetTui(pi: any): void {
 	let lastStatusCtx: any = null;
 
 	const syncInferStatus = (ctx?: any): void => {
+		// One guard, not two: there is nothing to paint without a ctx and
+		// nothing to paint outside the TUI, and the optional chain covers the
+		// first case — the `if (!c) return` that stood here could not fire
+		// anyway, since every caller either passes a ctx or runs after one that
+		// did.
 		const c = ctx ?? lastStatusCtx;
-		if (!c) return;
+		if (c?.mode !== "tui") return;
 		lastStatusCtx = c;
-		if (c.mode !== "tui") return;
 		if (!inferOn()) inferStatus = "off";
 		let text: string | undefined;
 		if (inferStatus === "idle") text = "snippet: not sent";
@@ -290,7 +292,6 @@ export default function piSnippetTui(pi: any): void {
 	const linkTargets = new Map<string, { chips: string[] }>();
 	const LINK_TARGET_LIMIT = 64;
 	const rememberLinkTargets = (text: string, chips: string[]): void => {
-		if (text.length === 0) return;
 		putBounded(linkTargets, messageKey(text), { chips }, LINK_TARGET_LIMIT);
 	};
 
@@ -305,10 +306,12 @@ export default function piSnippetTui(pi: any): void {
 	 * numbering in the URL and the numbering on screen the same numbering.
 	 */
 	const indexMessageForLinks = (
-		message: { content?: TextBlock[] } | undefined,
+		message: { content?: TextBlock[] },
 		opts?: { streaming?: boolean },
 	): void => {
-		if (!message || !Array.isArray(message.content)) return;
+		// The shape check lives in `messageForms`, which answers with no forms
+		// for a message whose content is not an array — so a copy of it here
+		// could only ever agree with it.
 		const anchors = inferredFor(message);
 		for (const form of messageForms(message, opts)) {
 			if (form.length === 0) continue;
@@ -326,11 +329,11 @@ export default function piSnippetTui(pi: any): void {
 	 * blocks would miss the trim.
 	 */
 	const messageForms = (
-		message: { content?: TextBlock[] } | undefined,
+		message: { content?: TextBlock[] },
 		opts?: { streaming?: boolean },
 	): string[] => {
 		const forms: string[] = [];
-		if (!message || !Array.isArray(message.content)) return forms;
+		if (!Array.isArray(message.content)) return forms;
 		for (const block of message.content) {
 			if (block.type !== "text") continue;
 			const raw = block.text ?? "";
@@ -389,7 +392,8 @@ export default function piSnippetTui(pi: any): void {
 			return linkTargets.get(msg)?.chips[index - 1];
 		},
 		onActivate: (text) => {
-			if (!lastCtx) return;
+			// `syncClicks` sets `lastCtx` in the same call that starts the
+			// listener, so nothing can arrive here before there is one.
 			insertText(lastCtx, text);
 			// A socket callback is even further outside pi's render pass than a
 			// consumed keystroke: without this the text sits invisibly in the
@@ -406,8 +410,10 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const chord = new DigitChord({
 		onCommit: (value) => {
-			const text = state.addressable[value - 1];
-			if (text === undefined || !lastCtx) return;
+			// `chordState` commits only a number inside the addressable range it
+			// was given, so the slot is always filled; `lastCtx` is set before a
+			// keystroke can reach the chord at all.
+			const text = state.addressable[value - 1] as string;
 			insertText(lastCtx, text);
 			tui?.requestRender?.();
 		},
@@ -556,10 +562,12 @@ export default function piSnippetTui(pi: any): void {
 	 * what keeps Alt+N from ever inserting half a sentence.
 	 */
 	const suggestionsFromMessage = (
-		message?: { role?: string; content?: TextBlock[] },
+		message: { role?: string; content?: TextBlock[] },
 		opts?: { streaming?: boolean },
 	): string[] => {
-		if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return [];
+		// Every caller has already established this is the assistant's; only the
+		// content's shape is still open.
+		if (!Array.isArray(message.content)) return [];
 		const anchors = inferredFor(message);
 		if (opts?.streaming) {
 			const suggestions: string[] = [];
@@ -576,8 +584,8 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/** The message text, in document order. */
-	const messageText = (message?: { content?: TextBlock[] }): string => {
-		if (!message || !Array.isArray(message.content)) return "";
+	const messageText = (message: { content?: TextBlock[] }): string => {
+		if (!Array.isArray(message.content)) return "";
 		return message.content
 			.filter((block) => block.type === "text")
 			.map((block) => block.text ?? "")
@@ -806,10 +814,11 @@ export default function piSnippetTui(pi: any): void {
 		const known = inferred.get(raw) ?? [];
 		if (known.includes(anchor)) return;
 		if (seq !== latestAssistantSeq) return; // a newer message owns the numbering now
-		// Keep two-digit addressing meaningful: layer 1 has first claim on the
-		// numbers, and the runaway guard caps what the keyboard can reach.
-		const layer1 = parseSuggestions(messageText(message)).suggestions.length;
-		if (layer1 + known.length >= MAX_SUGGESTIONS_PER_MESSAGE) return;
+		// No cap here: `extractAnchors` (shared/inferred.ts) counts the message's
+		// own tags as already-accepted and stops at MAX_SUGGESTIONS_PER_MESSAGE,
+		// so it never offers an anchor that would take the numbering past what
+		// two-digit addressing reaches. A second copy of the same arithmetic
+		// against the same two numbers could not disagree with it.
 		const next = [...known, anchor];
 		putBounded(inferred, raw, next, INFERRED_LIMIT);
 		// Index the answer under every form of the message the transformer can

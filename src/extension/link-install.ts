@@ -34,12 +34,25 @@ import { LINK_SCHEME } from "../shared/link-url.js";
 const DESKTOP_ID = "pi-snippet-open.desktop";
 const MIME = `x-scheme-handler/${LINK_SCHEME}`;
 
+/**
+ * An XDG directory from the environment, or the spec's default.
+ *
+ * A conditional rather than `value || fallback` so there is one decision here
+ * rather than two conditions that cannot be told apart: the fallback is always
+ * a non-empty path, so `a || b` has no false outcome at all and neither side
+ * of it can be shown to drive the answer. Empty-string handling is the same
+ * either way — an unset-or-empty XDG variable means "use the default".
+ */
+function envDir(value: string | undefined, fallback: string): string {
+	return value ? value : fallback;
+}
+
 function dataHome(env: NodeJS.ProcessEnv): string {
-	return env.XDG_DATA_HOME || join(homedir(), ".local", "share");
+	return envDir(env.XDG_DATA_HOME, join(homedir(), ".local", "share"));
 }
 
 function configHome(env: NodeJS.ProcessEnv): string {
-	return env.XDG_CONFIG_HOME || join(homedir(), ".config");
+	return envDir(env.XDG_CONFIG_HOME, join(homedir(), ".config"));
 }
 
 /**

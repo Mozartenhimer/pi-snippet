@@ -159,12 +159,13 @@ export class LinkServer {
 		} catch {
 			/* already gone */
 		}
-		if (this.path) {
-			try {
-				unlinkSync(this.path);
-			} catch {
-				/* already gone */
-			}
+		// `start()` sets the path in the same breath as the server and the error
+		// handler clears both together, so a server to stop is always a path to
+		// unlink; the guard that stood here could not fire.
+		try {
+			unlinkSync(this.path as string);
+		} catch {
+			/* already gone */
 		}
 		this.server = null;
 		this.path = null;

@@ -98,6 +98,14 @@ describe("message shapes the handlers have to survive", () => {
 		expect(ctx.ui.getEditorText()).toBe("");
 	});
 
+	it("counts no closing tags in a streaming message whose content is not an array", () => {
+		const pi = makeFakePi();
+		const { ctx } = makeCtx();
+		pi.fire("message_update", { message: { role: "assistant", content: undefined } }, ctx);
+		pi.press("alt+1", ctx);
+		expect(ctx.ui.getEditorText()).toBe("");
+	});
+
 	it("addresses nothing for an assistant message whose content is not an array", () => {
 		const pi = makeFakePi();
 		const { ctx } = makeCtx();
@@ -167,6 +175,17 @@ describe("hydrating a branch that is not all assistant messages", () => {
 		pi.fire("session_start", { reason: "new" }, ctx);
 		pi.press("alt+1", ctx);
 		expect(ctx.ui.getEditorText()).toBe("");
+	});
+
+	it("looks past a trailing entry that is not a message", () => {
+		// A branch can end on a tool call rather than on the reply that asked
+		// the question, and the chips of the message above it are still the ones
+		// on screen.
+		const pi = makeFakePi();
+		const { ctx } = makeCtx([...branch, { type: "tool_call", name: "bash" }]);
+		pi.fire("session_start", { reason: "resume" }, ctx);
+		pi.press("alt+1", ctx);
+		expect(ctx.ui.getEditorText()).toBe("rebuild");
 	});
 
 	it("re-hydrates when the branch moves under it", () => {
