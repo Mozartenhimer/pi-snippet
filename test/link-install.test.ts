@@ -244,6 +244,72 @@ describe("isInstalled — half of an installation", () => {
 });
 
 /**
+ * Writing the association by hand, which is what happens whenever `xdg-mime`
+ * is not installed — every CI runner, and this container.
+ *
+ * Neither arm was reached on a clean machine. `test/link-mode.test.ts`
+ * isolated `XDG_DATA_HOME` but not `XDG_CONFIG_HOME`, so its `install()` wrote
+ * `mimeapps.list` into the developer's real `~/.config`; from the second run
+ * of the suite onwards that file existed, and covered the "found a file with a
+ * header in it" arm for free. On a runner with a clean home it did not, which
+ * is how CI caught a 100% that was not reproducible.
+ */
+describe("adding the association without xdg-utils", () => {
+	const realPath = process.env.PATH ?? "";
+
+	afterEach(() => {
+		process.env.PATH = realPath;
+	});
+
+	/** No xdg tools anywhere, so `install()` has to write the file itself. */
+	function withoutXdgTools(): void {
+		const bin = join(home, "empty-bin");
+		mkdirSync(bin, { recursive: true });
+		process.env.PATH = bin;
+	}
+
+	it("splices our entry under an existing [Default Applications] header", () => {
+		withoutXdgTools();
+		const path = join(env.XDG_CONFIG_HOME!, "mimeapps.list");
+		seedMimeapps(
+			path,
+			["[Added Associations]", "text/plain=vim.desktop", "", "[Default Applications]", "text/html=firefox.desktop", ""].join("\n"),
+		);
+		install(env);
+		const lines = read(path).split("\n");
+		const header = lines.indexOf("[Default Applications]");
+		expect(header).toBeGreaterThan(-1);
+		// Directly under the header, and nothing else moved or vanished.
+		expect(lines[header + 1]).toBe("x-scheme-handler/pisnip=pi-snippet-open.desktop");
+		expect(lines).toContain("text/html=firefox.desktop");
+		expect(lines).toContain("text/plain=vim.desktop");
+		expect(lines).toContain("[Added Associations]");
+	});
+
+	it("adds the header itself to a file that has no [Default Applications] section", () => {
+		withoutXdgTools();
+		const path = join(env.XDG_CONFIG_HOME!, "mimeapps.list");
+		seedMimeapps(path, ["[Added Associations]", "text/plain=vim.desktop", ""].join("\n"));
+		install(env);
+		const lines = read(path).split("\n");
+		expect(lines).toContain("[Default Applications]");
+		expect(lines).toContain("x-scheme-handler/pisnip=pi-snippet-open.desktop");
+		expect(lines).toContain("text/plain=vim.desktop");
+	});
+
+	it("writes a fresh file when there is none, without duplicating our line", () => {
+		withoutXdgTools();
+		const path = join(env.XDG_CONFIG_HOME!, "mimeapps.list");
+		install(env);
+		install(env); // installing twice must not leave two of our entries
+		const ours = read(path)
+			.split("\n")
+			.filter((line) => line.startsWith("x-scheme-handler/pisnip="));
+		expect(ours).toEqual(["x-scheme-handler/pisnip=pi-snippet-open.desktop"]);
+	});
+});
+
+/**
  * Firing the URL at an opener.
  *
  * `probe` is the one part of registration that leaves the process, and nothing
