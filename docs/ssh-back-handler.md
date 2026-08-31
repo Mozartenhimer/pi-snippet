@@ -2,7 +2,8 @@
 
 *Shipped. Register the handler on the **client** machine, and a click that
 finds no local socket relays itself back over SSH to the host the session
-lives on — no per-session forward, no flag, no resume. The manual recipe stays
+lives on — no per-session forward, no flag, no resume, and (since the
+automatic opt-in below) no toggle either. The manual recipe stays
 beside it: over SSH, `/snippets` → "Remote clicking" paints chip URLs again and
 prints the `ssh -L` argument that carries this session's socket across the
 wire. Both feed the same socket protocol and the same verify window.*
@@ -83,12 +84,45 @@ does for the toggles. (3) turned out to be unnecessary — the handler tries eac
 candidate and falls through to the relay when none answers, so a directory that
 does not exist is just another miss. Nothing needs creating on the client.
 
+**As built, and the piece that finishes it.** The client also registers itself
+with the server, in the same one-time line: `ssh <host> 'mkdir -p D && touch
+D/"${SSH_CONNECTION%% *}"'`, where `D` is `pi-snippet-relay-clients` inside the
+server's own agent directory. One empty file per client address, its mtime the
+last time that client was heard from — a directory of stamps rather than a JSON
+map because the two writers that are not this code are a shell and a python
+one-liner running through `ssh`, and merging is the one thing a one-line shell
+command cannot do safely. Two clients of the same host never overwrite each
+other, and freshness is `mtime`.
+
+That stamp is what makes the relay cost *nothing* per session. The remote
+session reads it at every session start and after every message
+(`relayClientSeen()`, 30-day expiry), and paints chip URLs by itself when the
+client on the other end of `SSH_CONNECTION` is one it has heard a relayed click
+from — no `/snippets`, no toggle. Every relayed click re-stamps, so an active
+client never ages out; an expired, unknown or malformed one falls back to the
+honest default of bare labels, which is what an SSH session does anyway. A
+toggle the user works themselves is final for the session: the automatic answer
+never overrides a deliberate *off*.
+
+Two things it deliberately does not do. It never trusts the client to name
+itself — the address is read from `SSH_CONNECTION` *in the remote shell*, which
+is why the ssh-back is single-quoted — and it never registers a client that has
+not connected: the stamp exists because a connection from the client succeeded
+non-interactively, which is exactly what a relayed click needs and what a
+password-prompting alias would fail. The bootstrap line proves the whole path
+at setup time instead of at first click.
+
 The bootstrap is in-band, because the remote pi cannot touch the client
 desktop: the remote `/snippets` → *Remote clicking* entry puts the command to
 run on the client into the composer (the editor, not a toast — toasts clip at
 the terminal width and coalesce within a render tick, both measured live).
 One copy-paste, once per client machine — not per session, which is the
-entire point.
+entire point. As built it is two commands joined by `&&`: the config write, and
+the ssh-back that stamps this client on the server. The second half is dropped
+(and the toast says so) when the server's agent directory cannot go in a
+single-quoted shell word, which only an exotic `PI_CODING_AGENT_DIR` causes: an
+unpasteable line is worse than a shorter one, and the per-session toggle still
+works.
 
 **As built.** It is its own row, *SSH relay setup*, rather than more output
 from *Remote clicking*: the two write different things to the one composer, and
@@ -209,13 +243,21 @@ bootstrap line is not hardcoded in the harness — it is scraped out of the
 composer where *SSH relay setup* put it and then run, so the paste a user is
 given is the paste that is tested.
 
+**As built** the harness has a fourth phase, which is the one the automatic
+opt-in exists for: pi is restarted on the server *without* wiping its agent
+directory, and must paint chip URLs — and land a click through them — with
+nothing asked of the user at all.
+
 `test/ssh-relay.test.ts` covers what does not need two machines by *running*
 the generated handler with a recording `ssh` stub on its PATH: the local socket
 still wins over the relay, the relay argv carries `BatchMode=yes` and the
 timeout, a malformed URL exits before anything shells out, a relay failure is a
 quiet non-zero, and the unconfigured case writes the stamp file once. Those
 tests skip where python3 is absent rather than passing silently — `npm test`
-may not assume an interpreter it does not install.
+may not assume an interpreter it does not install. The remote halves are run the same
+way: the relay one-liner against a live socket (it delivers, and stamps the
+client), and the ssh-back through `bash -c` (the quoting is the thing under
+test, so it is not reassembled by hand).
 
 ## Open questions
 

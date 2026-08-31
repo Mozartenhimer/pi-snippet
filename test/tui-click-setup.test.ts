@@ -409,6 +409,45 @@ describe("the ssh-back relay", () => {
 			}
 		});
 
+		it("registers this client with this host, in the same line", async () => {
+			// The half that makes it the last time: run from the client, it
+			// proves the alias reaches here without a password and leaves the
+			// stamp that turns chip URLs on by itself from then on. The address
+			// is expanded by the shell *here*, which is why it is single-quoted.
+			process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
+			const pi = makeFakePi();
+			const { ctx, notices, editorText } = makeCtx(SETUP);
+			try {
+				await pi.run("", ctx);
+				expect(editorText()).toContain("&& ssh 10.0.0.2 \'mkdir -p ");
+				// The stamp directory is this session\'s own — the line targets the
+				// agent directory pi is actually running out of, not a guess at it.
+				expect(editorText()).toContain(`touch ${process.env.PI_SNIPPET_RELAY_CLIENTS}/`);
+				expect(editorText()).toContain('"${SSH_CONNECTION%% *}"');
+				expect(notices.join(" ")).toContain("no toggle here");
+			} finally {
+				pi.shutdown();
+			}
+		});
+
+		it("still prints the config half when the stamp cannot be a shell word", async () => {
+			// An agent directory with a space in it cannot go in a single-quoted
+			// command unescaped, and an unpasteable line is worse than a shorter
+			// one — so the automatic half drops out and the toast says so.
+			process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
+			process.env.PI_SNIPPET_RELAY_CLIENTS = "/tmp/pi snippet clients";
+			const pi = makeFakePi();
+			const { ctx, notices, editorText } = makeCtx(SETUP);
+			try {
+				await pi.run("", ctx);
+				expect(editorText()).toContain("pi-snippet-remotes.json");
+				expect(editorText()).not.toContain("&& ssh ");
+				expect(notices.join(" ")).toContain("turn remote clicking on here");
+			} finally {
+				pi.shutdown();
+			}
+		});
+
 		it("leaves a placeholder when there is no address to offer", async () => {
 			// Over SSH by `SSH_TTY` alone — no `SSH_CONNECTION` to read a peer out
 			// of, which is ordinary under `sudo` and inside some multiplexers.

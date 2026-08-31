@@ -8,7 +8,9 @@
  *
  * The relay host (`pi-snippet-remotes.json`) lives beside it and is read on
  * every `/snippets` render where a handler is installed, so it gets the same
- * treatment for the same reason.
+ * treatment for the same reason — as does the directory of relay-client stamps
+ * (`pi-snippet-relay-clients`), which is read at every session start over SSH
+ * and decides whether chips paint URLs without being asked.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +24,10 @@ let n = 0;
 // what the next one starts from.
 beforeEach(() => {
 	process.env.PI_SNIPPET_SETTINGS = join(dir, `settings-${n}.json`);
-	process.env.PI_SNIPPET_REMOTES = join(dir, `remotes-${n++}.json`);
+	process.env.PI_SNIPPET_REMOTES = join(dir, `remotes-${n}.json`);
+	// A directory, and deliberately one that does not exist: a test that has
+	// not stamped a client must see the honest default.
+	process.env.PI_SNIPPET_RELAY_CLIENTS = join(dir, `relay-clients-${n++}`);
 });
 
 afterAll(() => {

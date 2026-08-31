@@ -13,17 +13,32 @@
  * does not install, and a silent pass would be worse than a visible skip.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+	HOST_PLACEHOLDER,
 	install,
+	isClientAddress,
 	isRelayHost,
+	RELAY_CLIENT_TTL_MS,
 	readRelayHost,
+	relayClientSeen,
+	relayClientsDir,
 	relayCommand,
+	relayRegisterCommand,
 	remotesPath,
 	writeRelayHost,
 } from "../src/extension/link-install.js";
@@ -141,6 +156,192 @@ describe("the relay command", () => {
 		expect(() => execFileSync("python3", ["-c", `import ast,sys; ast.parse(sys.stdin.read())`], {
 			input: body,
 		})).not.toThrow();
+	});
+
+	/**
+	 * Run where it really runs — on the far end, as the command `ssh` hands to
+	 * a shell there. Everything below is the remote half of a relayed click:
+	 * the socket it writes to, and the stamp it leaves so the session on this
+	 * host keeps painting URLs for that client without being asked again.
+	 */
+	describe.skipIf(!hasPython)("run as the remote host runs it", () => {
+		const body = () => {
+			const command = relayCommand();
+			return command.slice(command.indexOf("'") + 1, command.lastIndexOf("'"));
+		};
+
+		let sockDir: string;
+		let clients: string;
+
+		beforeEach(() => {
+			sockDir = join(home, "sockets");
+			clients = join(home, "clients");
+			mkdirSync(sockDir, { recursive: true });
+		});
+
+		const relay = (url: string, extra: NodeJS.ProcessEnv = {}) =>
+			spawnSync("python3", ["-c", body(), url], {
+				env: {
+					HOME: home,
+					PATH: process.env.PATH ?? "",
+					PI_SNIPPET_SOCKET_DIR: sockDir,
+					PI_SNIPPET_RELAY_CLIENTS: clients,
+					SSH_CONNECTION: "10.1.0.7 51234 10.1.0.9 22",
+					...extra,
+				},
+				encoding: "utf8",
+				timeout: 15_000,
+			});
+
+		const listen = async (): Promise<{ server: Server; lines: string[] }> => {
+			const lines: string[] = [];
+			const server: Server = createServer((socket) => {
+				socket.setEncoding("utf8");
+				socket.on("data", (chunk: string) => lines.push(chunk));
+			});
+			await new Promise<void>((resolve) =>
+				server.listen(join(sockDir, "a1b2c3d4.sock"), resolve),
+			);
+			return { server, lines };
+		};
+
+		it("writes the click to the session socket and stamps the client", async () => {
+			const { server, lines } = await listen();
+			try {
+				expect(relay("pisnip://a1b2c3d4/0f3e2a91/c3").status).toBe(0);
+				await new Promise((resolve) => setTimeout(resolve, 200));
+				expect(lines.join("")).toBe("0f3e2a91/c3\n");
+				// The stamp is what makes the next session paint URLs by itself.
+				expect(existsSync(join(clients, "10.1.0.7"))).toBe(true);
+			} finally {
+				server.close();
+			}
+		});
+
+		it("delivers the click even when it cannot name the client", async () => {
+			// The stamp is a convenience; the click is the job. An sshd that
+			// sets no SSH_CONNECTION, or sets something that is not an address,
+			// costs the automatic opt-in and nothing else.
+			const { server, lines } = await listen();
+			try {
+				for (const connection of ["", "not-an-address 1 2 3"]) {
+					expect(relay("pisnip://a1b2c3d4/0f3e2a91/c3", { SSH_CONNECTION: connection }).status)
+						.toBe(0);
+				}
+				await new Promise((resolve) => setTimeout(resolve, 200));
+				expect(lines.join("")).toBe("0f3e2a91/c3\n0f3e2a91/c3\n");
+				expect(existsSync(clients)).toBe(false);
+			} finally {
+				server.close();
+			}
+		});
+
+		it("stamps nothing when the session it was sent to is gone", () => {
+			// A dead session must leave no trace saying the client is reachable:
+			// the stamp means "a click arrived here", not "a click was tried".
+			expect(relay("pisnip://a1b2c3d4/0f3e2a91/c3").status).toBe(1);
+			expect(existsSync(clients)).toBe(false);
+		});
+	});
+});
+
+describe("the server's memory of a client", () => {
+	/**
+	 * The evidence a remote session paints chip URLs on: a stamp this host
+	 * keeps for every client that has relayed a click back to it. Written by
+	 * the client, over ssh — which is the point, since only a connection from
+	 * the client proves the relay can be made.
+	 */
+	const stamp = (address: string, ageMs = 0): void => {
+		mkdirSync(relayClientsDir(env), { recursive: true });
+		const path = join(relayClientsDir(env), address);
+		writeFileSync(path, "", "utf8");
+		if (ageMs > 0) {
+			const when = new Date(Date.now() - ageMs);
+			utimesSync(path, when, when);
+		}
+	};
+
+	it("knows a client that stamped this host, and nobody else", () => {
+		expect(relayClientSeen("10.1.0.7", env)).toBe(false);
+		stamp("10.1.0.7");
+		expect(relayClientSeen("10.1.0.7", env)).toBe(true);
+		expect(relayClientSeen("10.1.0.8", env)).toBe(false);
+	});
+
+	it("forgets a client it has not heard from in a month", () => {
+		// A stale stamp costs a chip that looks clickable and is not; the cost
+		// of expiring one that was still good is a bare label, which is what an
+		// SSH session does by default anyway.
+		stamp("10.1.0.7", RELAY_CLIENT_TTL_MS - 60_000);
+		expect(relayClientSeen("10.1.0.7", env)).toBe(true);
+		stamp("10.1.0.7", RELAY_CLIENT_TTL_MS + 60_000);
+		expect(relayClientSeen("10.1.0.7", env)).toBe(false);
+	});
+
+	it("looks up nothing that is not an address", () => {
+		// The stamp is a file name, so a value that is not an address is never
+		// turned into a path — not even to ask whether it exists.
+		for (const address of ["", "../../etc/passwd", "a b", "host;id", "x".repeat(46)]) {
+			expect(isClientAddress(address), JSON.stringify(address)).toBe(false);
+			expect(relayClientSeen(address, env), JSON.stringify(address)).toBe(false);
+		}
+		for (const address of ["10.1.0.7", "::1", "fe80::1c2b:3d4e", "2001:db8::7", "::ffff:10.1.0.7"]) {
+			expect(isClientAddress(address), address).toBe(true);
+		}
+	});
+
+	it("honours PI_SNIPPET_RELAY_CLIENTS over the agent directory", () => {
+		expect(relayClientsDir(env)).toBe(join(home, "agent", "pi-snippet-relay-clients"));
+		const explicit = join(home, "elsewhere");
+		expect(relayClientsDir({ ...env, PI_SNIPPET_RELAY_CLIENTS: explicit })).toBe(explicit);
+		// Exported-but-empty is the ordinary shape of "unset" in a shell.
+		expect(relayClientsDir({ ...env, PI_SNIPPET_RELAY_CLIENTS: "" })).toBe(
+			join(home, "agent", "pi-snippet-relay-clients"),
+		);
+	});
+});
+
+describe("the ssh-back that leaves the stamp", () => {
+	it("names the host, the directory, and takes the address from the far end", () => {
+		const command = relayRegisterCommand("mybox", env)!;
+		expect(command).not.toBeNull();
+		expect(command.startsWith("ssh mybox ")).toBe(true);
+		// Single-quoted, so it is the *remote* shell that expands SSH_CONNECTION
+		// — the client cannot name itself, which is the whole security story of
+		// this stamp.
+		expect(command).toContain('\'mkdir -p ');
+		expect(command).toContain('touch ');
+		expect(command).toContain('"${SSH_CONNECTION%% *}"');
+		expect(command).toContain(relayClientsDir(env));
+	});
+
+	it("carries the placeholder the bootstrap line asks the user to replace", () => {
+		// The line has to be generatable before this host knows its own address
+		// (SSH_TTY without SSH_CONNECTION), or the automatic half silently
+		// vanishes for exactly the sessions that most need explaining.
+		expect(relayRegisterCommand(HOST_PLACEHOLDER, env)).toContain(`ssh ${HOST_PLACEHOLDER} `);
+	});
+
+	it("refuses a host or a directory it would have to quote around", () => {
+		expect(relayRegisterCommand("mybox; id", env)).toBeNull();
+		expect(relayRegisterCommand("mybox", { ...env, PI_SNIPPET_RELAY_CLIENTS: "/tmp/a b" })).toBeNull();
+		expect(relayRegisterCommand("mybox", { ...env, PI_SNIPPET_RELAY_CLIENTS: "/tmp/$(id)" })).toBeNull();
+	});
+
+	it.skipIf(!hasPython)("stamps the address the connection arrived from, run for real", () => {
+		// What the remote shell would run, run in a shell — the quoting is the
+		// thing under test, so the command is not reassembled here.
+		const command = relayRegisterCommand("mybox", env)!;
+		const remote = command.slice("ssh mybox ".length + 1, -1);
+		const run = (connection: string) =>
+			spawnSync("bash", ["-c", remote], {
+				env: { ...process.env, HOME: home, SSH_CONNECTION: connection },
+				encoding: "utf8",
+			});
+		expect(run("10.1.0.7 51234 10.1.0.9 22").status).toBe(0);
+		expect(existsSync(join(relayClientsDir(env), "10.1.0.7"))).toBe(true);
+		expect(relayClientSeen("10.1.0.7", env)).toBe(true);
 	});
 });
 

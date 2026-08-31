@@ -13,7 +13,7 @@
  * parentheses when the terminal has no OSC 8, so a `pisnip://` URL on such a
  * terminal would trail every chip on screen.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -101,6 +101,7 @@ function setup(
 
 	const tui = new FakeTui();
 	const offered: string[] = [];
+	const titles: string[] = [];
 	const notes: string[] = [];
 	const editors: string[] = [];
 	const ctx: any = {
@@ -116,7 +117,8 @@ function setup(
 				notes.push(message);
 			},
 			setStatus: () => {},
-			select: async (_title: string, choices: string[]) => {
+			select: async (title: string, choices: string[]) => {
+				titles.push(title);
 				offered.push(...choices);
 				return opts.selectReply;
 			},
@@ -136,7 +138,13 @@ function setup(
 		tui,
 		notes,
 		editors,
+		titles,
 		say,
+		/**
+		 * A session beginning — where the extension decides, among other
+		 * things, whether this client has earned chip URLs without asking.
+		 */
+		start: (reason = "startup") => handlers.get("session_start")!({ reason }, ctx),
 		menu: async () => {
 			offered.length = 0;
 			await command!("", ctx);
@@ -216,6 +224,81 @@ describe("over SSH", () => {
 		const choices = await h.menu();
 		expect(choices).toContainEqual(expect.stringContaining("Remote clicking: off"));
 		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
+	});
+
+	/** A client this host has heard a relayed click from, at a chosen age. */
+	const stampClient = (address: string, ageMs = 0): void => {
+		const dir = process.env.PI_SNIPPET_RELAY_CLIENTS!;
+		mkdirSync(dir, { recursive: true });
+		const path = join(dir, address);
+		writeFileSync(path, "", "utf8");
+		if (ageMs > 0) {
+			const when = new Date(Date.now() - ageMs);
+			utimesSync(path, when, when);
+		}
+	};
+
+	const CONNECTION = { TERM_PROGRAM: "ghostty", SSH_CONNECTION: "10.1.0.7 51234 10.1.0.9 22" };
+
+	describe("the relay, once the client has been set up", () => {
+		// The relay costs nothing per session, so neither should turning it on:
+		// a stamp left here by the client is the evidence that a chip URL will
+		// reach somebody, and it is the only thing this decision rests on.
+		it("paints URLs from the session start, with no toggle and no forward", async () => {
+			stampClient("10.1.0.7");
+			const h = setup({}, CONNECTION);
+			h.start();
+			h.say(CHIPPED);
+			expect(h.render(CHIPPED)).toMatch(/\]\(pisnip:\/\/[0-9a-f]{8}\/[0-9a-f]{8}\/c1\)/);
+			expect(h.notes.join("\n")).toContain("relays clicks back");
+			const choices = await h.menu();
+			// And says which delivery is painting them, because "on" with no
+			// forward in sight reads like a bug to anyone who set one up before.
+			expect(h.titles.join("\n")).toContain("relayed back over SSH");
+			expect(choices).toContainEqual(expect.stringContaining("Remote clicking: on (relayed"));
+		});
+
+		it("keeps the honest default for a client it has never heard from", () => {
+			stampClient("10.1.0.8"); // some other machine, same host
+			const h = setup({}, CONNECTION);
+			h.start();
+			h.say(CHIPPED);
+			expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
+			expect(h.notes.join("\n")).not.toContain("relays clicks back");
+		});
+
+		it("lets a client it has not heard from in a month go quiet again", () => {
+			stampClient("10.1.0.7", 31 * 24 * 60 * 60 * 1000);
+			const h = setup({}, CONNECTION);
+			h.start();
+			h.say(CHIPPED);
+			expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
+		});
+
+		it("never overrides a deliberate off, this session or the next", async () => {
+			stampClient("10.1.0.7");
+			const h = setup({}, CONNECTION, { selectReply: "Remote clicking: on — turn it off" });
+			h.start();
+			await h.menu(); // the user turns it off
+			expect(h.notes.join("\n")).toContain("Remote clicking off");
+			h.start("resume");
+			h.say(CHIPPED);
+			expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
+		});
+
+		it("says nothing twice, and nothing at all off SSH", () => {
+			stampClient("10.1.0.7");
+			const local = setup({}, { TERM_PROGRAM: "ghostty" });
+			local.start();
+			// A stamp is about clicks arriving from elsewhere; here the desktop
+			// is the one in front of the user and clicking was never off.
+			expect(local.notes.join("\n")).not.toContain("relays clicks back");
+
+			const h = setup({}, CONNECTION);
+			h.start();
+			h.start("resume");
+			expect(h.notes.filter((note) => note.includes("relays clicks back"))).toHaveLength(1);
+		});
 	});
 
 	it("enabling paints URLs, prints the forward line, and verifies on a real click", async () => {

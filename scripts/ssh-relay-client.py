@@ -13,10 +13,15 @@ which is taken from where the remote /snippets put it rather than hardcoded.
 
 Deliberately hostile to a false pass: the local socket directory is removed and
 any forward killed first, so nothing here can succeed by the shipped path.
+
+The last phase is the automatic opt-in: pi is restarted on the server without
+wiping its agent directory, and must paint chip URLs with nothing asked of the
+user — no /snippets, no toggle, no forward. That is what the stamp the
+bootstrap line left there is for.
 """
 import json, os, pty, re, select, shutil, subprocess, sys, time
 
-ROWS, COLS = 30, 200  # wide, so the bootstrap line lands unwrapped
+ROWS, COLS = 30, 400  # wide, so the bootstrap line lands unwrapped
 SUGGESTION = "rebuild the solution"
 REPLY = f"Two ways. Want me to <snippet>{SUGGESTION}</snippet>?"
 HANDLER = os.path.expanduser("~/.local/share/pi-snippet/open-handler")
@@ -40,23 +45,52 @@ remote_env = {
 	"LINES": str(ROWS), "COLUMNS": str(COLS),
 }
 envstr = " ".join(f"{k}={json.dumps(v)}" for k, v in remote_env.items())
-remote_cmd = (
-	"rm -rf /tmp/pi-agent /tmp/pi-snippet.json /tmp/pi-snippet-$(id -u); mkdir -p /tmp/pi-agent; "
+pi_cmd = (
+	"mkdir -p /tmp/pi-agent; "
 	f"env {envstr} pi --no-session --no-extensions "
 	"-e /repo/test/fixtures/mock-llm.js -e /repo/dist/extension/pi-snippet-tui.js "
 	"--provider mockllm --model mock-small"
 )
+RESET = "rm -rf /tmp/pi-agent /tmp/pi-snippet.json /tmp/pi-snippet-$(id -u); "
 
 raw = bytearray()
 DSR = re.compile(rb"\x1b\[6n")
 
-pid, master = pty.fork()
-if pid == 0:
-	os.environ["TERM"] = "xterm-ghostty"
-	os.execvp("ssh", ["ssh", "-tt", "-o", "BatchMode=yes", HOST, remote_cmd])
-
 import fcntl, struct, termios
-fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+
+
+def open_session(reset=True):
+	"""Start pi on the server through a pty, as an interactive user would.
+
+	`reset` wipes the server-side agent directory first — which is why the
+	second session does not: the stamp the bootstrap left there is the thing
+	under test, and deleting it would test nothing at all.
+	"""
+	global pid, master, raw
+	raw = bytearray()
+	pid, master = pty.fork()
+	if pid == 0:
+		os.environ["TERM"] = "xterm-ghostty"
+		os.execvp("ssh", ["ssh", "-tt", "-o", "BatchMode=yes", HOST,
+		                  (RESET if reset else "") + pi_cmd])
+	fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+
+
+def close_session():
+	send(b"\x03")
+	pump(0.5)
+	try:
+		os.close(master)
+	except OSError:
+		pass
+	try:
+		os.kill(pid, 9)
+		os.waitpid(pid, 0)
+	except (OSError, ChildProcessError):
+		pass
+
+
+open_session()
 
 
 def pump(seconds):
@@ -148,8 +182,7 @@ send(b"\r")
 check("bootstrap line went to the composer", wait_for("pi-snippet-remotes.json", 20))
 pump(2)
 
-lines = re.findall(r"mkdir -p ~/\.pi/agent && printf [^\r\n\x1b]*pi-snippet-remotes\.json",
-                   flat(text()))
+lines = re.findall(r"mkdir -p ~/\.pi/agent && printf [^\r\n\x1b]*", flat(text()))
 check("bootstrap line is complete and unwrapped", len(lines) > 0)
 if not lines:
 	bail("no bootstrap line on screen")
@@ -169,6 +202,16 @@ try:
 except (OSError, ValueError):
 	written = None
 check("client config written by that line", written == {"host": HOST})
+# The second half of the same line, and the whole point of it: run from here,
+# it proves the alias reaches the server without a password and leaves a stamp
+# there naming this client. Nothing was installed on the server to do it.
+check("bootstrap line carries the ssh-back too", f"ssh {HOST} " in retargeted)
+stamped = subprocess.run(
+	["ssh", "-o", "BatchMode=yes", HOST, "ls /tmp/pi-agent/pi-snippet-relay-clients"],
+	capture_output=True, text=True)
+check("server now has a stamp for this client",
+      stamped.returncode == 0 and stamped.stdout.strip() != "")
+print(f"    stamped={stamped.stdout.strip()!r}", flush=True)
 
 # --- paint URLs (a chip over SSH is bare until the user opts in) --------------
 clear_composer(); send(b"/snippets\r")
@@ -212,6 +255,25 @@ check("handler said nothing on the way", rc.stdout == b"" and rc.stderr == b"")
 check("click made the whole trip, with no forward", wait_for("Verified", 25))
 after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
 check("suggestion text landed in the composer", SUGGESTION in after)
+
+# --- the point of the stamp: the next session needs no toggle at all ----------
+close_session()
+open_session(reset=False)
+check("pi restarted on the server", wait_for("Inline suggestions", 30) or wait_for("auto", 10))
+check("second session turned remote clicking on by itself",
+      wait_for("relays clicks back", 20))
+clear_composer(); send(b"go\r")
+check("assistant replied in the second session", wait_for("Two ways", 30))
+pump(3)
+auto_urls = re.findall(r"\x1b\]8;[^;]*;(pisnip://[^\x1b\x07]+)", text())
+check("chips carry URLs with no toggle and no forward", len(auto_urls) > 0)
+if auto_urls:
+	before = len(raw)
+	rc = subprocess.run([HANDLER, auto_urls[-1]], capture_output=True, timeout=30)
+	check("a click on those chips relays and lands", rc.returncode == 0)
+	pump(3)
+	after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
+	check("suggestion text landed in the second session", SUGGESTION in after)
 
 # --- and the unconfigured case still fails quietly ----------------------------
 os.unlink(REMOTES)

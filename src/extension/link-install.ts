@@ -25,7 +25,15 @@
  * with `link-server.ts` about where sockets live.
  */
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -36,6 +44,26 @@ const DESKTOP_ID = "pi-snippet-open.desktop";
 const MIME = `x-scheme-handler/${LINK_SCHEME}`;
 /** The relay host, beside the settings file rather than inside it. */
 const REMOTES_FILE = "pi-snippet-remotes.json";
+/**
+ * Where a *server* records which clients relay clicks back to it — one empty
+ * file per client address, its mtime the last time that client was heard from.
+ *
+ * A directory of stamps rather than a JSON map because two of the three writers
+ * are shell and python running through `ssh`, and a merge is the one thing a
+ * one-line shell command cannot do safely: with a file each, two clients of the
+ * same host never overwrite one another and freshness is just `mtime`.
+ */
+const RELAY_CLIENTS_DIR = "pi-snippet-relay-clients";
+/**
+ * How long a client stays known.
+ *
+ * The consequence of an expired entry is a chip painted as a bare label —
+ * exactly the honest default — so this can be generous; the consequence of one
+ * kept too long is a chip whose click goes nowhere, which is why it expires at
+ * all. Every relayed click refreshes the stamp, so an active client never ages
+ * out.
+ */
+export const RELAY_CLIENT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Where the client records the host to relay unresolvable clicks to
@@ -97,6 +125,80 @@ export function writeRelayHost(host: string, env: NodeJS.ProcessEnv = process.en
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Where this host records the clients that relay clicks back to it.
+ *
+ * The server side of the relay, and the only part of it this machine writes for
+ * itself: the stamps are made by the ssh-back the client runs, not by pi.
+ * `PI_SNIPPET_RELAY_CLIENTS` names the directory outright, for tests and for
+ * a bootstrap line that has to target an agent directory this session was
+ * pointed at with `PI_CODING_AGENT_DIR`.
+ */
+export function relayClientsDir(env: NodeJS.ProcessEnv = process.env): string {
+	const override = env.PI_SNIPPET_RELAY_CLIENTS;
+	if (override !== undefined && override !== "") return override;
+	return join(agentDir(env), RELAY_CLIENTS_DIR);
+}
+
+/**
+ * What the bootstrap line carries where a hostname goes when this host cannot
+ * name itself — a session reached over `SSH_TTY` alone knows there is a client
+ * but not the address it came from. The user edits it before running the line,
+ * so it has to survive being generated into one.
+ */
+export const HOST_PLACEHOLDER = "<this-host>";
+
+/**
+ * An address as `SSH_CONNECTION` reports it: IPv4, IPv6, or an IPv4-mapped
+ * form. Checked because it becomes a file name — though only ever one this
+ * side *looks up*, never one it enumerates.
+ */
+export function isClientAddress(address: string): boolean {
+	return /^[0-9A-Fa-f.:]{1,45}$/.test(address);
+}
+
+/**
+ * Has this client relayed a click back to this host recently?
+ *
+ * The whole of the remote session's evidence that painting chip URLs is worth
+ * anything. It is deliberately conservative — an unknown, malformed or stale
+ * address means bare labels, which is what an SSH session does anyway.
+ */
+export function relayClientSeen(address: string, env: NodeJS.ProcessEnv = process.env): boolean {
+	if (!isClientAddress(address)) return false;
+	try {
+		const age = Date.now() - statSync(join(relayClientsDir(env), address)).mtimeMs;
+		return age < RELAY_CLIENT_TTL_MS;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The ssh-back that makes this host remember the client, as one shell word for
+ * the client to run — the automatic half of the bootstrap.
+ *
+ * It is the client that must run it, because only a connection *from* the
+ * client proves the alias in their config actually reaches here without a
+ * password: the same thing a relayed click needs. The address is taken from
+ * this side of that connection (`SSH_CONNECTION` in the remote shell), never
+ * from anything the client sends, and the command is single-quoted so it is
+ * the *remote* shell that expands it.
+ *
+ * Null when the directory cannot go in a single-quoted word unescaped, which
+ * only an exotic `PI_CODING_AGENT_DIR` can cause: an unpasteable line is worse
+ * than no line, and the per-session toggle still works.
+ */
+export function relayRegisterCommand(
+	host: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string | null {
+	const dir = relayClientsDir(env);
+	if (!isRelayHost(host) && host !== HOST_PLACEHOLDER) return null;
+	if (!/^[A-Za-z0-9._/@+-]{1,4096}$/.test(dir)) return null;
+	return `ssh ${host} 'mkdir -p ${dir} && touch ${dir}/"\${SSH_CONNECTION%% *}"'`;
 }
 
 /**
@@ -176,6 +278,49 @@ const PY_CANDIDATES = `def candidates():
     yield os.path.join(tempfile.gettempdir(), "pi-snippet-%d" % os.getuid())`;
 
 /**
+ * pi's agent directory, as python — the same three lines `agentDir()` above is,
+ * for the same reason `PY_CANDIDATES` is one string: it is read on both sides
+ * of the relay and must mean the same thing on both.
+ *
+ * Contains no apostrophe, and must not grow one.
+ */
+const PY_AGENT_DIR = `def agent_dir():
+    configured = os.environ.get("PI_CODING_AGENT_DIR")
+    if not configured:
+        return os.path.join(os.path.expanduser("~"), ".pi", "agent")
+    if configured == "~":
+        return os.path.expanduser("~")
+    if configured.startswith("~/"):
+        return os.path.expanduser("~") + configured[1:]
+    return configured`;
+
+/**
+ * Keeping the server's memory of this client fresh, as python.
+ *
+ * Runs on the *remote* host at the end of a relayed click, so a client that
+ * clicks never ages out of `relayClientSeen()` and its future sessions keep
+ * painting URLs without being asked. Best-effort throughout: a click that was
+ * delivered is a success even if nothing could be recorded about it.
+ *
+ * The address comes from the remote end of the connection the click just
+ * arrived on, never from the URL — the same rule as the relay host itself.
+ *
+ * Contains no apostrophe, and must not grow one.
+ */
+const PY_NOTE_CLIENT = `def note_client():
+    address = (os.environ.get("SSH_CONNECTION") or "").split(" ")[0]
+    if not re.match(r"^[0-9A-Fa-f.:]{1,45}$", address):
+        return
+    directory = os.environ.get("PI_SNIPPET_RELAY_CLIENTS")
+    if not directory:
+        directory = os.path.join(agent_dir(), "${RELAY_CLIENTS_DIR}")
+    try:
+        os.makedirs(directory, exist_ok=True)
+        open(os.path.join(directory, address), "w").close()
+    except OSError:
+        pass`;
+
+/**
  * What the handler runs *on the remote host* when the click found no socket
  * here (docs/ssh-back-handler.md).
  *
@@ -191,8 +336,10 @@ const PY_CANDIDATES = `def candidates():
  */
 export function relayCommand(): string {
 	return `python3 -c '
-import os, socket, sys, tempfile, urllib.parse
+import os, re, socket, sys, tempfile, urllib.parse
 ${PY_CANDIDATES}
+${PY_AGENT_DIR}
+${PY_NOTE_CLIENT}
 u = urllib.parse.urlparse(sys.argv[1])
 for directory in candidates():
     try:
@@ -201,9 +348,10 @@ for directory in candidates():
         s.connect(os.path.join(directory, u.netloc + ".sock"))
         s.sendall((u.path.strip("/") + "\\n").encode())
         s.close()
-        sys.exit(0)
     except OSError:
         continue
+    note_client()
+    sys.exit(0)
 sys.exit(1)
 '`;
 }
@@ -247,15 +395,7 @@ for directory in candidates():
         continue
 
 
-def agent_dir():
-    configured = os.environ.get("PI_CODING_AGENT_DIR")
-    if not configured:
-        return os.path.join(os.path.expanduser("~"), ".pi", "agent")
-    if configured == "~":
-        return os.path.expanduser("~")
-    if configured.startswith("~/"):
-        return os.path.expanduser("~") + configured[1:]
-    return configured
+${PY_AGENT_DIR}
 
 
 def remotes_path():

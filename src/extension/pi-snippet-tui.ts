@@ -276,6 +276,47 @@ export default function piSnippetTui(pi: any): void {
 	const overSsh = (): boolean =>
 		Boolean(process.env.SSH_TTY || process.env.SSH_CONNECTION);
 	let remoteClicks = false;
+	/**
+	 * Set once the user has answered the question themselves, so nothing below
+	 * answers it for them again — an auto-enable that undid a deliberate "off"
+	 * on the next `/resume` would be a toggle that does not stay where it is put.
+	 */
+	let remoteClicksChosen = false;
+	/** Whether what is painting URLs is the relay rather than a forward. */
+	let remoteClicksRelayed = false;
+
+	/**
+	 * The address this session's client is connected from, per `SSH_CONNECTION`.
+	 *
+	 * The first field is the client, the third is this host (`sshServerHost()`
+	 * uses that one for the bootstrap line). Empty when the variable is unset —
+	 * `SSH_TTY` alone still means SSH, and means nothing is known about who is
+	 * at the other end.
+	 */
+	const sshClientAddress = (): string =>
+		(process.env.SSH_CONNECTION ?? "").split(/\s+/, 1).join("");
+
+	/**
+	 * Paint chip URLs without being asked, when the relay is known to work for
+	 * this client (docs/ssh-back-handler.md).
+	 *
+	 * The relay costs nothing per session — that is its whole point — but the
+	 * opt-in it inherited from the `ssh -L` forward is per session, so a user
+	 * who did the one-time client setup was still flipping a switch on every
+	 * connection. This is the evidence that makes the switch unnecessary: a
+	 * stamp left in this host's agent directory by the client itself, either by
+	 * the ssh-back in the bootstrap line or by the last click it relayed. No
+	 * stamp, a stale one, or a different client, and the honest default stands.
+	 */
+	const autoRemoteClicks = (ctx: any): void => {
+		if (!overSsh() || remoteClicks || remoteClicksChosen) return;
+		if (!linkInstall.relayClientSeen(sshClientAddress())) return;
+		remoteClicks = true;
+		remoteClicksRelayed = true;
+		ctx.ui?.notify?.(
+			"Remote clicking on — your machine relays clicks back to this one, so chips carry URLs with no forward",
+		);
+	};
 	const linkOn = () =>
 		isEnabled() && getCapabilities().hyperlinks && (!overSsh() || remoteClicks);
 
@@ -513,6 +554,12 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const syncClicks = (ctx: any) => {
 		lastCtx = ctx;
+		// Asked here rather than at `session_start` alone, because this runs on
+		// every message too: a stamp that appears while pi is open — the user
+		// pasting the bootstrap line in another window — starts painting URLs
+		// on the next message rather than on the next session. It costs one
+		// `stat` per message until it answers yes, and nothing after.
+		autoRemoteClicks(ctx);
 		const captured = captureTui(ctx);
 		if (captured) watchAltRelease(captured);
 		if (linkOn()) {
@@ -920,7 +967,10 @@ export default function piSnippetTui(pi: any): void {
 		if (!getCapabilities().hyperlinks) {
 			return "Ctrl+click: inert — this terminal paints no hyperlinks (see docs/linux-terminals.md)";
 		}
-		if (overSsh()) return "Ctrl+click: remote — chips are clickable through the ssh socket forward";
+		if (overSsh())
+			return remoteClicksRelayed
+				? "Ctrl+click: remote — chips are clickable, relayed back over SSH (no forward)"
+				: "Ctrl+click: remote — chips are clickable through the ssh socket forward";
 		if (!linkInstall.isInstalled()) return "Ctrl+click: handler not registered";
 		return "Ctrl+click: on";
 	};
@@ -1005,8 +1055,12 @@ export default function piSnippetTui(pi: any): void {
 	 * yet" is the expected first-run answer, not a failure to retry blindly.
 	 */
 	const toggleRemoteClicking = async (ctx: any): Promise<void> => {
+		// Whichever way it goes, the user has now answered this themselves, and
+		// `autoRemoteClicks` stops answering it for them.
+		remoteClicksChosen = true;
 		if (remoteClicks) {
 			remoteClicks = false;
+			remoteClicksRelayed = false;
 			syncClicks(ctx);
 			ctx.ui.notify("Remote clicking off — chips paint as plain labels again");
 			return;
@@ -1069,7 +1123,9 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const sshServerHost = (): string => {
 		const address = (process.env.SSH_CONNECTION ?? "").split(/\s+/)[2];
-		return address !== undefined && linkInstall.isRelayHost(address) ? address : "<this-host>";
+		return address !== undefined && linkInstall.isRelayHost(address)
+			? address
+			: linkInstall.HOST_PLACEHOLDER;
 	};
 
 	/**
@@ -1085,14 +1141,25 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const showRelaySetup = (ctx: any): void => {
 		const host = sshServerHost();
-		ctx.ui.setEditorText(
-			`mkdir -p ~/.pi/agent && printf '{"host":"%s"}\\n' ${host} > ~/.pi/agent/pi-snippet-remotes.json`,
-		);
+		// Two halves, and the second is what makes this the last time: it
+		// connects straight back here from the client, which both proves the
+		// alias works without a password and leaves the stamp `autoRemoteClicks`
+		// reads. From then on this host paints chip URLs for that client on its
+		// own, in this session and every one after it.
+		const register = linkInstall.relayRegisterCommand(host);
+		const setup =
+			`mkdir -p ~/.pi/agent && printf '{"host":"%s"}\\n' ${host} > ~/.pi/agent/pi-snippet-remotes.json`;
+		ctx.ui.setEditorText(register === null ? setup : `${setup} && ${register}`);
 		tui?.requestRender?.();
+		const named =
+			host === linkInstall.HOST_PLACEHOLDER
+				? `with this host's ssh alias in place of ${linkInstall.HOST_PLACEHOLDER}`
+				: `(an ~/.ssh/config alias is usually better than ${host})`;
 		ctx.ui.notify(
-			host === "<this-host>"
-				? "Run that on your machine, with this host's ssh alias in place of <this-host>. Register the click handler there once, and chips need no forward."
-				: `Run that on your machine (an ~/.ssh/config alias is usually better than ${host}). Register the click handler there once, and chips need no forward.`,
+			`Run that on your machine ${named}. Register the click handler there once, and chips need no forward — `
+				+ (register === null
+					? "then turn remote clicking on here."
+					: "and no toggle here, in this session or the next."),
 		);
 	};
 
@@ -1293,10 +1360,15 @@ export default function piSnippetTui(pi: any): void {
 			// it this used to ask — plus the relay host once a handler exists.
 			const clickRows = overSsh()
 				? [
-						`Remote clicking: ${remoteClicks ? "on" : "off"} — ${
+						// Picking this while it is on turns it off, so the row
+						// says that rather than describing the enable it already
+						// did — and it names which delivery is painting the URLs,
+						// because "on" without a forward reads like a bug to
+						// anyone who set one up last time.
+						`Remote clicking: ${
 							remoteClicks
-								? "print the forward line again and verify a click"
-								: "make Ctrl+click work over SSH (forwards this session's socket)"
+								? `on${remoteClicksRelayed ? " (relayed back over SSH — no forward)" : ""} — turn it off, chips go back to plain labels`
+								: "off — make Ctrl+click work over SSH (forwards this session's socket)"
 						}`,
 						// The client half of relayed clicking lives on the client;
 						// what this side can offer is the one-time line to run there.

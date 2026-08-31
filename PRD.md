@@ -587,11 +587,22 @@ from silence, which is the difference from macOS.
 
 **Over SSH** the delivery path inverts: the click is resolved on the machine
 in front of the user, whose desktop has no socket for this session — the
-socket lives here. Without an explicit opt-in the chips therefore paint as
-bare labels (`Alt+N` still works — it is in-band), and `/snippets` offers
-*Remote clicking*: session-scoped, it paints URLs again and puts the
-`ssh -L` command that forwards this session's socket to the client into the
-composer, verified by the user's own first click.
+socket lives here. Without evidence that a click can get back, the chips
+therefore paint as bare labels (`Alt+N` still works — it is in-band), and
+`/snippets` offers *Remote clicking*: session-scoped, it paints URLs again and
+puts the `ssh -L` command that forwards this session's socket to the client
+into the composer, verified by the user's own first click.
+
+That evidence, when it exists, makes the opt-in unnecessary: a client that has
+relayed a click back to this host leaves a stamp in its agent directory
+(`pi-snippet-relay-clients/<address>`, mtime-dated, 30-day expiry), and a
+session whose `SSH_CONNECTION` names a stamped client paints URLs from the
+start — no toggle, in this session or any after it. The stamp is written by
+the client, over ssh, either by the ssh-back half of the one-time bootstrap
+line or by the last click it relayed; it is never taken from anything the
+client *says*, only from the far end of a connection it actually made. A
+deliberate *off* is final for the session: the automatic answer never
+overrides an answer the user gave.
 
 Two deliveries reach that socket, and the opt-in above governs only whether
 URLs are painted — not which one carries the click:
@@ -607,7 +618,9 @@ URLs are painted — not which one carries the click:
    session; `/snippets` over SSH offers *SSH relay setup*, which puts that
    paste — carrying the address the client reached this host at, from
    `SSH_CONNECTION` — into the composer, and `/snippets` on the client offers
-   *SSH relay host* to set or clear it.
+   *SSH relay host* to set or clear it. The paste has two halves: the client
+   config, and an ssh-back that stamps this client on the server, which is what
+   turns the per-session opt-in above into a one-time one.
 
 The host never comes from the URL: a hostname in a chip URL would make any
 pasteable `pisnip://` link an instruction to SSH somewhere, so the config file
