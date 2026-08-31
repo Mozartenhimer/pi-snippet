@@ -45,6 +45,29 @@ afterEach(() => {
 	resetCapabilitiesCache();
 });
 
+/**
+ * Point both XDG homes at a fresh temp directory.
+ *
+ * Both, not just the data home: `install()` writes the desktop entry and the
+ * handler under `XDG_DATA_HOME`, but the association it adds by hand (when
+ * `xdg-mime` is absent, which it is in CI) goes to
+ * `XDG_CONFIG_HOME/mimeapps.list` — so a test that isolated only the first
+ * wrote into the developer's real `~/.config`. That residue then made the next
+ * run of the suite cover a branch (`setDefaultByHand` finding an existing
+ * file) that a clean machine never reaches, which is exactly the way a
+ * measurement lies.
+ */
+function isolateXdg(opts: { fresh?: boolean } = {}): void {
+	const dir = mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
+	if (opts.fresh) {
+		process.env.XDG_DATA_HOME = dir;
+		process.env.XDG_CONFIG_HOME = dir;
+		return;
+	}
+	process.env.XDG_DATA_HOME ??= dir;
+	process.env.XDG_CONFIG_HOME ??= dir;
+}
+
 function setup(
 	settings: Partial<typeof DEFAULT_SETTINGS>,
 	env: Record<string, string>,
@@ -77,8 +100,7 @@ function setup(
 	]) {
 		delete process.env[key];
 	}
-	// Keep `isInstalled()` off the developer's real ~/.local/share.
-	process.env.XDG_DATA_HOME ??= mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
+	isolateXdg();
 	Object.assign(process.env, env);
 	resetCapabilitiesCache();
 
@@ -180,14 +202,14 @@ describe("clicking on by default, by the terminal", () => {
 	// The only route to a working Ctrl+click is this row, so its presence is
 	// the feature.
 	it("offers registration while the handler is missing", async () => {
-		process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
+		isolateXdg({ fresh: true });
 		const h = setup({}, { TERM_PROGRAM: "ghostty" });
 		const choices = await h.menu();
 		expect(choices).toContainEqual(expect.stringContaining("Register click handler"));
 	});
 
 	it("offers removal to someone with a handler, instead", async () => {
-		process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
+		isolateXdg({ fresh: true });
 		const h = setup({}, { TERM_PROGRAM: "ghostty" });
 		// Install by hand: the menu only offers the row when files are present.
 		const { install } = await import("../src/extension/link-install.js");

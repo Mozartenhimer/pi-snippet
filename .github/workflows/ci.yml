@@ -1,0 +1,56 @@
+# The gate this repo did not have.
+#
+# Everything below was previously run by hand, which is why `npm test` once
+# silently skipped a whole test file for several commits (see CLAUDE.md) and
+# why the MC/DC total could drift without anyone noticing. Actions is free and
+# unlimited on public repositories, so there is no reason for these four to be
+# a local ritual.
+#
+# What is deliberately *not* here: `npm run test:e2e` and the Python harnesses
+# under `scripts/`. The first bills a real provider on every run and needs auth
+# no CI job should hold; the rest fork a pty and drive a real `pi`, which is
+# the whole reason they are run by hand.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to a branch makes the first run's answer worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The version this is developed against, and what `@types/node`
+          # pins. Not a matrix: nothing here is version-sensitive, and a
+          # second row would mostly buy unrelated failures.
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Runs the same suite a second time against an instrumented copy of the
+      # tree. `scripts/mcdc/cli.ts analyze` exits non-zero when any condition
+      # is left without an independence pair, and `run.sh` is `set -e`, so this
+      # step is a real gate: it fails the build the moment the total drops
+      # below the 379/379 it sits at today.
+      - name: MC/DC
+        run: npm run test:mcdc
