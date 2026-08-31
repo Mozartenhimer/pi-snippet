@@ -37,15 +37,20 @@ export interface TuiRenderOptions {
 	 */
 	parse?: SuggestOptions;
 	/**
-	 * Session token for terminal-resolved clicking. When set, a chip's href
+	 * Where a click has to reach, for terminal-resolved clicking: the machine
+	 * this session is on and the session's own token. When set, a chip's href
 	 * stops being inert and becomes the channel the terminal dispatches on
-	 * (`link-url.ts`); when absent, chips keep the `chip:N` placeholder.
+	 * (`link-url.ts`); when absent, chips are painted as bare labels.
+	 *
+	 * One option rather than two, because a host without a token and a token
+	 * without a host are both meaningless: they are the two halves of one URL,
+	 * and asking about them separately would be one question asked twice.
 	 *
 	 * Passed in rather than read from module state so the function stays pure:
 	 * the message key is derived from the very text being rendered, so the same
 	 * input always paints the same URL, on every repaint and resize.
 	 */
-	linkToken?: string;
+	link?: { host: string; token: string };
 	/**
 	 * Anchors the second model inferred for this message (`shared/inferred.ts`),
 	 * painted as ordinary chips at their verbatim positions, numbered after the
@@ -173,8 +178,9 @@ export function toTuiMarkdown(rawText: string, opts: TuiRenderOptions): string {
 		} else {
 			const oneBased = node.index + 1;
 			const label = chipLabel(oneBased, node.text);
-			if (opts.linkToken) {
-				out += `[${escapeLinkLabel(label)}](${buildChipUrl(opts.linkToken, messageKey(text), oneBased)})`;
+			if (opts.link) {
+				const url = buildChipUrl(opts.link.host, opts.link.token, messageKey(text), oneBased);
+				out += `[${escapeLinkLabel(label)}](${url})`;
 			} else {
 				// No hyperlinks here. A URL — real or placeholder — would come back
 				// as visible parens and resolve no click; the bare label is the chip.

@@ -116,7 +116,12 @@ fi
 
 docker network create "$NET" >/dev/null 2>&1 || true
 docker rm -f "$SERVER" "$CLIENT" >/dev/null 2>&1 || true
+# The second name is not a convenience: it is the same sshd under a name the
+# client has never connected to, which is how the harness proves that a chip URL
+# naming an unknown host is refused at ssh's host-key check rather than
+# delivered (ADR 0001 — known_hosts is what replaced the relay allowlist).
 docker run -d --name "$SERVER" --hostname "$SERVER" --network "$NET" \
+	--network-alias otherserver \
 	-v "$REPO:/repo:ro" "$IMAGE" \
 	/bin/bash -c "mkdir -p /run/sshd && /usr/sbin/sshd -D -e" >/dev/null
 docker run -d --name "$CLIENT" --hostname "$CLIENT" --network "$NET" \
@@ -128,4 +133,10 @@ for _ in $(seq 1 30); do
 done
 docker exec -u dev "$CLIENT" ssh -o BatchMode=yes piserver true \
 	|| { echo "client cannot ssh to server" >&2; exit 1; }
+# A chip URL names the server by its own hostname, so that name has to be one
+# the client has connected to before — which is exactly the property being
+# relied on. Seeded here, once, the way a user's first login seeds it.
+docker exec -u dev "$CLIENT" \
+	ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$SERVER" true \
+	|| { echo "client cannot ssh to $SERVER by hostname" >&2; exit 1; }
 echo "$SERVER and $CLIENT are up; ssh works"

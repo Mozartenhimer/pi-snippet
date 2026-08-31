@@ -34,19 +34,26 @@ HANDLER = '''#!/usr/bin/env python3
 Stateless by design: the socket is derived from the token in the URL, so this
 file is written once and serves every future session. It carries no text --
 the URL names a slot, and the extension decides what that slot means.
+
+Local delivery only, deliberately: this script is the probe for scheme
+registration, not the shipped handler. The real one (link-install.ts) relays a
+URL naming another host over ssh; here a URL for anywhere else is a miss.
 """
 import os, socket, sys, urllib.parse
 
 u = urllib.parse.urlparse(sys.argv[1] if len(sys.argv) > 1 else "")
-if u.scheme != "pisnip" or not u.netloc.isalnum():
+# scheme://host/token/msg/cN -- the host is the netloc, the token is first in
+# the path (ADR 0001).
+parts = u.path.strip("/").split("/")
+if u.scheme != "pisnip" or len(parts) != 3 or not parts[0].isalnum():
     sys.exit(2)
 runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-path = os.path.join(runtime, "pi-snippet", u.netloc + ".sock")
+path = os.path.join(runtime, "pi-snippet", parts[0] + ".sock")
 try:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(2)
     s.connect(path)
-    s.sendall((u.path.strip("/") + "\\n").encode())
+    s.sendall(("/".join(parts[1:]) + "\\n").encode())
     s.close()
 except OSError:
     # A dead session is the normal case for a chip clicked in old scrollback.
@@ -209,7 +216,9 @@ def probe() -> int:
 		thread = threading.Thread(target=accept, daemon=True)
 		thread.start()
 
-		url = f"{SCHEME}://{token}/0000/ping"
+		# scheme://host/token/msg/cN. The host is this machine, so the probe
+		# never leaves it (ADR 0001); the shipped handler would relay any other.
+		url = f"{SCHEME}://{socket.gethostname()}/{token}/0000/ping"
 		argv = [a.replace("{url}", url) for a in template]
 		result = subprocess.run(argv, capture_output=True, timeout=15, text=True)
 		thread.join(timeout=6)

@@ -7,6 +7,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildChipUrl,
+	isLinkHost,
+	isOwnHost,
 	messageKey,
 	parseChipPath,
 	parseChipUrl,
@@ -15,20 +17,69 @@ import {
 
 describe("chip URLs", () => {
 	it("round-trips what it builds", () => {
-		const url = buildChipUrl("a1b2c3d4", messageKey("hello"), 3);
+		const url = buildChipUrl("mybox", "a1b2c3d4", messageKey("hello"), 3);
 		expect(parseChipUrl(url)).toEqual({
+			host: "mybox",
 			token: "a1b2c3d4",
 			msg: messageKey("hello"),
 			index: 3,
 		});
 	});
 
-	it("carries the chip kind in the path", () => {
-		expect(buildChipUrl("tok", "0f3e2a91", 2)).toBe("pisnip://tok/0f3e2a91/c2");
+	it("names its server first, then the session, then the chip", () => {
+		// The netloc is the machine to deliver to (ADR 0001); the token that
+		// used to sit there moved one segment right.
+		expect(buildChipUrl("mybox", "tok", "0f3e2a91", 2)).toBe("pisnip://mybox/tok/0f3e2a91/c2");
 	});
 
 	it("reaches two-digit chips, matching what Alt addressing reaches", () => {
-		expect(parseChipUrl(buildChipUrl("tok", "0f3e2a91", 99))?.index).toBe(99);
+		expect(parseChipUrl(buildChipUrl("mybox", "tok", "0f3e2a91", 99))?.index).toBe(99);
+	});
+});
+
+/**
+ * The host is the one field that now arrives from outside and reaches an `ssh`
+ * argv, so its shape is the guard — see ADR 0001 §"Guards that ship with this".
+ */
+describe("the host in the URL", () => {
+	it("accepts ssh aliases and hostnames", () => {
+		for (const host of ["mybox", "box.example.com", "user@host", "a-b_c.d", "h1", "localhost"]) {
+			expect(isLinkHost(host), host).toBe(true);
+		}
+	});
+
+	it("refuses anything a shell could act on", () => {
+		for (const host of ["", "a b", "a;b", "a$(id)", "a|b", "a&b", "a>b", "a\nb"]) {
+			expect(isLinkHost(host), JSON.stringify(host)).toBe(false);
+		}
+		expect(isLinkHost("h".repeat(256))).toBe(false);
+	});
+
+	it("refuses a host ssh would read as an option", () => {
+		// `ssh … -Jevil.com cmd url` shifts the destination to the next argument.
+		// Harmless while only the user could write the string; remotely
+		// triggerable the moment it comes from a URL.
+		for (const host of ["-Jevil.com", "-oProxyCommand=x", "--", "-"]) {
+			expect(isLinkHost(host), host).toBe(false);
+			expect(parseChipUrl(`pisnip://${host}/tok/0f3e2a91/c1`), host).toBeNull();
+		}
+	});
+});
+
+describe("recognising our own machine", () => {
+	// A local session paints its own hostname too, so a click on dead local
+	// scrollback must stop here rather than ssh back to ourselves.
+	it("matches on the first label, whatever the case or the domain", () => {
+		expect(isOwnHost("mybox", "mybox")).toBe(true);
+		expect(isOwnHost("MyBox.example.com", "mybox")).toBe(true);
+		expect(isOwnHost("mybox", "mybox.internal.example.com")).toBe(true);
+		expect(isOwnHost("user@mybox", "mybox")).toBe(true);
+		expect(isOwnHost("localhost", "mybox")).toBe(true);
+	});
+
+	it("does not match a different machine", () => {
+		expect(isOwnHost("work", "mybox")).toBe(false);
+		expect(isOwnHost("mybox2", "mybox")).toBe(false);
 	});
 });
 
@@ -89,27 +140,29 @@ describe("parsing what arrives on the socket", () => {
 	});
 
 	it.each([
-		"https://example.com/0f3e2a91/c1",
-		"pisnip:/0f3e2a91/c1",
-		"pisnip://tok!/0f3e2a91/c1",
-		"PISNIP://tok/0f3e2a91/c1",
+		"https://example.com/mybox/tok/0f3e2a91/c1",
+		"pisnip:/mybox/tok/0f3e2a91/c1",
+		"pisnip://my!box/tok/0f3e2a91/c1",
+		"PISNIP://mybox/tok/0f3e2a91/c1",
+		"pisnip://mybox/tok!/0f3e2a91/c1",
+		"pisnip://mybox/0f3e2a91/c1",
 	])("rejects the foreign URL %s", (url) => {
 		expect(parseChipUrl(url)).toBeNull();
 	});
 });
 
 /**
- * A URL whose token and shape are fine but whose path is not. The scheme
- * regex admits any path after the token, so the path parse is the second gate
- * and has to be able to say no on its own.
+ * A URL whose host and token are fine but whose path is not. The scheme regex
+ * admits any path after the token, so the path parse is the second gate and
+ * has to be able to say no on its own.
  */
-describe("parseChipUrl — a well-formed token with a malformed path", () => {
+describe("parseChipUrl — a well-formed host and token with a malformed path", () => {
 	it("rejects a path that names no chip", () => {
-		expect(parseChipUrl("pisnip://a1b2c3d4/nonsense")).toBeNull();
+		expect(parseChipUrl("pisnip://mybox/a1b2c3d4/nonsense")).toBeNull();
 	});
 
 	it("rejects chip zero", () => {
-		expect(parseChipUrl("pisnip://a1b2c3d4/0f3e2a91/c0")).toBeNull();
+		expect(parseChipUrl("pisnip://mybox/a1b2c3d4/0f3e2a91/c0")).toBeNull();
 		expect(parseChipPath("/0f3e2a91/c000")).toBeNull();
 	});
 

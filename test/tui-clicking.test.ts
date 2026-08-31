@@ -189,7 +189,10 @@ describe("a terminal that can paint hyperlinks", () => {
 		}
 	});
 
-	it("paints no URL over SSH, and says why", async () => {
+	it("paints the same URL over SSH, and names the host it routes to", async () => {
+		// Since ADR 0001 a remote session is indistinguishable from a local one
+		// where painting is concerned: the URL says which machine to deliver to,
+		// so there is nothing left to withhold chips over.
 		process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
 		try {
 			const pi = makeFakePi();
@@ -207,9 +210,11 @@ describe("a terminal that can paint hyperlinks", () => {
 					},
 				},
 			});
-			expect(heading).toContain("over SSH");
-			expect(pi.transform(MESSAGE, { messageType: "assistant", isStreaming: false })).not.toContain(
-				"pisnip://",
+			// The one thing this session still cannot answer is whether a handler
+			// exists on the client, so it reports what it painted instead.
+			expect(heading).toContain("chips route back to testbox");
+			expect(pi.transform(MESSAGE, { messageType: "assistant", isStreaming: false })).toContain(
+				"pisnip://testbox/",
 			);
 			pi.shutdown();
 		} finally {

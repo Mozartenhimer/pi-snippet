@@ -63,7 +63,8 @@ import fcntl, struct, termios
 fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
 
 DSR = re.compile(rb"\x1b\[6n")
-URL = re.compile(rb"\x1b\]8;;(pisnip://[0-9a-f]+/[0-9a-f]+/c1)(?:\x07|\x1b\\)")
+# scheme://host/token/msg/cN — the host took the netloc (ADR 0001).
+URL = re.compile(rb"\x1b\]8;;(pisnip://[A-Za-z0-9._-]+/[0-9a-f]+/[0-9a-f]+/c1)(?:\x07|\x1b\\)")
 
 
 def pump(seconds):
@@ -108,7 +109,7 @@ if not match:
 url = match.group(1).decode()
 print(f"painted   {url}")
 
-socket_path = os.path.join(sockdir, url.split("/")[2] + ".sock")
+socket_path = os.path.join(sockdir, url.split("/")[3] + ".sock")
 print(f"socket    {socket_path} ({'present' if os.path.exists(socket_path) else 'MISSING'})")
 if not os.path.exists(socket_path):
 	print("FAIL: the extension never bound a socket")
@@ -149,7 +150,7 @@ import socket as socketlib
 client = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
 client.settimeout(3)
 client.connect(socket_path)
-client.sendall(("/".join(url.split("/")[3:]) + "\n").encode())
+client.sendall(("/".join(url.split("/")[4:]) + "\n").encode())
 client.close()
 print("clicked   (handler wire format, one line)")
 

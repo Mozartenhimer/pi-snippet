@@ -17,10 +17,10 @@ extension-side resolve-and-insert, and the IPC endpoint shape are all shared.
 
 | Platform | Chip URL | Dispatch | IPC |
 |---|---|---|---|
-| Linux (shipped) | `pisnip://<token>/<msg>/c<n>` | portal → mimeapps.list | unix socket |
-| Windows | `pisnip://<token>/<msg>/c<n>` | ShellExecute → registry | named pipe |
+| Linux (shipped) | `pisnip://<host>/<token>/<msg>/c<n>` | portal → mimeapps.list | unix socket |
+| Windows | `pisnip://<host>/<token>/<msg>/c<n>` | ShellExecute → registry | named pipe |
 | macOS, Ghostty | `file:///…/<token>/<msg>-c<n>.pisnip` | LaunchServices | unix socket |
-| macOS, iTerm2/kitty/WezTerm | `pisnip://<token>/<msg>/c<n>` | terminal-native hook | unix socket |
+| macOS, iTerm2/kitty/WezTerm | `pisnip://<host>/<token>/<msg>/c<n>` | terminal-native hook | unix socket |
 
 ## 1. Windows
 

@@ -1,40 +1,47 @@
 #!/usr/bin/env python3
-"""Relayed clicking over real SSH: no forward, no flag, no resume.
+"""Relayed clicking over real SSH: no setup, no config, no toggle.
 
 Runs inside the *client* container (see scripts/docker-ssh-env.sh); driven by
 scripts/ssh-click-docker.py, which is the thing to run by hand.
 
-The only delivery there is (docs/ssh-back-handler.md): the click finds no
-socket on this machine, reads the relay hosts off the client's own config, and
-tunnels *itself* back through a fresh ssh — so the only per-machine setup is
-the one-time bootstrap line, which is taken from where the remote /snippets put
-it rather than hardcoded. The `ssh -L` forward this used to be tested beside is
-gone; there is no toggle here at all.
+Since ADR 0001 there is nothing to arrange between the two machines. The chip
+URL names the server (`pisnip://<host>/<token>/<msg>/cN`), so the click finds no
+socket here, reads the host out of the URL, and tunnels itself back through a
+fresh ssh. Nothing is installed on the server, nothing is written on the client,
+and the flow this asserts is the whole of the feature: start pi over SSH, send a
+message, chips carry URLs, click, text lands.
 
-Deliberately hostile to a false pass: the local socket directory is removed and
-any forward killed first, so nothing here can succeed by the shipped path.
+Deliberately hostile to a false pass: the local socket directory is removed
+first, and any relay config an older version left behind is deleted, so nothing
+here can succeed by a path that no longer exists.
 
-The phase that matters most is the automatic opt-in, asserted twice: the
-session that was already running starts painting URLs on the next message, and
-a pi restarted on the server (without wiping its agent directory) paints them
-from the first one. Nothing is asked of the user either time. That is what the
-stamp the bootstrap line left there is for.
+The last two phases are the ones that pay for the guards. `known_hosts` is what
+replaced the allowlist this used to keep, so a URL naming a host the client has
+never connected to — the same sshd, reached by a second DNS name — must deliver
+nothing; and a host `ssh` would read as an option must be refused before a
+process is spawned at all.
 """
 import json, os, pty, re, select, shutil, subprocess, sys, time
 
-ROWS, COLS = 30, 800  # wide, so the bootstrap line lands unwrapped
+ROWS, COLS = 30, 800
 SUGGESTION = "rebuild the solution"
 REPLY = f"Two ways. Want me to <snippet>{SUGGESTION}</snippet>?"
 HANDLER = os.path.expanduser("~/.local/share/pi-snippet/open-handler")
 SOCKDIR = f"/tmp/pi-snippet-{os.getuid()}"
-REMOTES = os.path.expanduser("~/.pi/agent/pi-snippet-remotes.json")
+LEGACY = os.path.expanduser("~/.pi/agent/pi-snippet-remotes.json")
 HOST = os.environ.get("PISNIP_SSH_HOST", "piserver")
+# What the server calls itself, and so what its chips will name. The client has
+# connected to it under this name (docker-ssh-env.sh seeds known_hosts), which
+# is the assumption the whole design rests on: hosts are reachable by name.
+SERVER = os.environ.get("PISNIP_SERVER_HOST", "pisnip-server")
+# The same machine, same sshd, same key — under a name this client has never
+# connected to.
+UNKNOWN = os.environ.get("PISNIP_UNKNOWN_HOST", "otherserver")
 
-# Nothing local may answer, or a pass proves nothing.
-subprocess.run(["pkill", "-f", "ssh -o BatchMode=yes -N -L"], capture_output=True)
+# Nothing local may answer, and no leftover config may help.
 shutil.rmtree(SOCKDIR, ignore_errors=True)
-if os.path.exists(REMOTES):
-	os.unlink(REMOTES)
+if os.path.exists(LEGACY):
+	os.unlink(LEGACY)
 
 remote_env = {
 	"MOCK_LLM_INFER_MARKER": "@@none@@",
@@ -61,12 +68,7 @@ import fcntl, struct, termios
 
 
 def open_session(reset=True):
-	"""Start pi on the server through a pty, as an interactive user would.
-
-	`reset` wipes the server-side agent directory first — which is why the
-	second session does not: the stamp the bootstrap left there is the thing
-	under test, and deleting it would test nothing at all.
-	"""
+	"""Start pi on the server through a pty, as an interactive user would."""
 	global pid, master, raw
 	raw = bytearray()
 	pid, master = pty.fork()
@@ -132,26 +134,8 @@ def send(data):
 	os.write(master, data)
 
 
-def select_row(label, timeout=12):
-	end = time.time() + timeout
-	while time.time() < end:
-		tail = flat(text())[-6000:]
-		rows = [l for l in re.split(r"[\r\n]", tail) if label in l]
-		if rows and rows[-1].lstrip().startswith("→"):
-			return True
-		send(b"\x1b[B")
-		pump(0.5)
-	return False
-
-
 def clear_composer():
-	"""Empty the editor before typing a command into it.
-
-	/snippets writes into the composer — the forward recipe, the bootstrap
-	line — and a command typed after one of those is just more text appended
-	to it, not a command. Ctrl+U first, then backspaces for an editor that
-	does not take it.
-	"""
+	"""Empty the editor before typing a command into it."""
 	send(b"\x15")
 	pump(0.3)
 	send(b"\x7f" * 250)
@@ -172,76 +156,31 @@ def bail(message):
 	sys.exit(1)
 
 
+def chip_urls():
+	return re.findall(r"\x1b\]8;[^;]*;(pisnip://[^\x1b\x07]+)", text())
+
+
 check("pi started over ssh", wait_for("Inline suggestions", 30) or wait_for("auto", 10))
 pump(2)
 
-# --- before any setup, a chip over SSH is a bare label ------------------------
-# The click would resolve on this machine, where nothing answers, so a URL here
-# would be a click that dies in silence.
+# --- the first message already carries clickable chips ------------------------
+# No bootstrap line, no stamp, no toggle: the URL says which machine to deliver
+# to, so there is nothing for either end to arrange first.
 clear_composer(); send(b"go\r")
 check("assistant replied", wait_for("Two ways", 30))
 pump(3)
-check("chip carries no URL before the client is set up",
-      re.search(r"\x1b\]8;[^;]*;pisnip://", text()) is None)
-
-# --- the one-time bootstrap, taken from where the remote put it ---------------
-clear_composer(); send(b"/snippets\r")
-check("menu opened", wait_for("SSH relay setup", 20))
-check("selected the relay setup row", select_row("SSH relay setup"))
-send(b"\r")
-check("bootstrap line went to the composer", wait_for("pi-snippet-remotes.json", 20))
-pump(2)
-
-lines = re.findall(r"mkdir -p ~/\.pi/agent && python3 -c [^\r\n\x1b]*", flat(text()))
-check("bootstrap line is complete and unwrapped", len(lines) > 0)
-if not lines:
-	bail("no bootstrap line on screen")
-bootstrap = lines[-1].strip()
-print(f"    bootstrap={bootstrap}", flush=True)
-
-# The remote knows which address the client reached it at (SSH_CONNECTION), and
-# offers it. It cannot know the alias, which is why the toast says to prefer one
-# — so the harness does exactly what a user is told to do.
-peer = subprocess.run(["getent", "hosts", "pisnip-server"], capture_output=True, text=True)
-server_ip = peer.stdout.split()[0] if peer.stdout.split() else ""
-check("bootstrap suggests this host's own address", server_ip != "" and server_ip in bootstrap)
-retargeted = bootstrap.replace(server_ip, HOST) if server_ip else bootstrap
-subprocess.run(["bash", "-lc", retargeted], check=False)
-try:
-	written = json.load(open(REMOTES))
-except (OSError, ValueError):
-	written = None
-check("client config written by that line", written == {"hosts": [HOST]})
-# The second half of the same line, and the whole point of it: run from here,
-# it proves the alias reaches the server without a password and leaves a stamp
-# there naming this client. Nothing was installed on the server to do it.
-check("bootstrap line carries the ssh-back too", f"ssh {HOST} " in retargeted)
-stamped = subprocess.run(
-	["ssh", "-o", "BatchMode=yes", HOST, "ls /tmp/pi-agent/pi-snippet-relay-clients"],
-	capture_output=True, text=True)
-check("server now has a stamp for this client",
-      stamped.returncode == 0 and stamped.stdout.strip() != "")
-print(f"    stamped={stamped.stdout.strip()!r}", flush=True)
-
-# --- the next message paints URLs, with nothing asked of the user -------------
-# The stamp the line above left is read on every message, so the session that
-# was already running picks it up: no toggle, no reconnect, no resume. An
-# already-painted message keeps its bare labels — pi caches a finished message
-# on its text — which is why this asserts against a new one.
-clear_composer(); send(b"go\r")
-check("assistant replied again", wait_for("Two ways", 30))
-check("session says it can relay now", wait_for("relays clicks back", 20))
-pump(3)
-urls = re.findall(r"\x1b\]8;[^;]*;(pisnip://[^\x1b\x07]+)", text())
-check("chip now carries a pisnip:// URL", len(urls) > 0)
+urls = chip_urls()
+check("chip carries a pisnip:// URL with nothing set up", len(urls) > 0)
 if not urls:
 	bail("no chip URL painted")
 url = urls[-1]
 print(f"    chip url={url}", flush=True)
+check("the URL names the server, not the session token", url.split("/")[2] == SERVER)
 
 # --- nothing local may answer -------------------------------------------------
 shutil.rmtree(SOCKDIR, ignore_errors=True)
 check("no local socket directory on the client", not os.path.exists(SOCKDIR))
+check("no relay config on the client either", not os.path.exists(LEGACY))
 
 # --- the click, resolved here and delivered there -----------------------------
 clear_composer()
@@ -256,52 +195,49 @@ pump(3)
 after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
 check("suggestion text landed in the composer", SUGGESTION in after)
 
-# --- more than one remote: the handler finds the right one by itself ----------
-# The list is the allowlist and the order is a guess, so a host that answers
-# nothing must cost a handshake and not the click.
-CACHE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp",
-                     "pi-snippet-relay-" + url.split("/")[2])
-json.dump({"hosts": ["dark.invalid", HOST]}, open(REMOTES, "w"))
-if os.path.exists(CACHE):
-	os.unlink(CACHE)
-clear_composer()
-before = len(raw)
-started = time.time()
-rc = subprocess.run([HANDLER, url], capture_output=True, timeout=60)
-print(f"    two-host handler exit={rc.returncode} in {time.time() - started:.1f}s", flush=True)
-check("click lands past a host that answers nothing", rc.returncode == 0)
-pump(3)
-after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
-check("suggestion text landed anyway", SUGGESTION in after)
-check("the host that answered is remembered",
-      os.path.exists(CACHE) and open(CACHE).read().strip() == HOST)
-
-# --- the point of the stamp: the next session needs no toggle at all ----------
+# --- and again after a restart, still with nothing arranged -------------------
+# There is no per-session state left anywhere, so this is only interesting as
+# proof of that: a fresh pi on the server paints working chips immediately.
 close_session()
-open_session(reset=False)
+open_session()
 check("pi restarted on the server", wait_for("Inline suggestions", 30) or wait_for("auto", 10))
-check("second session says it can relay, unprompted",
-      wait_for("relays clicks back", 20))
 clear_composer(); send(b"go\r")
 check("assistant replied in the second session", wait_for("Two ways", 30))
 pump(3)
-auto_urls = re.findall(r"\x1b\]8;[^;]*;(pisnip://[^\x1b\x07]+)", text())
-check("chips carry URLs from the first message, nothing asked", len(auto_urls) > 0)
-if auto_urls:
+again = chip_urls()
+check("chips carry URLs from the first message again", len(again) > 0)
+if again:
 	before = len(raw)
-	rc = subprocess.run([HANDLER, auto_urls[-1]], capture_output=True, timeout=30)
+	rc = subprocess.run([HANDLER, again[-1]], capture_output=True, timeout=30)
 	check("a click on those chips relays and lands", rc.returncode == 0)
 	pump(3)
 	after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
 	check("suggestion text landed in the second session", SUGGESTION in after)
+	url = again[-1]
 
-# --- and the unconfigured case still fails quietly ----------------------------
-os.unlink(REMOTES)
-quiet = subprocess.run([HANDLER, url], capture_output=True, timeout=30)
-check("unconfigured click exits 1 quietly", quiet.returncode == 1 and quiet.stdout == b"")
-stamp = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp",
-                     "pi-snippet-unconfigured-" + url.split("/")[2])
-check("unconfigured click leaves the rate-limit stamp", os.path.exists(stamp))
+# --- a host this client has never connected to must not be dialled ------------
+# The same sshd, the same key, a second DNS name. ssh's own known_hosts is what
+# replaced the relay allowlist, and BatchMode is what makes it a refusal rather
+# than a prompt — so this is the security argument, run.
+clear_composer()
+before = len(raw)
+stranger = url.replace(f"//{SERVER}/", f"//{UNKNOWN}/")
+check("the stranger URL differs from the good one", stranger != url)
+rc = subprocess.run([HANDLER, stranger], capture_output=True, timeout=30)
+print(f"    unknown-host exit={rc.returncode}", flush=True)
+check("a URL naming an unknown host delivers nothing", rc.returncode != 0)
+check("and says nothing while failing", rc.stdout == b"" and rc.stderr == b"")
+pump(3)
+after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
+check("no text reached the session from the unknown host", SUGGESTION not in after)
+
+# --- and a host ssh would read as an option is refused before any spawn -------
+# `-Jevil.com` in the host slot would make ssh shift its destination to the next
+# argument. The pattern refuses it, which is why exit 2 (malformed) and not 1.
+for bad in ("-J" + UNKNOWN, "-oProxyCommand=x", "my host", "a;id"):
+	rc = subprocess.run([HANDLER, url.replace(f"//{SERVER}/", f"//{bad}/")],
+	                    capture_output=True, timeout=30)
+	check(f"refuses {bad!r} as a host", rc.returncode == 2)
 
 open("/tmp/ssh-relay.out", "w").write(text())
 print()

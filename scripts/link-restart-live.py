@@ -51,7 +51,8 @@ base_env.update(
 base_env.pop("TMUX", None)
 
 DSR = re.compile(rb"\x1b\[6n")
-URL = re.compile(rb"\x1b\]8;;(pisnip://[0-9a-f]+/[0-9a-f]+/c1)(?:\x07|\x1b\\)")
+# scheme://host/token/msg/cN — the host took the netloc (ADR 0001).
+URL = re.compile(rb"\x1b\]8;;(pisnip://[A-Za-z0-9._-]+/[0-9a-f]+/[0-9a-f]+/c1)(?:\x07|\x1b\\)")
 
 
 def launch(extra_args, script):
@@ -117,7 +118,7 @@ match1 = URL.search(painted1)
 if not match1:
 	fail("no pisnip:// hyperlink was painted in the first process")
 url1 = match1.group(1).decode()
-token1 = url1.split("/")[2]
+token1 = url1.split("/")[3]
 print(f"process 1  {url1}")
 
 sessions = sorted(glob.glob(os.path.join(session_dir, "*.jsonl")))
@@ -135,7 +136,7 @@ if not match2:
 	kill(pid2, master2)
 	fail("no pisnip:// hyperlink was repainted after resuming")
 url2 = match2.group(1).decode()
-token2 = url2.split("/")[2]
+token2 = url2.split("/")[3]
 print(f"process 2  {url2}")
 
 if token2 != token1:
@@ -152,7 +153,7 @@ import socket as socketlib
 client = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
 client.settimeout(3)
 client.connect(socket_path)
-client.sendall(("/".join(url2.split("/")[3:]) + "\n").encode())
+client.sendall(("/".join(url2.split("/")[4:]) + "\n").encode())
 client.close()
 print("clicked    (handler wire format, one line)")
 

@@ -4,7 +4,7 @@
 below is what was built; §9 records what was measured rather than assumed.
 
 Proven in this repo, without a desktop: real pi paints
-`pisnip://<token>/<msg>/c1` as an OSC 8 hyperlink
+`pisnip://<host>/<token>/<msg>/c1` as an OSC 8 hyperlink
 (`scripts/osc8-probe.py`), a forwarded click inserts the suggestion into a live
 editor (`scripts/link-click-live.py`), and scheme registration round-trips
 through gio and xdg-open (`scripts/link-register.py --probe`).
@@ -73,7 +73,7 @@ Doesn't buy:
  chip in a message
    │  transformer (display-only, pure)
    ▼
- [¹rebuild the solution](pisnip://<token>/<msg>/c1)
+ [¹rebuild the solution](pisnip://<host>/<token>/<msg>/c1)
    │  pi-tui paints OSC 8
    ▼
  terminal: Ctrl+click → OS opener → registered handler for scheme `pisnip`
@@ -92,7 +92,7 @@ the meaning lives in the extension.
 ## 4. Wire format
 
 ```
-pisnip://<token>/<msg>/<id>
+pisnip://<host>/<token>/<msg>/<id>
 ```
 
 - `token` — 8 hex chars, minted per session, names the socket file.
@@ -119,7 +119,7 @@ and may reach back. That is a widening of §12.1, not a violation of it.
 
 **Keep it short.** Where pi-tui has no OSC 8 (tmux without `hyperlinks`) it
 prints the URL in parentheses after the label, so `¹rebuild the solution
-(pisnip://a1b2c3d4/0007/c1)` is what the user would read. That is why link mode
+(pisnip://mybox/a1b2c3d4/0007/c1)` is what the user would read. That is why link mode
 self-detects (§5) instead of being a preference someone can set into an ugly
 screen.
 
@@ -172,6 +172,14 @@ SSH and for un-installed machines. Persisted in `pi-snippet.json` beside the
 others; `clickEnabled: boolean` becomes `clickMode: "off" | "link" | "mouse"`
 with a `merge()` migration from the boolean (`true` → `"mouse"`).
 
+*As built, none of that shipped.* Mouse reporting was removed rather than kept
+as a fallback, so there is no mode to choose: link is the one delivery, and a
+terminal that cannot paint a hyperlink gets inert chips. `/snippets` offers the
+registration action and nothing else, and the persisted key is `mode`
+(off/tags/both/infer), which is about which suggestion layers run, not about
+clicking. SSH stopped being an exception too (ADR 0001) — the URL names the
+server, so a remote session paints exactly what a local one does.
+
 ## 6. The install procedure (Linux)
 
 Prototyped and measured end to end in `scripts/link-register.py`
@@ -213,7 +221,7 @@ behavior rather than an error dialog.
 ### 6a. The probe is the acceptance test
 
 Registration that isn't proven is a guess, so `--probe` fires a real
-`pisnip://probe000/0000/ping` at each opener and checks whether the socket hears
+`pisnip://<this host>/probe000/0000/ping` at each opener and checks whether the socket hears
 it. Openers are tried nearest-to-Ghostty first, because Ghostty's GTK apprt
 calls the portal and only falls back to `xdg-open` if the portal errors:
 
@@ -276,7 +284,7 @@ The socket is a local IPC endpoint that types into the user's composer, so:
 
 | Situation | What happens |
 |---|---|
-| SSH / remote pi | Clicks resolve on the client; the socket is here. Shipped: the ssh-back relay (`docs/ssh-back-handler.md`) — one line run once on the client, after which chips carry URLs with no toggle and nothing per session. The `ssh -L` forward that preceded it, and its *Remote clicking* opt-in, were removed. |
+| SSH / remote pi | Clicks resolve on the client; the socket is here. Shipped: the ssh-back relay (`docs/ssh-back-handler.md`) — the URL names the server (ADR 0001), so the client's handler relays the click back over `ssh` with nothing set up on either side beyond the handler itself. The `ssh -L` forward that preceded it, its *Remote clicking* opt-in, and the client host list and bootstrap line that came after were all removed. |
 | tmux without `hyperlinks` | No OSC 8 emitted; auto-detected (§5); bare labels. |
 | Terminal without OSC 8 at all | Same. |
 | Terminal that restricts URI schemes | The unmeasured risk. See §9. |
@@ -302,7 +310,7 @@ reads the bytes. Three runs:
 | Regime | Result |
 |---|---|
 | `TERM_PROGRAM=ghostty`, real `<snippet>` chips | `\x1b]8;;chip:1` and `\x1b]8;;chip:2` on the wire. Real OSC 8, href verbatim, no paren fallback. |
-| `TERM_PROGRAM=ghostty`, a markdown link with `pisnip://a1b2c3d4/0007/c1` | Emitted **verbatim**: `\x1b]8;;pisnip://a1b2c3d4/0007/c1`. No scheme validation, no sanitization, no rewriting. |
+| `TERM_PROGRAM=ghostty`, a markdown link with `pisnip://mybox/a1b2c3d4/0007/c1` | Emitted **verbatim**: `\x1b]8;;pisnip://mybox/a1b2c3d4/0007/c1`. No scheme validation, no sanitization, no rewriting. |
 | `TERM=xterm-256color`, no `TERM_PROGRAM` | Zero OSC 8 opens; at the time of measurement the placeholder href came back as `(chip:1)` after the label — which is why the chip now paints no href at all in this regime. |
 
 The renderer's link case is unconditional about it
@@ -381,7 +389,7 @@ Info.plist. Worth it: it is the difference between a click and a click-plus-moda
 
 Recommended split, then:
 
-- **Linux:** `pisnip://<token>/<msg>/<id>` via the portal.
+- **Linux:** `pisnip://<host>/<token>/<msg>/<id>` via the portal.
 - **macOS:** `file:///…/<token>/<msg>-<id>.pisnip` via LaunchServices.
 - Same socket, same handler, same extension-side code; only the URL builder and
   the installer differ per platform.

@@ -1,13 +1,13 @@
 /**
- * Setting clicking up, rather than using it: the `/snippets` rows that
- * register the handler, remove it, and forward the socket over SSH.
+ * Setting clicking up, rather than using it: the two `/snippets` rows that
+ * register the desktop handler and remove it again — which, since ADR 0001,
+ * is the whole of the setup this feature has anywhere.
  *
- * None of it had ever run. `installClickHandler` and `toggleRemoteClicking`
- * are reachable only from a menu row, the row is only offered on the platform
- * and connection each one wants, and both then wait on a real click coming
- * back through a real socket — so the whole of the probe, its verdicts and the
- * verify window sat behind a door no test had opened. Same trick as
- * `tui-clicking.test.ts`: mock the one capability that gates the door.
+ * None of it had ever run. `installClickHandler` is reachable only from a menu
+ * row, the row is only offered on the platform and connection it wants, and it
+ * then waits on a real click coming back through a real socket — so the whole
+ * of the probe and its verdicts sat behind a door no test had opened. Same
+ * trick as `tui-clicking.test.ts`: mock the one capability that gates the door.
  */
 import {
 	chmodSync,
@@ -228,11 +228,16 @@ describe("registering the click handler", () => {
 	});
 
 	it("sends you to the machine in front of you when you are over SSH", async () => {
+		// Registering here would write into a desktop nobody is looking at. And
+		// since the URL names this host, that is genuinely all that is left to
+		// do — so the message says which host the chips already point at.
 		process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
 		const pi = makeFakePi();
 		const { ctx, notices } = makeCtx(() => REGISTER);
 		await pi.run("", ctx);
-		expect(notices.join(" ")).toContain("register the handler there");
+		const said = notices.join(" ");
+		expect(said).toContain("register the handler there");
+		expect(said).toContain("Chips here already name testbox");
 		pi.shutdown();
 	});
 
@@ -255,7 +260,8 @@ describe("registering the click handler", () => {
 			const running = pi.run("", ctx);
 			await waitFor(() => existsSync(urlFile));
 			const url = readFileSync(urlFile, "utf8");
-			const [, ...rest] = url.replace("pisnip://", "").split("/");
+			// scheme://host/token/msg/cN — the socket wants the last two.
+			const rest = url.replace("pisnip://", "").split("/").slice(2);
 			const dir = process.env.PI_SNIPPET_SOCKET_DIR!;
 			await waitFor(() => readdirSync(dir).length > 0);
 			await send(join(dir, readdirSync(dir)[0]!), rest.join("/"));
@@ -308,213 +314,6 @@ describe("removing the click handler", () => {
 		} finally {
 			pi.shutdown();
 		}
-	});
-});
-
-describe("the ssh-back relay", () => {
-	/** What the handler on the client would read. */
-	const written = (): unknown => {
-		try {
-			return JSON.parse(readFileSync(process.env.PI_SNIPPET_REMOTES!, "utf8"));
-		} catch {
-			return null;
-		}
-	};
-
-	describe("the bootstrap line, from the remote side", () => {
-		const SETUP = (options: string[]) => options.find((o) => o.startsWith("SSH relay setup"));
-
-		it("offers the address this session was reached at, and says to prefer an alias", async () => {
-			process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
-			const pi = makeFakePi();
-			const { ctx, notices, editorText } = makeCtx(SETUP);
-			try {
-				await pi.run("", ctx);
-				// A runnable line, in the composer rather than a toast: it has to
-				// survive being read and copied to another machine.
-				expect(editorText()).toContain("python3 -c");
-				expect(editorText()).toContain("10.0.0.2");
-				expect(editorText()).toContain("~/.pi/agent/pi-snippet-remotes.json");
-				// The remote knows the address and nothing about the client's aliases.
-				expect(notices.join(" ")).toContain("alias is usually better than 10.0.0.2");
-			} finally {
-				pi.shutdown();
-			}
-		});
-
-		it("registers this client with this host, in the same line", async () => {
-			// The half that makes it the last time: run from the client, it
-			// proves the alias reaches here without a password and leaves the
-			// stamp that turns chip URLs on by itself from then on. The address
-			// is expanded by the shell *here*, which is why it is single-quoted.
-			process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
-			const pi = makeFakePi();
-			const { ctx, notices, editorText } = makeCtx(SETUP);
-			try {
-				await pi.run("", ctx);
-				expect(editorText()).toContain("&& ssh 10.0.0.2 \'mkdir -p ");
-				// The stamp directory is this session\'s own — the line targets the
-				// agent directory pi is actually running out of, not a guess at it.
-				expect(editorText()).toContain(`cd ${process.env.PI_SNIPPET_RELAY_CLIENTS} &&`);
-				expect(editorText()).toContain('"${SSH_CONNECTION%% *}"');
-				expect(notices.join(" ")).toContain("no toggle here");
-			} finally {
-				pi.shutdown();
-			}
-		});
-
-		it("still prints the config half when the stamp cannot be a shell word", async () => {
-			// An agent directory with a space in it cannot go in a single-quoted
-			// command unescaped, and an unpasteable line is worse than a shorter
-			// one — so the automatic half drops out and the toast says so.
-			process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
-			process.env.PI_SNIPPET_RELAY_CLIENTS = "/tmp/pi snippet clients";
-			const pi = makeFakePi();
-			const { ctx, notices, editorText } = makeCtx(SETUP);
-			try {
-				await pi.run("", ctx);
-				expect(editorText()).toContain("pi-snippet-remotes.json");
-				expect(editorText()).not.toContain("&& ssh ");
-				expect(notices.join(" ")).toContain("turn remote clicking on here");
-			} finally {
-				pi.shutdown();
-			}
-		});
-
-		it("leaves a placeholder when there is no address to offer", async () => {
-			// Over SSH by `SSH_TTY` alone — no `SSH_CONNECTION` to read a peer out
-			// of, which is ordinary under `sudo` and inside some multiplexers.
-			process.env.SSH_TTY = "/dev/pts/3";
-			const pi = makeFakePi();
-			const { ctx, notices, editorText } = makeCtx(SETUP);
-			try {
-				await pi.run("", ctx);
-				expect(editorText()).toContain("<this-host>");
-				expect(notices.join(" ")).toContain("in place of <this-host>");
-			} finally {
-				pi.shutdown();
-			}
-		});
-
-		it("refuses an address that is not a hostname rather than pasting it", async () => {
-			// The line is run in a shell on the client. Whatever `SSH_CONNECTION`
-			// says, only a hostname shape is ever printed into it.
-			process.env.SSH_CONNECTION = "10.0.0.1 22 evil;id 22";
-			const pi = makeFakePi();
-			const { ctx, editorText } = makeCtx(SETUP);
-			try {
-				await pi.run("", ctx);
-				expect(editorText()).not.toContain("evil");
-				expect(editorText()).toContain("<this-host>");
-			} finally {
-				pi.shutdown();
-			}
-		});
-	});
-
-	describe("the relay hosts, from the client side", () => {
-		const ROW = "SSH relay hosts: none — add or clear";
-
-		it("is offered once a handler is installed, showing what is on file", async () => {
-			writeFileSync(process.env.PI_SNIPPET_REMOTES!, '{"hosts":["mybox","work"]}\n', "utf8");
-			install();
-			const seen: string[] = [];
-			const pi = makeFakePi();
-			const { ctx } = makeCtx((options) => {
-				seen.push(...options);
-				return undefined;
-			});
-			try {
-				await pi.run("", ctx);
-				expect(seen).toContain("SSH relay hosts: mybox, work — add or clear");
-			} finally {
-				pi.shutdown();
-			}
-		});
-
-		it("records a host, and says where clicks go now", async () => {
-			const pi = makeFakePi();
-			const { ctx, notices } = makeCtx(() => ROW, () => "  mybox  ");
-			try {
-				await pi.run("", ctx);
-				expect(written()).toEqual({ hosts: ["mybox"] });
-				expect(notices.join(" ")).toContain("now try mybox");
-			} finally {
-				pi.shutdown();
-			}
-		});
-
-		it("adds to the list rather than replacing it", async () => {
-			// Someone with two remotes named the second one; the first must still
-			// be there, and the newest is tried first because it is the one they
-			// were just thinking about.
-			writeFileSync(process.env.PI_SNIPPET_REMOTES!, '{"hosts":["work"]}\n', "utf8");
-			const pi = makeFakePi();
-			const { ctx, notices } = makeCtx(() => "SSH relay hosts: work — add or clear", () => "mybox");
-			try {
-				await pi.run("", ctx);
-				expect(written()).toEqual({ hosts: ["mybox", "work"] });
-				expect(notices.join(" ")).toContain("now try mybox, work");
-			} finally {
-				pi.shutdown();
-			}
-		});
-
-		it("clears on an empty entry, and says clicks go back to failing quietly", async () => {
-			writeFileSync(process.env.PI_SNIPPET_REMOTES!, '{"hosts":["mybox"]}\n', "utf8");
-			const pi = makeFakePi();
-			const { ctx, notices } = makeCtx(() => ROW, () => "   ");
-			try {
-				await pi.run("", ctx);
-				expect(written()).toBeNull();
-				expect(notices.join(" ")).toContain("cleared");
-			} finally {
-				pi.shutdown();
-			}
-		});
-
-		it("writes nothing when the prompt is cancelled", async () => {
-			const pi = makeFakePi();
-			const { ctx, notices } = makeCtx(() => ROW, () => undefined);
-			try {
-				await pi.run("", ctx);
-				expect(written()).toBeNull();
-				expect(notices).toEqual([]);
-			} finally {
-				pi.shutdown();
-			}
-		});
-
-		it("refuses anything a shell could act on, before it reaches the file", async () => {
-			// The value ends up in an `ssh` argv inside the handler, so it is
-			// checked here as well as there.
-			const pi = makeFakePi();
-			const { ctx, notices } = makeCtx(() => ROW, () => "mybox; id");
-			try {
-				await pi.run("", ctx);
-				expect(written()).toBeNull();
-				expect(notices.join(" ")).toContain("Not a hostname or ssh alias");
-			} finally {
-				pi.shutdown();
-			}
-		});
-
-		it("says so when the file cannot be written", async () => {
-			// A file where the directory should be — an unwritable agent directory
-			// costs the relay, not the session, and the toast is the difference
-			// between "set" and "looks set".
-			const blocker = join(home, "blocker");
-			writeFileSync(blocker, "", "utf8");
-			process.env.PI_SNIPPET_REMOTES = join(blocker, "remotes.json");
-			const pi = makeFakePi();
-			const { ctx, notices } = makeCtx(() => ROW, () => "mybox");
-			try {
-				await pi.run("", ctx);
-				expect(notices.join(" ")).toContain("Could not write");
-			} finally {
-				pi.shutdown();
-			}
-		});
 	});
 });
 

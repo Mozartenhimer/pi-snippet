@@ -203,8 +203,8 @@ Facts that shape it:
 - So the handler must be registered on the **Windows** side and relay inward:
   `wsl.exe -d <distro> -e <handler> <url>` runs the existing python3 handler
   inside the distro, where the unix socket is an ordinary local socket. No
-  bridge, no forwarding flag, no per-session setup — like the SSH case since
-  the relay replaced `ssh -L`, and without even the one-time client line.
+  bridge, no forwarding flag, no per-session setup — exactly like the SSH case,
+  which since ADR 0001 has no client-side line either.
 - pi already detects this environment for its own keybindings:
   `useWindowsKeybindings()` treats `win32` and `linux + (WSL_DISTRO_NAME ||
   WSL_INTEROP)` alike. The extension's `overSsh()` needs the same companion —
@@ -262,7 +262,7 @@ Ordered by what blocks what. Nothing below item 0 is worth doing first.
    independent of any Windows work.
 1. **Split the URL/transport layer by platform** — `socketDirCandidates()` →
    one pipe name on `win32`, `clearStaleSocket()` → no-op, `handlerSource()`
-   → a Windows variant. The `link-url.ts` shape (`pisnip://<token>/<msg>/<id>`)
+   → a Windows variant. The `link-url.ts` shape (`pisnip://<host>/<token>/<msg>/<id>`)
    is unchanged; that is the point of an index-not-text URL.
 2. **Measure the named-pipe DACL** on a real Windows box before shipping item 1.
    It decides whether the pipe needs its own handshake.
@@ -272,8 +272,9 @@ Ordered by what blocks what. Nothing below item 0 is worth doing first.
    rather than claim success.
 4. **Pick a windowless handler host** and measure click-to-insertion latency.
 5. **WSL relay**: detect `WSL_DISTRO_NAME`/`WSL_INTEROP` alongside `overSsh()`,
-   register on the Windows side, relay with `wsl.exe -d <distro> -e`. Fold into
-   the ssh-back handler's config rather than inventing a second mechanism.
+   register on the Windows side, relay with `wsl.exe -d <distro> -e`. Follow the
+   ssh-back handler's branch rather than inventing a second mechanism — there is
+   no config to fold into any more, only the host in the URL to dispatch on.
 6. **Linux terminal coverage** is an upstream pi-tui patch (gnome-terminal
    first), not work in this repo — and it is the single highest-value change
    for Linux users.

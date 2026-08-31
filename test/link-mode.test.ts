@@ -13,8 +13,7 @@
  * parentheses when the terminal has no OSC 8, so a `pisnip://` URL on such a
  * terminal would trail every chip on screen.
  */
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
-import { connect } from "node:net";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -144,10 +143,7 @@ function setup(
 		editors,
 		titles,
 		say,
-		/**
-		 * A session beginning — where the extension decides, among other
-		 * things, whether this client has earned chip URLs without asking.
-		 */
+		/** A session beginning: where the socket is bound and the token set. */
 		start: (reason = "startup") => handlers.get("session_start")!({ reason }, ctx),
 		menu: async () => {
 			offered.length = 0;
@@ -186,7 +182,7 @@ describe("clicking on by default, by the terminal", () => {
 	it("paints a dispatchable URL where the terminal does render hyperlinks", () => {
 		const h = setup({}, { TERM_PROGRAM: "ghostty" });
 		h.say(CHIPPED);
-		expect(h.render(CHIPPED)).toMatch(/\]\(pisnip:\/\/[0-9a-f]{8}\/[0-9a-f]{8}\/c1\)/);
+		expect(h.render(CHIPPED)).toMatch(/\]\(pisnip:\/\/testbox\/[0-9a-f]{8}\/[0-9a-f]{8}\/c1\)/);
 	});
 
 	// The only route to a working Ctrl+click is this row, so its presence is
@@ -234,73 +230,61 @@ describe("over SSH", () => {
 	// SSH_TTY is what a real sshd sets; either marker must trigger the same
 	// behavior, since SSH_CONNECTION can appear without a TTY (port forwards).
 	const SSH_ENV = { TERM_PROGRAM: "ghostty", SSH_TTY: "/dev/pts/3" };
-
-	it("paints bare labels until remote clicking is on, even where hyperlinks work", () => {
-		const h = setup({}, SSH_ENV);
-		h.say(CHIPPED);
-		// Without a forward, a URL is a click that dies silently on the client
-		// machine — the outcome the layer refuses to paint by default.
-		expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
-	});
-
-	it("offers the one-time relay setup instead of desktop registration", async () => {
-		// The desktop that would dispatch a click is the user's own machine, so
-		// registering a handler here would write into a desktop nobody is
-		// looking at. What this side can offer is the line to run there.
-		const h = setup({}, SSH_ENV);
-		const choices = await h.menu();
-		expect(choices).toContainEqual(expect.stringContaining("SSH relay setup"));
-		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
-	});
-
-	/** A client that has set relayed clicking up with this host. */
-	const stampClient = (address: string): void => {
-		const dir = process.env.PI_SNIPPET_RELAY_CLIENTS!;
-		mkdirSync(dir, { recursive: true });
-		writeFileSync(join(dir, address), "", "utf8");
-	};
-
 	const CONNECTION = { TERM_PROGRAM: "ghostty", SSH_CONNECTION: "10.1.0.7 51234 10.1.0.9 22" };
 
-	describe("the relay, once the client has been set up", () => {
-		// The relay costs nothing per session, so neither should turning it on:
-		// a stamp left here by the client is the evidence that a chip URL will
-		// reach somebody, and it is the only thing this decision rests on.
-		it("paints URLs from the session start, with nothing asked of the user", async () => {
-			stampClient("10.1.0.7");
-			const h = setup({}, CONNECTION);
+	// The whole of what ADR 0001 changed, in one assertion: a remote session
+	// paints the same URL a local one does, with nothing set up and nothing
+	// asked, because the URL says which machine to deliver to.
+	it.each([
+		["SSH_TTY alone", SSH_ENV],
+		["SSH_CONNECTION", CONNECTION],
+	])("paints a URL naming this host, from the first message (%s)", (_label, env) => {
+		const h = setup({}, env);
+		h.start();
+		h.say(CHIPPED);
+		expect(h.render(CHIPPED)).toMatch(/\]\(pisnip:\/\/testbox\/[0-9a-f]{8}\/[0-9a-f]{8}\/c1\)/);
+	});
+
+	it("paints the same URL a local session would", () => {
+		// One shape everywhere is the point: there is no longer a local URL and
+		// a remote one, so there is one parser to keep in step rather than two.
+		// The session token is the only part that legitimately differs (it is
+		// per-session), so it is masked out rather than asserted on.
+		const painted = (env: Record<string, string>) => {
+			const h = setup({}, env);
 			h.start();
 			h.say(CHIPPED);
-			expect(h.render(CHIPPED)).toMatch(/\]\(pisnip:\/\/[0-9a-f]{8}\/[0-9a-f]{8}\/c1\)/);
-			expect(h.notes.join("\n")).toContain("relays clicks back");
-			const choices = await h.menu();
-			// And says which delivery is painting them, because "on" with no
-			// forward in sight reads like a bug to anyone who set one up before.
-			expect(h.titles.join("\n")).toContain("relayed back over SSH");
-			expect(choices).toContainEqual(expect.stringContaining("set up already"));
-		});
+			return h.render(CHIPPED).replace(/\/[0-9a-f]{8}\/([0-9a-f]{8}\/c\d)/, "/TOKEN/$1");
+		};
+		expect(painted(SSH_ENV)).toBe(painted({ TERM_PROGRAM: "ghostty" }));
+	});
 
-		it("keeps the honest default for a client it has never heard from", () => {
-			stampClient("10.1.0.8"); // some other machine, same host
-			const h = setup({}, CONNECTION);
-			h.start();
-			h.say(CHIPPED);
-			expect(h.render(CHIPPED)).toBe("Want me to ¹rebuild the solution?");
-			expect(h.notes.join("\n")).not.toContain("relays clicks back");
-		});
+	it("offers no click setup at all, and says where clicks go instead", async () => {
+		// The desktop that would dispatch a click is the user's own machine, so
+		// registering a handler here would write into a desktop nobody is
+		// looking at — and there is nothing else left to set up.
+		const h = setup({}, SSH_ENV);
+		const choices = await h.menu();
+		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
+		expect(choices).not.toContainEqual(expect.stringContaining("Remove click handler"));
+		expect(h.titles.join("\n")).toContain("chips route back to testbox");
+	});
 
-		it("says nothing twice, and nothing at all off SSH", () => {
-			stampClient("10.1.0.7");
-			const local = setup({}, { TERM_PROGRAM: "ghostty" });
-			local.start();
-			// A stamp is about clicks arriving from elsewhere; here the desktop
-			// is the one in front of the user and clicking was never off.
-			expect(local.notes.join("\n")).not.toContain("relays clicks back");
+	it("names what PI_SNIPPET_HOST says when the hostname would not do", () => {
+		// The escape hatch for the one assumption this rests on: hosts are
+		// reachable by name, and where they are not the fix is one string on
+		// the machine that knows.
+		const h = setup({}, { ...SSH_ENV, PI_SNIPPET_HOST: "box.example.com" });
+		h.say(CHIPPED);
+		expect(h.render(CHIPPED)).toContain("(pisnip://box.example.com/");
+	});
 
-			const h = setup({}, CONNECTION);
-			h.start();
-			h.start("resume");
-			expect(h.notes.filter((note) => note.includes("relays clicks back"))).toHaveLength(1);
-		});
+	it("falls back rather than painting a name no URL could carry", () => {
+		// A hostname with a space in it is not a reason to take every chip on
+		// screen down: a local click never leaves the machine anyway, and the
+		// handler reads `localhost` as itself.
+		const h = setup({}, { ...SSH_ENV, PI_SNIPPET_HOST: "not a host" });
+		h.say(CHIPPED);
+		expect(h.render(CHIPPED)).toMatch(/\(pisnip:\/\/[a-z0-9.-]+\//);
 	});
 });

@@ -49,7 +49,7 @@ src/
     prompt-snippet.ts     the prompt contract injected into the system prompt
     digit-chord.ts        Alt+N addressing: multi-digit chord decision logic
     tui-markdown.ts       chips as markdown links (¹label), pure transform
-    link-url.ts           the pisnip:// URL shape; messageKey, sessionToken
+    link-url.ts           the pisnip:// URL shape; messageKey, sessionToken, host rules
   extension/              terminal- and pi-coupled
     pi-snippet-tui.ts     entry point: state, lifecycle handlers, /snippets
     common.ts             prompt injection (two guarded delivery paths)
@@ -81,7 +81,7 @@ Pure: raw markdown in, token stream out. Sanitization rules (PRD §5.3, §11): n
 
 ### Rendering (`shared/tui-markdown.ts`, transformer in `pi-snippet-tui.ts`)
 
-`registerMarkdownTransformer` turns each parsed suggestion into `[\u00B9label](url)`. The URL is `chip:N` (inert placeholder) when clicking is unavailable, or a real `pisnip://token/msg/cN` when it is. The transformer hashes the *same text it was handed* to derive `msg` (`messageKey` — FNV-1a, 32 bits), which is why the lifecycle handlers must index messages in exactly the forms the transformer will hash (whole message, per text block, and the streaming prefix).
+`registerMarkdownTransformer` turns each parsed suggestion into `[\u00B9label](url)`. There is no URL at all when clicking is unavailable (a bare label — pi-tui prints any href it cannot emit as OSC 8 in visible parens), and a real `pisnip://host/token/msg/cN` when it is, where `host` is what this machine calls itself so a click resolved on another machine knows where to send it (ADR 0001). The transformer hashes the *same text it was handed* to derive `msg` (`messageKey` — FNV-1a, 32 bits), which is why the lifecycle handlers must index messages in exactly the forms the transformer will hash (whole message, per text block, and the streaming prefix).
 
 ### Addressability (lifecycle handlers, `shared/digit-chord.ts`)
 
@@ -93,7 +93,7 @@ The chord (`digit-chord.ts`) is pure decision logic; timers and key events belon
 
 The chain, described in depth in `docs/terminal-resolved-clicks.md`:
 
-1. The chip's href is a real `pisnip://token/msg/cN` URL; pi-tui paints it as OSC 8.
+1. The chip's href is a real `pisnip://host/token/msg/cN` URL; pi-tui paints it as OSC 8.
 2. The terminal resolves Ctrl+click and asks the OS to open the URL.
 3. A desktop handler — generated once per machine by `link-install.ts` (a `.desktop` entry plus `mimeapps.list`; no xdg-utils dependency) — forwards the URL path to pi.
 4. `LinkServer` listens on a unix socket named after the session token. `sessionToken()` hashes pi's session id, so a resumed session rebinds the socket its old scrollback already points at (a fresh random value would name a dead socket after restart). Socket directory candidates, in order: `PI_SNIPPET_SOCKET_DIR`, `$XDG_RUNTIME_DIR/pi-snippet`, `/tmp/pi-snippet-<uid>` — both sides walk the same list, because a confined snap's runtime dir is not the desktop's.

@@ -80,7 +80,7 @@ function launch(sessionId: string | undefined, reason: string) {
 	const chipUrl = (text: string): string => {
 		say(text);
 		const rendered = transformer!(text, { messageType: "assistant", isStreaming: false });
-		const match = rendered.match(/\((pisnip:\/\/[0-9a-f]{8}\/[0-9a-f]{8}\/c\d+)\)/);
+		const match = rendered.match(/\((pisnip:\/\/[a-z0-9.-]+\/[0-9a-f]{8}\/[0-9a-f]{8}\/c\d+)\)/);
 		if (!match) throw new Error(`no pisnip:// URL in: ${rendered}`);
 		return match[1]!;
 	};
@@ -123,7 +123,8 @@ describe("the chip URL survives a restart of the pi process", () => {
 		const after = launch("3fae1c2e-9b7c-4b8b-8f2a-1a2b3c4d5e6f", "resume");
 		const afterUrl = after.chipUrl(CHIPPED);
 
-		const tokenOf = (url: string) => url.replace("pisnip://", "").split("/")[0];
+	// scheme://host/token/… — the host took the netloc, so the token is second.
+	const tokenOf = (url: string) => url.replace("pisnip://", "").split("/")[1];
 		expect(tokenOf(afterUrl)).toBe(tokenOf(beforeUrl));
 	});
 
@@ -133,7 +134,8 @@ describe("the chip URL survives a restart of the pi process", () => {
 		setup({ TERM_PROGRAM: "ghostty" });
 		const b = launch("session-b", "startup").chipUrl(CHIPPED);
 
-		const tokenOf = (url: string) => url.replace("pisnip://", "").split("/")[0];
+	// scheme://host/token/… — the host took the netloc, so the token is second.
+	const tokenOf = (url: string) => url.replace("pisnip://", "").split("/")[1];
 		expect(tokenOf(a)).not.toBe(tokenOf(b));
 	});
 });

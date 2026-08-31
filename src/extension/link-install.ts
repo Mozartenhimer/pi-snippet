@@ -30,198 +30,9 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { LINK_SCHEME } from "../shared/link-url.js";
-import { agentDir } from "./settings.js";
 
 const DESKTOP_ID = "pi-snippet-open.desktop";
 const MIME = `x-scheme-handler/${LINK_SCHEME}`;
-/** The relay host, beside the settings file rather than inside it. */
-const REMOTES_FILE = "pi-snippet-remotes.json";
-/**
- * Where a *server* records which clients relay clicks back to it — one empty
- * file per client address.
- *
- * A directory of stamps rather than a JSON map because the writer is a shell
- * command arriving over `ssh` (the bootstrap line's second half), and a merge
- * is the one thing a one-line shell command cannot do safely: with a file
- * each, two clients of the same host never overwrite one another.
- */
-const RELAY_CLIENTS_DIR = "pi-snippet-relay-clients";
-
-/**
- * Where the client records the host to relay unresolvable clicks to
- * (docs/ssh-back-handler.md).
- *
- * Separate from `pi-snippet.json` because it is read by the *handler*, a
- * python script with no access to this module — one file with one job is
- * cheaper to agree on across two languages than a key inside a growing
- * settings shape. `PI_SNIPPET_REMOTES` names it outright, for tests and for
- * an unwritable agent directory; the handler honours the same variable.
- */
-export function remotesPath(env: NodeJS.ProcessEnv = process.env): string {
-	const override = env.PI_SNIPPET_REMOTES;
-	if (override !== undefined && override !== "") return override;
-	return join(agentDir(env), REMOTES_FILE);
-}
-
-/**
- * A host is an ssh-config alias or a plain hostname, and nothing else.
- *
- * The value reaches an `ssh` argv in the handler, so the shape is checked on
- * the way in as well as on the way out — a rejected value is no relay, never a
- * quoted-around one.
- */
-export function isRelayHost(host: string): boolean {
-	return /^[A-Za-z0-9._@-]{1,255}$/.test(host);
-}
-
-/**
- * The hosts a click may be relayed to, in the order to try them.
- *
- * A list rather than the single host this started as, because one machine in
- * front of several remotes is the ordinary case and hand-editing a file to
- * switch between them is not a feature. It stays an allowlist: the handler
- * tries these and only these, so nothing a URL carries can point a click at a
- * host the user never named.
- *
- * `{ "host": "…" }` — what earlier versions wrote, and what a hand-written
- * file most likely says — is read as a one-entry list, after any `hosts`.
- * Malformed entries are dropped rather than refused: a file with one bad name
- * in it should still relay to the good ones.
- */
-export function readRelayHosts(env: NodeJS.ProcessEnv = process.env): string[] {
-	let listed: unknown[] = [];
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(remotesPath(env), "utf8"));
-		if (typeof parsed !== "object" || parsed === null) return [];
-		const hosts = (parsed as { hosts?: unknown }).hosts;
-		const single = (parsed as { host?: unknown }).host;
-		if (Array.isArray(hosts)) listed = hosts;
-		if (typeof single === "string") listed = [...listed, single];
-	} catch {
-		return [];
-	}
-	const hosts: string[] = [];
-	for (const host of listed) {
-		if (typeof host !== "string" || !isRelayHost(host)) continue;
-		if (!hosts.includes(host)) hosts.push(host);
-	}
-	return hosts;
-}
-
-/**
- * Add a host to the front of the list, or clear the list when handed "".
- *
- * The front because the one just named is the one being set up, and the
- * handler tries them in order until a session answers — so a fresh entry costs
- * nothing to be wrong about, and being right saves a round trip. Adding rather
- * than replacing is what the bootstrap line does too: a second remote must not
- * cost the first.
- *
- * Nothing here is allowed to be fatal, same rule as the rest of this module:
- * an unwritable agent directory costs the relay, not the session.
- */
-export function addRelayHost(host: string, env: NodeJS.ProcessEnv = process.env): boolean {
-	const path = remotesPath(env);
-	try {
-		if (host === "") {
-			if (existsSync(path)) unlinkSync(path);
-			return true;
-		}
-		if (!isRelayHost(host)) return false;
-		const hosts = [host, ...readRelayHosts(env).filter((known) => known !== host)];
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify({ hosts }, null, 2)}\n`, "utf8");
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Where this host records the clients that relay clicks back to it.
- *
- * The server side of the relay, and the only part of it this machine writes for
- * itself: the stamps are made by the ssh-back the client runs, not by pi.
- * `PI_SNIPPET_RELAY_CLIENTS` names the directory outright, for tests and for
- * a bootstrap line that has to target an agent directory this session was
- * pointed at with `PI_CODING_AGENT_DIR`.
- */
-export function relayClientsDir(env: NodeJS.ProcessEnv = process.env): string {
-	const override = env.PI_SNIPPET_RELAY_CLIENTS;
-	if (override !== undefined && override !== "") return override;
-	return join(agentDir(env), RELAY_CLIENTS_DIR);
-}
-
-/**
- * What the bootstrap line carries where a hostname goes when this host cannot
- * name itself — a session reached over `SSH_TTY` alone knows there is a client
- * but not the address it came from. The user edits it before running the line,
- * so it has to survive being generated into one.
- */
-export const HOST_PLACEHOLDER = "<this-host>";
-
-/**
- * Has this client set relayed clicking up with this host?
- *
- * The whole of the remote session's evidence that painting chip URLs is worth
- * anything, and it does not expire: the stamp records that a connection from
- * that client succeeded, which stays true. A client that later stops relaying
- * costs a chip that looks clickable and is not — the same silence a dead
- * session already gives, and the reason nothing here is louder than a
- * `stat`. The address is checked because it becomes a file name, though only
- * ever one this side looks up rather than enumerates.
- */
-export function relayClientSeen(address: string, env: NodeJS.ProcessEnv = process.env): boolean {
-	if (!/^[0-9A-Fa-f.:]{1,45}$/.test(address)) return false;
-	return existsSync(join(relayClientsDir(env), address));
-}
-
-/**
- * The one-time line the user runs on their machine, and whether it carries the
- * half that makes it the last time.
- *
- * Two commands joined by `&&`, run by two different shells and so quoted two
- * different ways:
- *
- * - The **config half** records this host in the client's relay list, keeping
- *   whatever is already there — a python one-liner rather than the `printf`
- *   this started as, because adding is the point and merging is the one thing a
- *   short shell command cannot do. It runs in the client's own shell and
- *   nothing re-parses it, so python's apostrophes inside a double-quoted word
- *   are safe here in a way they would not be below.
- * - The **stamp half** ssh-es straight back, which both proves the alias
- *   reaches here without a password — the same thing a relayed click needs —
- *   and leaves the file `relayClientSeen()` reads, after which this host paints
- *   chip URLs for that client on its own. Single-quoted, so `SSH_CONNECTION` is
- *   expanded by the shell *here*: the client never names itself.
- *
- * `stamps` is false when the agent directory cannot go in a single-quoted word
- * unescaped, which only an exotic `PI_CODING_AGENT_DIR` causes: the line drops
- * that half rather than being unpasteable, and the caller says so.
- *
- * The host is interpolated into a shell line and is *not* re-checked here:
- * `sshServerHost()` in `pi-snippet-tui.ts`, the only caller, yields either an
- * address that passed `isRelayHost()` or `HOST_PLACEHOLDER`.
- */
-export function relayBootstrapLine(
-	host: string,
-	env: NodeJS.ProcessEnv = process.env,
-): { line: string; stamps: boolean } {
-	const config =
-		`mkdir -p ~/.pi/agent && python3 -c "import json,os;h='${host}';`
-		+ `p=os.path.expanduser('~/.pi/agent/${REMOTES_FILE}');`
-		+ `d=json.load(open(p)) if os.path.exists(p) else {};`
-		+ `k=[x for x in (d.get('hosts') or [d.get('host')]) if x and x!=h];`
-		+ `json.dump({'hosts':[h]+k},open(p,'w'))"`;
-	const dir = relayClientsDir(env);
-	if (!/^[A-Za-z0-9._/@+-]{1,4096}$/.test(dir)) return { line: config, stamps: false };
-	// `cd` rather than a second copy of the path: this line is pasted by hand,
-	// and every character of it is read by someone deciding whether to trust it.
-	return {
-		line: `${config} && ssh ${host} 'mkdir -p ${dir} && cd ${dir} && touch "\${SSH_CONNECTION%% *}"'`,
-		stamps: true,
-	};
-}
 
 /**
  * An XDG directory from the environment, or the spec's default.
@@ -310,6 +121,10 @@ const PY_CANDIDATES = `def candidates():
  * strictly before it gets here. The validation is the security boundary; the
  * argv split is defence in depth, and both are load-bearing.
  *
+ * It re-checks the shape anyway, cheaply: three path segments and an
+ * alphanumeric token, because the token becomes a socket file name here and
+ * this end has no idea what validated the URL.
+ *
  * Self-contained on purpose: nothing is installed on the remote host, and
  * python3 is the same near-universal interpreter the handler itself needs.
  */
@@ -317,13 +132,16 @@ export function relayCommand(): string {
 	return `python3 -c '
 import os, socket, sys, tempfile, urllib.parse
 ${PY_CANDIDATES}
-u = urllib.parse.urlparse(sys.argv[1])
+parts = urllib.parse.urlparse(sys.argv[1]).path.strip("/").split("/")
+if len(parts) != 3 or not parts[0].isalnum():
+    sys.exit(2)
+wire = parts[1] + "/" + parts[2]
 for directory in candidates():
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(2)
-        s.connect(os.path.join(directory, u.netloc + ".sock"))
-        s.sendall((u.path.strip("/") + "\\n").encode())
+        s.connect(os.path.join(directory, parts[0] + ".sock"))
+        s.sendall((wire + "\\n").encode())
         s.close()
         sys.exit(0)
     except OSError:
@@ -332,6 +150,22 @@ sys.exit(1)
 '`;
 }
 
+/**
+ * The host pattern, as python — the same shape `isLinkHost()` enforces in
+ * `shared/link-url.ts`, written out because the handler is a standalone script
+ * that imports nothing of ours.
+ *
+ * The leading class is narrower than the rest on purpose: a host beginning
+ * with `-` would be read by `ssh` as an option and the destination would shift
+ * to the next argument, which is a real hazard now that the host arrives in a
+ * URL rather than from a file the user wrote.
+ *
+ * `\A`/`\Z` rather than `^`/`$`: python's `$` also matches before a trailing
+ * newline, which JavaScript's does not, so anchoring loosely would leave the
+ * two copies of this guard disagreeing about exactly one input.
+ */
+const PY_HOST = String.raw`\A[A-Za-z0-9][A-Za-z0-9._@-]{0,254}\Z`;
+
 function handlerSource(): string {
 	return `#!/usr/bin/env python3
 """pi-snippet click handler. Forwards one ${LINK_SCHEME}:// URL and exits.
@@ -339,167 +173,77 @@ function handlerSource(): string {
 Generated by pi-snippet; edits are lost on the next install. Carries no text:
 the URL names a slot, and the pi session decides what that slot means.
 
-Two deliveries, in order: a unix socket on this machine, and — when the session
-lives on another host, reached over SSH — a relay back to it through ssh. The
-relay host comes from ${REMOTES_FILE}, never from the URL: a hostname in the URL
-would make any pasteable ${LINK_SCHEME}:// link an instruction to SSH somewhere.
+Two deliveries, in order: a unix socket on this machine, and — when the URL
+names another host — a relay back to it through ssh (ADR 0001). The host comes
+from the URL, and what keeps that safe is ssh's own allowlist: BatchMode turns
+StrictHostKeyChecking into a hard failure, so a host missing from known_hosts
+is refused at the host-key check, before authentication.
 """
-import json, os, re, socket, subprocess, sys, tempfile, time, urllib.parse
+import os, re, socket, subprocess, sys, tempfile, urllib.parse
 
 url = sys.argv[1] if len(sys.argv) > 1 else ""
 u = urllib.parse.urlparse(url)
-if u.scheme != "${LINK_SCHEME}" or not u.netloc.isalnum():
+# Strict before the relay, because the relay hands both of these to a remote
+# shell — and the host to an ssh argv. A hostname, hex and a small integer have
+# no metacharacter to act on. The path matches parseChipPath() in
+# shared/link-url.ts with the session token in front, so nothing valid is
+# turned away here.
+if u.scheme != "${LINK_SCHEME}" or not re.match(r"${PY_HOST}", u.netloc):
     sys.exit(2)
-# Strict before the relay, because the relay hands this path to a remote shell:
-# hex and a small integer have no metacharacter to act on. Matches
-# parseChipPath() in shared/link-url.ts, so nothing valid is turned away here.
-if not re.match(r"^/[0-9a-f]{1,16}/c[0-9]{1,3}$", u.path):
+route = re.match(r"^/([0-9a-z]{1,32})(/[0-9a-f]{1,16}/c[0-9]{1,3})$", u.path)
+if not route:
     sys.exit(2)
+token, wire = route.group(1), route.group(2).strip("/")
 
 ${PY_CANDIDATES}
 
 for directory in candidates():
-    path = os.path.join(directory, u.netloc + ".sock")
+    path = os.path.join(directory, token + ".sock")
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(2)
         s.connect(path)
-        s.sendall((u.path.strip("/") + "\\n").encode())
+        s.sendall((wire + "\\n").encode())
         s.close()
         sys.exit(0)
     except OSError:
         continue
 
 
-def agent_dir():
-    configured = os.environ.get("PI_CODING_AGENT_DIR")
-    if not configured:
-        return os.path.join(os.path.expanduser("~"), ".pi", "agent")
-    if configured == "~":
-        return os.path.expanduser("~")
-    if configured.startswith("~/"):
-        return os.path.expanduser("~") + configured[1:]
-    return configured
+def own_names():
+    """Every name that means this machine, reduced to first labels.
 
-
-def remotes_path():
-    override = os.environ.get("PI_SNIPPET_REMOTES")
-    return override or os.path.join(agent_dir(), "${REMOTES_FILE}")
-
-
-def relay_hosts():
-    """Every host this click may be sent to, in the order to try them.
-
-    The file is the allowlist, so nothing outside it is ever tried — and a
-    malformed entry is dropped rather than failing the lot: one bad name should
-    not cost the good ones. An ssh-config alias or a plain hostname is all a
-    name may be; anything a shell could act on is refused rather than quoted
-    around, because these values reach an ssh argv.
+    A local session paints its own hostname too — one URL shape everywhere —
+    so a click on dead local scrollback must fail here rather than ssh back to
+    ourselves to find the socket we just failed to reach. PI_SNIPPET_HOST is
+    the escape hatch a session uses when its hostname is meaningless off-box;
+    honoured here as well so a machine that renames itself for others still
+    recognises itself.
     """
-    try:
-        with open(remotes_path(), "r") as fh:
-            data = json.load(fh)
-        listed = data.get("hosts")
-        single = data.get("host")
-    except (OSError, ValueError, AttributeError):
-        return []
-    if not isinstance(listed, list):
-        listed = []
-    if isinstance(single, str):
-        listed = listed + [single]
-    hosts = []
-    for host in listed:
-        if not isinstance(host, str) or not re.match(r"^[A-Za-z0-9._@-]{1,255}$", host):
-            continue
-        if host not in hosts:
-            hosts.append(host)
-    return hosts
+    names = ["localhost", socket.gethostname(), os.environ.get("PI_SNIPPET_HOST") or ""]
+    return set(n.lower().split("@")[-1].split(".")[0] for n in names if n)
 
 
-def cache_path():
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
-    return os.path.join(runtime, "pi-snippet-relay-%s" % u.netloc)
-
-
-def remembered(hosts):
-    """Which host answered for this session last time.
-
-    Only ever a hint about *order*: a name that is no longer in the file is
-    ignored, so a tampered cache cannot send a click anywhere the user has not
-    named. Without it, a click on a second remote pays a dead ssh handshake for
-    every host ahead of it in the list, on every click.
-    """
-    try:
-        with open(cache_path(), "r") as fh:
-            host = fh.read().strip()
-    except OSError:
-        return None
-    return host if host in hosts else None
-
-
-def remember(host):
-    try:
-        with open(cache_path(), "w") as fh:
-            fh.write(host)
-    except OSError:
-        pass
-
-
-def explain_once():
-    """The one failure worth telling the user about, at most once an hour.
-
-    A chip clicked in old scrollback finds no session and must stay silent —
-    an error dialog for a dead chip is noise. This is the other case: the
-    session is alive on a host this machine has not been told about, and the
-    fix is a one-time setting. The handler is stateless and spawns fresh per
-    click, so the rate limit is a stamp file rather than a variable.
-    """
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
-    stamp = os.path.join(runtime, "pi-snippet-unconfigured-%s" % u.netloc)
-    try:
-        if time.time() - os.path.getmtime(stamp) < 3600:
-            return
-    except OSError:
-        pass
-    try:
-        with open(stamp, "w") as fh:
-            fh.write("")
-    except OSError:
-        pass
-    try:
-        subprocess.run(
-            ["notify-send", "pi-snippet", "This chip belongs to a pi session on "
-             "another host. Run pi /snippets on this machine and set the SSH "
-             "relay host to make remote chips clickable."],
-            timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        pass  # no notify-send, or no display: degrade to the old silence
-
-
-hosts = relay_hosts()
-if not hosts:
-    explain_once()
+host = u.netloc
+if host.lower().split("@")[-1].split(".")[0] in own_names():
+    # Nothing local answered and there is nowhere else to look. Same silence as
+    # a chip clicked in scrollback whose session has exited.
     sys.exit(1)
-first = remembered(hosts)
-if first is not None:
-    hosts = [first] + [host for host in hosts if host != first]
-for host in hosts:
-    try:
-        # BatchMode so a click never hangs on a password or a host-key prompt,
-        # and two timeouts so a dark host costs seconds rather than a stuck
-        # process — which is also what makes trying several of them bearable.
-        done = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", host,
-             ${JSON.stringify(relayCommand())}, url],
-            timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        continue
-    if done.returncode == 0:
-        remember(host)
-        sys.exit(0)
-# Configured but unreachable is the same situation as dead scrollback: the user
-# has already opted in, and there is nothing left to configure. Quiet either way.
-sys.exit(1)
+try:
+    # BatchMode so a click never hangs on a password or a host-key prompt — and
+    # so an unknown host is refused rather than trusted, which is what stands in
+    # for the allowlist this used to keep. ConnectTimeout so a dark host costs
+    # seconds rather than a stuck process. \`--\` so a host that somehow got past
+    # the pattern above still cannot be read as an option.
+    done = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "--", host,
+         ${JSON.stringify(relayCommand())}, url],
+        timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+except (OSError, subprocess.SubprocessError):
+    sys.exit(1)
+# Unreachable is the same situation as dead scrollback: nothing to say, and now
+# nothing to configure either. Quiet either way.
+sys.exit(done.returncode)
 `;
 }
 

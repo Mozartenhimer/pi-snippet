@@ -1,5 +1,5 @@
 /**
- * Relaying a click back over SSH (docs/ssh-back-handler.md).
+ * Relaying a click back over SSH (docs/ssh-back-handler.md, ADR 0001).
  *
  * The interesting half of this feature is a python script this repo generates
  * and never imports, so most of what follows *runs* the generated handler
@@ -9,38 +9,29 @@
  * argv it would really use is observable without a second machine — the real
  * wire is `scripts/ssh-click-docker.py`.
  *
+ * Since the host comes from the URL rather than from a file the user wrote,
+ * the shape of that host is the whole safety argument on this side (ssh's own
+ * `known_hosts` is the other half, and only a real `ssh` can enforce it). So
+ * the refusals below are as load-bearing as the deliveries.
+ *
  * Skipped where python3 is absent: `npm test` may not assume an interpreter it
  * does not install, and a silent pass would be worse than a visible skip.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import {
-	addRelayHost,
-	HOST_PLACEHOLDER,
-	install,
-	isRelayHost,
-	readRelayHosts,
-	relayBootstrapLine,
-	relayClientSeen,
-	relayClientsDir,
-	relayCommand,
-	remotesPath,
-} from "../src/extension/link-install.js";
+import { install, relayCommand } from "../src/extension/link-install.js";
+import { isLinkHost } from "../src/shared/link-url.js";
 
 const hasPython = spawnSync("python3", ["-c", "pass"]).status === 0;
+
+/** A URL for this machine, and one for somewhere else. */
+const HERE = "pisnip://testbox/a1b2c3d4/0f3e2a91/c3";
+const THERE = "pisnip://mybox/a1b2c3d4/0f3e2a91/c3";
 
 let home: string;
 let env: NodeJS.ProcessEnv;
@@ -57,114 +48,6 @@ beforeEach(() => {
 
 afterEach(() => {
 	rmSync(home, { recursive: true, force: true });
-});
-
-describe("the relay host on file", () => {
-	it("accepts ssh aliases and hostnames", () => {
-		for (const host of ["mybox", "box.example.com", "user@host", "a-b_c.d", "h1"]) {
-			expect(isRelayHost(host), host).toBe(true);
-		}
-	});
-
-	it("refuses anything a shell could act on", () => {
-		// The value reaches an ssh argv in the handler, so the shape is the
-		// guard — not quoting around whatever arrives.
-		for (const host of ["", "a b", "a;b", "a$(id)", "a|b", "a&b", "a>b", "-oProxyCommand=x y", "a\nb"]) {
-			expect(isRelayHost(host), JSON.stringify(host)).toBe(false);
-		}
-		expect(isRelayHost("h".repeat(256))).toBe(false);
-	});
-
-	it("round-trips through the file, and clears on an empty host", () => {
-		expect(readRelayHosts(env)).toEqual([]);
-		expect(addRelayHost("mybox", env)).toBe(true);
-		expect(readRelayHosts(env)).toEqual(["mybox"]);
-		expect(addRelayHost("", env)).toBe(true);
-		expect(readRelayHosts(env)).toEqual([]);
-	});
-
-	it("keeps every host named, newest first, without duplicating one", () => {
-		// One machine in front of several remotes is the ordinary case; naming
-		// the second must not cost the first, and naming the same one twice
-		// must not grow the list the handler walks.
-		expect(addRelayHost("mybox", env)).toBe(true);
-		expect(addRelayHost("work", env)).toBe(true);
-		expect(readRelayHosts(env)).toEqual(["work", "mybox"]);
-		expect(addRelayHost("mybox", env)).toBe(true);
-		expect(readRelayHosts(env)).toEqual(["mybox", "work"]);
-	});
-
-	it("still reads the single-host file earlier versions wrote", () => {
-		mkdirSync(join(home, "agent"), { recursive: true });
-		writeFileSync(remotesPath(env), '{"host":"mybox"}', "utf8");
-		expect(readRelayHosts(env)).toEqual(["mybox"]);
-		// And adding to it migrates rather than dropping what was there.
-		expect(addRelayHost("work", env)).toBe(true);
-		expect(readRelayHosts(env)).toEqual(["work", "mybox"]);
-	});
-
-	it("drops the entries it cannot use and keeps the rest", () => {
-		// A file with one bad name in it should still relay to the good ones —
-		// but never to the bad one, and never to a host that is not a host.
-		mkdirSync(join(home, "agent"), { recursive: true });
-		writeFileSync(
-			remotesPath(env),
-			JSON.stringify({ hosts: ["good", "a b", 5, null, "good", "evil;id"], host: "legacy" }),
-			"utf8",
-		);
-		expect(readRelayHosts(env)).toEqual(["good", "legacy"]);
-		// `hosts` of the wrong type is not a list at all, and says nothing about
-		// `host` beside it.
-		writeFileSync(remotesPath(env), JSON.stringify({ hosts: "mybox", host: "legacy" }), "utf8");
-		expect(readRelayHosts(env)).toEqual(["legacy"]);
-	});
-
-
-
-	it("reads nothing out of a malformed or hostile file", () => {
-		mkdirSync(join(home, "agent"), { recursive: true });
-		const path = remotesPath(env);
-		for (const body of ["", "{", "[]", "null", '{"host":5}', '{"host":"a b"}', '{"nope":"x"}']) {
-			writeFileSync(path, body, "utf8");
-			expect(readRelayHosts(env), body).toEqual([]);
-		}
-	});
-
-	it("honours PI_SNIPPET_REMOTES over the agent directory", () => {
-		const explicit = join(home, "elsewhere.json");
-		expect(remotesPath({ ...env, PI_SNIPPET_REMOTES: explicit })).toBe(explicit);
-		expect(remotesPath(env)).toBe(join(home, "agent", "pi-snippet-remotes.json"));
-	});
-
-	it("treats an empty PI_SNIPPET_REMOTES as no override at all", () => {
-		// An exported-but-empty variable is the ordinary shape of "unset" in a
-		// shell, and a relay host written to "" would be written nowhere.
-		expect(remotesPath({ ...env, PI_SNIPPET_REMOTES: "" })).toBe(
-			join(home, "agent", "pi-snippet-remotes.json"),
-		);
-	});
-
-	it("reads nothing out of valid JSON that is not an object", () => {
-		mkdirSync(join(home, "agent"), { recursive: true });
-		for (const body of ["123", '"mybox"', "true"]) {
-			writeFileSync(remotesPath(env), body, "utf8");
-			expect(readRelayHosts(env), body).toEqual([]);
-		}
-	});
-
-	it("clears a list that was never written, without complaining", () => {
-		// Clearing is idempotent: the state the user asked for is the state they
-		// are already in, and a missing file is not a failure to report.
-		expect(addRelayHost("", env)).toBe(true);
-		expect(readRelayHosts(env)).toEqual([]);
-	});
-
-	it("refuses to record a host the handler would refuse to use", () => {
-		// Checked on the way in as well as on the way out — a value that cannot
-		// be relayed to should never reach the file in the first place.
-		expect(addRelayHost("mybox; id", env)).toBe(false);
-		expect(readRelayHosts(env)).toEqual([]);
-	});
 });
 
 describe("the relay command", () => {
@@ -217,11 +100,18 @@ describe("the relay command", () => {
 					encoding: "utf8",
 					timeout: 15_000,
 				});
-			expect(relay("pisnip://a1b2c3d4/0f3e2a91/c3").status).toBe(0);
+			// The token is the *second* segment now — the host took the netloc —
+			// and only the two segments after it go on the wire.
+			expect(relay(THERE).status).toBe(0);
 			await new Promise((resolve) => setTimeout(resolve, 200));
 			expect(lines.join("")).toBe("0f3e2a91/c3\n");
 			// A session that is gone is a quiet non-zero, same as everywhere else.
-			expect(relay("pisnip://deadbeef/0f3e2a91/c3").status).toBe(1);
+			expect(relay("pisnip://mybox/deadbeef/0f3e2a91/c3").status).toBe(1);
+			// And a shape this end cannot make sense of is refused rather than
+			// guessed at: it names the socket file, and nothing here knows what
+			// validated the URL on the machine that sent it.
+			expect(relay("pisnip://mybox/0f3e2a91/c3").status).toBe(2);
+			expect(relay("pisnip://mybox/not-alnum/0f3e2a91/c3").status).toBe(2);
 		} finally {
 			server.close();
 			rmSync(sockDir, { recursive: true, force: true });
@@ -229,114 +119,31 @@ describe("the relay command", () => {
 	});
 });
 
-describe("the server's memory of a client", () => {
-	/**
-	 * The evidence a remote session paints chip URLs on: a stamp this host
-	 * keeps for every client that has set relaying up with it. Written by the
-	 * client, over ssh — which is the point, since only a connection from the
-	 * client proves the relay can be made.
-	 */
-	const stamp = (address: string): void => {
-		mkdirSync(relayClientsDir(env), { recursive: true });
-		writeFileSync(join(relayClientsDir(env), address), "", "utf8");
-	};
-
-	it("knows a client that stamped this host, and nobody else", () => {
-		expect(relayClientSeen("10.1.0.7", env)).toBe(false);
-		stamp("10.1.0.7");
-		expect(relayClientSeen("10.1.0.7", env)).toBe(true);
-		expect(relayClientSeen("10.1.0.8", env)).toBe(false);
-	});
-
-	it("looks up nothing that is not an address", () => {
-		// The stamp is a file name, so a value that is not an address is never
-		// turned into a path — not even to ask whether it exists.
-		for (const address of ["", "../../etc/passwd", "a b", "host;id", "x".repeat(46)]) {
-			expect(relayClientSeen(address, env), JSON.stringify(address)).toBe(false);
-		}
-		for (const address of ["::1", "fe80::1c2b:3d4e", "::ffff:10.1.0.7"]) {
-			stamp(address);
-			expect(relayClientSeen(address, env), address).toBe(true);
-		}
-	});
-
-	it("honours PI_SNIPPET_RELAY_CLIENTS over the agent directory", () => {
-		expect(relayClientsDir(env)).toBe(join(home, "agent", "pi-snippet-relay-clients"));
-		const explicit = join(home, "elsewhere");
-		expect(relayClientsDir({ ...env, PI_SNIPPET_RELAY_CLIENTS: explicit })).toBe(explicit);
-		// Exported-but-empty is the ordinary shape of "unset" in a shell.
-		expect(relayClientsDir({ ...env, PI_SNIPPET_RELAY_CLIENTS: "" })).toBe(
-			join(home, "agent", "pi-snippet-relay-clients"),
+describe.skipIf(!hasPython)("the host pattern, in both languages", () => {
+	// `isLinkHost()` is the pattern; the handler is a standalone script that
+	// imports nothing of ours and carries its own copy. Two copies of a
+	// security guard is one more than there should be, so this is the thing
+	// that catches them drifting apart.
+	it("says the same thing in the handler as it does in TypeScript", () => {
+		const handler = readFileSync(install(env).handler, "utf8");
+		const pattern = /re\.match\(r"(\\A\[A-Za-z0-9\][^"]*\\Z)", u\.netloc\)/.exec(handler);
+		expect(pattern, "no host pattern found in the generated handler").not.toBeNull();
+		const hosts = [
+			"mybox", "box.example.com", "user@host", "a-b_c.d", "h1", "localhost",
+			"", "-", "--", "-Jevil.com", "-oProxyCommand=x", "a b", "a;b", "a$(id)",
+			"a|b", "a&b", "a>b", "h".repeat(255), "h".repeat(256),
+			// python's `$` also matches before a trailing newline; JavaScript's
+			// does not. `\\A`/`\\Z` is what keeps this one input agreeing.
+			"mybox\n",
+		];
+		const inPython = JSON.parse(
+			execFileSync("python3", ["-c", [
+				"import json,re,sys",
+				`rx = re.compile(${JSON.stringify((pattern as RegExpExecArray)[1])})`,
+				"print(json.dumps([bool(rx.match(h)) for h in json.load(sys.stdin)]))",
+			].join("\n")], { input: JSON.stringify(hosts), encoding: "utf8" }),
 		);
-	});
-});
-
-describe("the bootstrap line the client runs", () => {
-	/** What its first half writes, read the way the handler reads it. */
-	const onFile = (): unknown => {
-		try {
-			return JSON.parse(readFileSync(join(home, ".pi", "agent", "pi-snippet-remotes.json"), "utf8"));
-		} catch {
-			return null;
-		}
-	};
-	const run = (host: string) =>
-		spawnSync("bash", ["-c", relayBootstrapLine(host, env).line.split(" && ssh ")[0]!], {
-			env: { ...process.env, HOME: home },
-			encoding: "utf8",
-		});
-
-	it("carries the address to record and the ssh-back that records it here", () => {
-		const { line, stamps } = relayBootstrapLine("mybox", env);
-		expect(stamps).toBe(true);
-		expect(line).toContain("pi-snippet-remotes.json");
-		expect(line).toContain("&& ssh mybox 'mkdir -p ");
-		expect(line).toContain(`cd ${relayClientsDir(env)} &&`);
-		// Single-quoted, so it is the *remote* shell that expands it — the
-		// client cannot name itself, which is the whole story of this stamp.
-		expect(line).toContain('touch "${SSH_CONNECTION%% *}"');
-		// And it is generatable before this host knows its own address, or the
-		// automatic half vanishes for the sessions that most need explaining.
-		expect(relayBootstrapLine(HOST_PLACEHOLDER, env).line).toContain(HOST_PLACEHOLDER);
-	});
-
-	it("drops the ssh-back rather than pasting a line that will not parse", () => {
-		const odd = relayBootstrapLine("mybox", { ...env, PI_SNIPPET_RELAY_CLIENTS: "/tmp/a b" });
-		expect(odd.stamps).toBe(false);
-		expect(odd.line).not.toContain("ssh mybox");
-		expect(odd.line).toContain("pi-snippet-remotes.json");
-	});
-
-	it.skipIf(!hasPython)("stamps the address the connection arrived from, run for real", () => {
-		// What the remote shell would run, run in a shell: the quoting is the
-		// thing under test, so the command is not reassembled here.
-		const remote = relayBootstrapLine("mybox", env).line.split("&& ssh mybox ")[1]!.slice(1, -1);
-		expect(
-			spawnSync("bash", ["-c", remote], {
-				env: { ...process.env, HOME: home, SSH_CONNECTION: "10.1.0.7 51234 10.1.0.9 22" },
-				encoding: "utf8",
-			}).status,
-		).toBe(0);
-		expect(relayClientSeen("10.1.0.7", env)).toBe(true);
-	});
-
-	it.skipIf(!hasPython)("adds each host named, keeping the ones already there", () => {
-		// Run as the user runs it: this is a line pasted into a shell, and the
-		// merge in it is the reason a second remote costs nothing.
-		expect(run("mybox").status).toBe(0);
-		expect(onFile()).toEqual({ hosts: ["mybox"] });
-		expect(run("work").status).toBe(0);
-		expect(onFile()).toEqual({ hosts: ["work", "mybox"] });
-		// Twice for the same host is not two entries.
-		expect(run("mybox").status).toBe(0);
-		expect(onFile()).toEqual({ hosts: ["mybox", "work"] });
-	});
-
-	it.skipIf(!hasPython)("migrates the single-host file earlier versions wrote", () => {
-		mkdirSync(join(home, ".pi", "agent"), { recursive: true });
-		writeFileSync(join(home, ".pi", "agent", "pi-snippet-remotes.json"), '{"host":"work"}', "utf8");
-		expect(run("mybox").status).toBe(0);
-		expect(onFile()).toEqual({ hosts: ["mybox", "work"] });
+		expect(inPython).toEqual(hosts.map(isLinkHost));
 	});
 });
 
@@ -372,7 +179,10 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 				PATH: `${binDir}:${process.env.PATH ?? ""}`,
 				PI_SNIPPET_SOCKET_DIR: sockDir,
 				XDG_RUNTIME_DIR: runtime,
-				PI_CODING_AGENT_DIR: join(home, "agent"),
+				// What this machine calls itself, so "is that host me?" is a
+				// decision the test controls rather than one the box it runs on
+				// makes.
+				PI_SNIPPET_HOST: "testbox",
 				...extra,
 			},
 			encoding: "utf8",
@@ -388,7 +198,6 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 	};
 
 	it("delivers to a live local socket and never relays", async () => {
-		addRelayHost("mybox", env);
 		const lines: string[] = [];
 		const server: Server = createServer((socket) => {
 			socket.setEncoding("utf8");
@@ -396,60 +205,83 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 		});
 		await new Promise<void>((resolve) => server.listen(join(sockDir, "a1b2c3d4.sock"), resolve));
 		try {
-			const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
+			// Even a URL naming another host: the local scan comes first, so a
+			// local click never touches the network and never notices the shape
+			// changed.
+			const result = runHandler(THERE);
 			expect(result.status).toBe(0);
 			await new Promise((resolve) => setTimeout(resolve, 200));
 			expect(lines.join("")).toBe("0f3e2a91/c3\n");
-			// The local path is still the fast path; the wire is a fallback.
 			expect(sshArgv()).toBeNull();
 		} finally {
 			server.close();
 		}
 	});
 
-	it("relays through ssh when nothing local answers", () => {
-		addRelayHost("mybox", env);
-		const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
+	it("relays to the host the URL names when nothing local answers", () => {
+		const result = runHandler(THERE);
 		expect(result.status).toBe(0);
 		const argv = sshArgv();
 		expect(argv).not.toBeNull();
-		// BatchMode so a click never hangs on a password or host-key prompt,
-		// and a connect timeout so a dark host costs seconds.
+		// BatchMode so a click never hangs on a password or host-key prompt —
+		// and so an unknown host is refused rather than trusted, which is what
+		// stands in for the allowlist this used to keep. A connect timeout so a
+		// dark host costs seconds.
 		expect(argv).toContain("-o");
 		expect(argv).toContain("BatchMode=yes");
 		expect(argv).toContain("ConnectTimeout=3");
-		// The host comes from the file, and the URL is its own argument.
-		expect(argv).toContain("mybox");
-		expect(argv?.[argv.length - 1]).toBe("pisnip://a1b2c3d4/0f3e2a91/c3");
-		expect(argv?.[argv.length - 2]).toBe(relayCommand());
+		// `--` immediately before the host, so a name that somehow got past the
+		// pattern still cannot be read as an option.
+		expect(argv?.slice(-4)).toEqual(["--", "mybox", relayCommand(), THERE]);
 	});
 
-	it("stays quiet and exits 1 when no host is configured", () => {
-		const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
+	it("passes the relay's own verdict back out", () => {
+		writeFileSync(join(binDir, "ssh"), "#!/bin/sh\nexit 255\n", "utf8");
+		chmodSync(join(binDir, "ssh"), 0o755);
+		const result = runHandler(THERE);
+		// Unreachable is the same situation as dead scrollback: nothing to say,
+		// and nothing to configure either.
+		expect(result.status).not.toBe(0);
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toBe("");
+	});
+
+	it("carries on quietly past an ssh it could not run at all", () => {
+		chmodSync(join(binDir, "ssh"), 0o644);
+		const result = runHandler(THERE);
 		expect(result.status).toBe(1);
+		expect(result.stderr).toBe("");
+	});
+
+	it("never ssh-es to itself for a click its own scrollback painted", () => {
+		// One URL shape everywhere means a local session names itself too. With
+		// no socket listening the click is dead, and dying here is the point:
+		// an ssh to ourselves would only fail again, slower.
+		for (const url of [HERE, "pisnip://TestBox.example.com/a1b2c3d4/0f3e2a91/c3", "pisnip://localhost/a1b2c3d4/0f3e2a91/c3"]) {
+			expect(runHandler(url).status, url).toBe(1);
+			expect(sshArgv(), url).toBeNull();
+		}
+	});
+
+	it("knows its own name without being told", () => {
+		// PI_SNIPPET_HOST is the escape hatch, not the mechanism: with it unset
+		// the handler still recognises the machine it is running on.
+		const own = execFileSync("python3", ["-c", "import socket;print(socket.gethostname())"], {
+			encoding: "utf8",
+		}).trim();
+		expect(runHandler(`pisnip://${own}/a1b2c3d4/0f3e2a91/c3`, { PI_SNIPPET_HOST: "" }).status).toBe(1);
 		expect(sshArgv()).toBeNull();
 	});
 
-	it("explains the unconfigured case at most once an hour, per token", () => {
-		// notify-send is absent here, so the observable is the stamp file the
-		// rate limit is built on — which is what the design says to assert.
-		runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
-		const stamp = join(runtime, "pi-snippet-unconfigured-a1b2c3d4");
-		expect(() => readFileSync(stamp)).not.toThrow();
-		const first = readFileSync(stamp, "utf8");
-		runHandler("pisnip://a1b2c3d4/0f3e2a91/c4");
-		expect(readFileSync(stamp, "utf8")).toBe(first);
-	});
-
 	it("refuses a malformed URL before anything can shell out", () => {
-		addRelayHost("mybox", env);
 		for (const url of [
-			"pisnip://a1b2c3d4/nothex/c1",
-			"pisnip://a1b2c3d4/0f3e2a91/c1;id",
-			"pisnip://a1b2c3d4/0f3e2a91/$(id)",
-			"pisnip://not-alnum/0f3e2a91/c1",
-			"http://a1b2c3d4/0f3e2a91/c1",
-			"pisnip://a1b2c3d4/0f3e2a91/c1 extra",
+			"pisnip://mybox/a1b2c3d4/nothex/c1",
+			"pisnip://mybox/a1b2c3d4/0f3e2a91/c1;id",
+			"pisnip://mybox/a1b2c3d4/0f3e2a91/$(id)",
+			"pisnip://mybox/not-alnum/0f3e2a91/c1",
+			"pisnip://mybox/0f3e2a91/c1",
+			"http://mybox/a1b2c3d4/0f3e2a91/c1",
+			"pisnip://mybox/a1b2c3d4/0f3e2a91/c1 extra",
 			"",
 		]) {
 			const result = runHandler(url);
@@ -458,100 +290,14 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 		}
 	});
 
-	it("passes a relay failure through as a quiet non-zero exit", () => {
-		addRelayHost("mybox", env);
-		writeFileSync(join(binDir, "ssh"), "#!/bin/sh\nexit 255\n", "utf8");
-		chmodSync(join(binDir, "ssh"), 0o755);
-		const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
-		// Configured but unreachable is the same situation as dead scrollback:
-		// nothing to say, nothing to configure.
-		expect(result.status).not.toBe(0);
-		expect(result.stdout).toBe("");
-		expect(result.stderr).toBe("");
-	});
-
-	describe("more than one remote", () => {
-		/** A list on file, in the order the handler should walk it. */
-		const hostsOnFile = (hosts: string[]): void => {
-			mkdirSync(join(home, "agent"), { recursive: true });
-			writeFileSync(remotesPath(env), JSON.stringify({ hosts }), "utf8");
-		};
-		/** An `ssh` that answers for one host only, and records every attempt. */
-		const sshAnswering = (host: string, mode = 0o755): void => {
-			// One line per attempt, naming the host only: the argv is asserted
-			// against the plain stub above, and the relay command in it spans
-			// lines, which no line-oriented log survives.
-			writeFileSync(
-				join(binDir, "ssh"),
-				`#!/usr/bin/env python3\nimport sys\n`
-					+ `open(${JSON.stringify(sshLog)}, "a").write(sys.argv[5] + "\\n")\n`
-					+ `sys.exit(0 if sys.argv[5] == ${JSON.stringify(host)} else 255)\n`,
-				"utf8",
-			);
-			chmodSync(join(binDir, "ssh"), mode);
-		};
-		/** The host each recorded attempt went to, in order. */
-		const tried = (): string[] => {
-			try {
-				return readFileSync(sshLog, "utf8").split("\n").filter((line) => line !== "");
-			} catch {
-				return [];
-			}
-		};
-		/** Where the handler remembers which host answered for this session. */
-		const cache = () => join(runtime, "pi-snippet-relay-a1b2c3d4");
-
-		it("walks the list until a session answers, then goes straight there", () => {
-			// The list is what makes a second remote free to add; the memory is
-			// what stops every click on it paying for the dead hosts ahead of it.
-			hostsOnFile(["dark", "good"]);
-			sshAnswering("good");
-			expect(runHandler("pisnip://a1b2c3d4/0f3e2a91/c3").status).toBe(0);
-			expect(tried()).toEqual(["dark", "good"]);
-			expect(readFileSync(cache(), "utf8")).toBe("good");
-
-			rmSync(sshLog);
-			expect(runHandler("pisnip://a1b2c3d4/0f3e2a91/c4").status).toBe(0);
-			expect(tried()).toEqual(["good"]);
-		});
-
-		it("never relays anywhere the file does not name, whatever it remembers", () => {
-			// The memory is a hint about order and nothing more: the file stays
-			// the allowlist, so a tampered cache buys no new destination.
-			hostsOnFile(["good"]);
-			writeFileSync(cache(), "evil", "utf8");
-			sshAnswering("good");
-			expect(runHandler("pisnip://a1b2c3d4/0f3e2a91/c3").status).toBe(0);
-			expect(tried()).toEqual(["good"]);
-		});
-
-		it("stays quiet when none of them answers, and remembers nothing", () => {
-			hostsOnFile(["dark", "darker"]);
-			sshAnswering("nobody");
-			const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
-			expect(result.status).toBe(1);
-			expect(result.stdout).toBe("");
-			expect(tried()).toEqual(["dark", "darker"]);
-			expect(existsSync(cache())).toBe(false);
-		});
-
-		it("carries on past an ssh it could not run at all", () => {
-			// An `ssh` the OS refuses to exec is one host that cannot be reached,
-			// not an answer about any of the others — and not a traceback.
-			hostsOnFile(["dark", "good"]);
-			sshAnswering("good", 0o644);
-			const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
-			expect(result.status).toBe(1);
-			expect(result.stderr).toBe("");
-			expect(tried()).toEqual([]);
-		});
-	});
-
-	it("ignores a host the file should never have carried", () => {
-		mkdirSync(join(home, "agent"), { recursive: true });
-		writeFileSync(remotesPath(env), '{"hosts":["mybox; id"]}', "utf8");
-		const result = runHandler("pisnip://a1b2c3d4/0f3e2a91/c3");
-		expect(result.status).toBe(1);
-		expect(sshArgv()).toBeNull();
+	it("refuses a host ssh would read as an option, or a shell would act on", () => {
+		// The guard that had to ship with the URL naming its own server: the old
+		// host pattern accepted `-Jevil.com`, which was harmless while only the
+		// user could write it and is not once it arrives in a URL.
+		for (const host of ["-Jevil.com", "-oProxyCommand=x", "-", "my box", "evil;id", "a$(id)"]) {
+			const result = runHandler(`pisnip://${host}/a1b2c3d4/0f3e2a91/c3`);
+			expect(result.status, host).toBe(2);
+			expect(sshArgv(), host).toBeNull();
+		}
 	});
 });

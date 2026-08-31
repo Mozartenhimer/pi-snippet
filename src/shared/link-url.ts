@@ -11,9 +11,16 @@
  * whole channel, so its shape is a contract between three processes that never
  * speak otherwise.
  *
- *     pisnip://<token>/<msg>/<id>
+ *     pisnip://<host>/<token>/<msg>/<id>
  *
- * Two rules the shape exists to enforce:
+ * Three rules the shape exists to enforce:
+ *
+ * **It names the machine the session is on.** A click is resolved by the
+ * terminal in front of the user, which over SSH is not the machine that
+ * painted the chip — so the URL says where to go rather than leaving the
+ * handler to rediscover it from a config file the user had to write
+ * (ADR 0001). A local session paints its own hostname too: one shape
+ * everywhere, and the handler skips the network when the name is its own.
  *
  * **It carries an index, never text.** The URL names a slot the extension
  * looks up in its own state, so nothing that reaches the socket can put words
@@ -31,10 +38,52 @@ export const LINK_SCHEME = "pisnip";
 
 /** The one layer: a numbered chip. (`c1`..; kept in the URL for future kinds.) */
 export interface ChipLink {
+	/** The machine the session is on, as it named itself. */
+	host: string;
 	token: string;
 	msg: string;
 	/** One-based, as painted. */
 	index: number;
+}
+
+/**
+ * What may stand where the host goes — an ssh-config alias or a plain
+ * hostname, and nothing else.
+ *
+ * This value now arrives from outside (it is the netloc of a URL anyone who
+ * can put a link on screen could write) and it reaches an `ssh` argv, so the
+ * shape is the guard rather than quoting around whatever turns up. Two things
+ * it deliberately refuses:
+ *
+ * - **A leading `-`.** `ssh … -Jevil.com cmd url` makes ssh read the host slot
+ *   as an option and shift the destination to the next argument. Harmless
+ *   while only the user could write the string; remotely triggerable the
+ *   moment it comes from a URL. The handler also passes `--` before the host,
+ *   because one guard for this is not enough.
+ * - **Anything a shell could act on.** `ssh host cmd arg` re-parses its
+ *   command line in a remote shell, so a metacharacter here is a metacharacter
+ *   there.
+ *
+ * What replaces the allowlist this used to be checked against is ssh's own:
+ * the relay runs `BatchMode=yes`, so a host missing from `known_hosts` is
+ * refused at the host-key check (ADR 0001).
+ */
+export function isLinkHost(host: string): boolean {
+	return /^[A-Za-z0-9][A-Za-z0-9._@-]{0,254}$/.test(host);
+}
+
+/**
+ * Is `host` a name for the machine asking?
+ *
+ * The URL carries one shape everywhere, so a local session's chips name this
+ * host too — and a click on one must not ssh to ourselves to reach a socket
+ * that is right here. Compared on the first label, case-insensitively, because
+ * `hostname` and an `~/.ssh/config` alias routinely disagree about the domain
+ * and agree about everything before it.
+ */
+export function isOwnHost(host: string, own: string): boolean {
+	const label = (name: string) => name.toLowerCase().split("@").pop()!.split(".")[0] as string;
+	return host.toLowerCase() === "localhost" || label(host) === label(own);
 }
 
 /**
@@ -78,9 +127,9 @@ export function sessionToken(sessionId: string): string {
 	return fnv1a(sessionId);
 }
 
-/** `pisnip://a1b2c3d4/0f3e2a91/c3` */
-export function buildChipUrl(token: string, msg: string, index: number): string {
-	return `${LINK_SCHEME}://${token}/${msg}/c${index}`;
+/** `pisnip://mybox/a1b2c3d4/0f3e2a91/c3` */
+export function buildChipUrl(host: string, token: string, msg: string, index: number): string {
+	return `${LINK_SCHEME}://${host}/${token}/${msg}/c${index}`;
 }
 
 /**
@@ -104,11 +153,20 @@ export function parseChipPath(path: string): { msg: string; index: number } | nu
 	return { msg: match[1] as string, index };
 }
 
-/** The whole URL, for the handler and for tests. */
+/**
+ * The whole URL, for the handler and for tests.
+ *
+ * The token moved out of the netloc and into the path when the host took its
+ * place, so this peels two segments rather than one; `parseChipPath` still
+ * parses exactly what goes on the wire to the socket, which is the part that
+ * did not change.
+ */
 export function parseChipUrl(url: string): ChipLink | null {
-	const match = new RegExp(`^${LINK_SCHEME}://([0-9a-z]{1,32})(/.*)$`).exec(url.trim());
+	const match = new RegExp(`^${LINK_SCHEME}://([^/]{1,255})/([0-9a-z]{1,32})(/.*)$`).exec(url.trim());
 	if (!match) return null;
-	const rest = parseChipPath(match[2] as string);
+	const host = match[1] as string;
+	if (!isLinkHost(host)) return null;
+	const rest = parseChipPath(match[3] as string);
 	if (!rest) return null;
-	return { token: match[1] as string, ...rest };
+	return { host, token: match[2] as string, ...rest };
 }

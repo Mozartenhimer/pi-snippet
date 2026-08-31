@@ -48,21 +48,26 @@ or keep loading it per run with `pi -e /path/to/pi-snippet/src/extension/pi-snip
 ## Over SSH: built, and never once used by a human
 
 Over SSH the click resolves on the machine in front of you, whose desktop has
-no socket for the session — that lives on the server. So chips paint as bare
-labels there until the client has registered itself, and `/snippets` offers one
-row, *SSH relay setup*, which puts a single line in the composer to run on your
-own machine. It writes the server into `~/.pi/agent/pi-snippet-remotes.json`
-and ssh-es straight back to leave a stamp saying this client can relay. From
-then on chips carry URLs in every session on that host — no toggle, no flag, no
-resume, nothing per session — and a click that finds no local socket tunnels
-itself back through a fresh `ssh` running a fixed python one-liner. Nothing is
-installed on the server, and the hosts a click may go to come from that config
-file, never from the URL.
+no socket for the session — that lives on the server. So the chip's URL names
+the server: `pisnip://<host>/<token>/<msg>/cN`. The handler on your machine
+finds no local socket, reads the host out of the URL, and tunnels the click
+back through a fresh `ssh` running a fixed python one-liner. Nothing is
+installed on the server, nothing is configured on the client, and there is no
+toggle, no flag and nothing per session — a remote session paints exactly the
+chips a local one does.
+
+What replaced the config file that used to list the hosts a click could go to
+is ssh's own list: the relay runs `BatchMode=yes`, so a host that is not
+already in your `known_hosts` is refused at the host-key check, before
+authentication. See `docs/adr/0001-the-chip-url-names-its-server.md` for why
+that trade was made and what ships alongside it.
 
 **Nobody has actually done this.** It is asserted end to end by an automated
 harness — two containers, real sshd, real pi on the server, real handler
-dispatch on the client, 29 checks including the bare-label default, the paste,
-the click, and a restarted session picking the stamp back up — and by the unit
+dispatch on the client, 22 checks including the click landing in the remote
+composer, a restarted session, a URL naming a host the client has never
+connected to (which must deliver nothing), and hosts `ssh` would read as an
+option (which must be refused before anything is spawned) — and by the unit
 tests. That is not the same as a person connecting from their laptop to their
 own box and clicking a chip. Until someone does, treat all of the above as
 unproven: the failure modes are quiet by design, so the way it breaks for you
@@ -71,8 +76,12 @@ will probably be a chip that does nothing.
 Two things it needs, both easy to miss: the click handler registered on the
 *client* (`/snippets` → *Register click handler* there, Linux only), and an ssh
 back to the server that works without typing anything — the relay runs
-`BatchMode=yes` so a click can never hang on a password prompt. The `ssh -L`
-socket forward that used to be the other way in has been removed.
+`BatchMode=yes` so a click can never hang on a password prompt. One thing it
+assumes: that the server's own `hostname` is a name your machine can dial. Where
+it is not — a cloud instance called `ip-10-0-3-14`, say — set `PI_SNIPPET_HOST`
+on the server to the name you actually use. The `ssh -L` socket forward that
+used to be the other way in has been removed, as have the client host list and
+the one-time bootstrap line that preceded the URL naming its own server.
 
 ## Inferred chips: not Fully baked yet
 

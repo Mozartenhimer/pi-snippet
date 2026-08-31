@@ -52,8 +52,9 @@ import { loadSettings, saveSettings, settingsPath, SNIPPET_MODES, type SnippetMo
 import { LinkServer } from "./link-server.js";
 import * as linkInstall from "./link-install.js";
 import { getCapabilities } from "@earendil-works/pi-tui";
-import { buildChipUrl, messageKey, sessionToken } from "../shared/link-url.js";
+import { buildChipUrl, isLinkHost, messageKey, sessionToken } from "../shared/link-url.js";
 import { randomBytes } from "node:crypto";
+import { hostname } from "node:os";
 import type { TuiLike } from "./tui.js";
 
 interface TextBlock {
@@ -260,53 +261,41 @@ export default function piSnippetTui(pi: any): void {
 	 * `(pisnip://a1b2c3d4/ff2ee691/c1)`.
 	 */
 	/**
-	 * An SSH session turns the delivery path inside out. The click is resolved
-	 * by the terminal on the machine in front of the user, and the desktop
-	 * there dispatches it to *its* handler — which has no socket for this
-	 * session; the socket lives here. A chip URL painted by default over SSH
-	 * is therefore a dead click that fails silently, which is the one outcome
-	 * this layer refuses to dress up: until the click has a way back, SSH
-	 * paints bare labels (Alt+N still works — it is in-band).
+	 * An SSH session used to turn the delivery path inside out. The click is
+	 * still resolved by the terminal on the machine in front of the user, and
+	 * the desktop there still dispatches it to *its* handler — but the URL now
+	 * names this host, so that handler knows where to send it (ADR 0001) and
+	 * chips paint the same way whether the session is local or remote.
 	 *
-	 * The way back is the relay (`docs/ssh-back-handler.md`), set up once per
-	 * client machine, and this session learns of it from the stamp that setup
-	 * leaves here — no toggle, and nothing per session. There is no second
-	 * delivery to choose between: the `ssh -L` forward this used to offer cost
-	 * a flag on every connection and a resume, and is gone.
+	 * What is left of "am I over SSH" is smaller than it looks: it decides
+	 * where the *desktop* is, which is what "register the handler" means and
+	 * where it has to happen. Nothing about painting reads it any more.
 	 */
 	const overSsh = (): boolean =>
 		Boolean(process.env.SSH_TTY || process.env.SSH_CONNECTION);
 
 	/**
-	 * A field of `SSH_CONNECTION`: 0 is the client, 2 is this host. Empty when
-	 * the variable is unset — `SSH_TTY` alone still means SSH, and means nothing
-	 * is known about either end.
-	 */
-	const sshConnection = (field: number): string =>
-		(process.env.SSH_CONNECTION ?? "").split(/\s+/)[field] ?? "";
-
-	/**
-	 * Whether this session's client has set relayed clicking up with this host.
+	 * What this machine calls itself in every chip URL it paints.
 	 *
-	 * Held rather than asked, because `linkOn()` is read on every render and
-	 * this is a `stat`. `syncRelay()` re-reads it while it is false — at every
-	 * session start and after every message — so a bootstrap line pasted in
-	 * another window starts painting URLs on the next message rather than the
-	 * next session. Once true it stays true: the stamp does not un-write, and
-	 * a session that has been painting URLs should not stop mid-conversation.
+	 * `hostname()` is the answer for the case the whole design assumes — hosts
+	 * are reachable by name — and `PI_SNIPPET_HOST` is the one string that
+	 * fixes it where they are not, on the machine that knows (a cloud instance
+	 * whose `ip-10-0-3-14` means nothing to the laptop dialling it). Resolved
+	 * once, at load: a hostname does not change under a running session, and a
+	 * per-render syscall would be paid on every repaint of every chip.
+	 *
+	 * A list with one test rather than a chain of guards, so there is one
+	 * decision here rather than three that cannot be told apart. It ends in
+	 * `localhost` because that always passes: a name that cannot go in a URL
+	 * must not take every chip on screen down with it, and a click that never
+	 * leaves the machine does not need a better name — the handler reads
+	 * `localhost` as itself.
 	 */
-	let relayed = false;
-	const syncRelay = (ctx: any): void => {
-		if (!overSsh() || relayed) return;
-		if (!linkInstall.relayClientSeen(sshConnection(0))) return;
-		relayed = true;
-		ctx.ui?.notify?.(
-			"Chips carry URLs again — your machine relays clicks back to this one, so Ctrl+click works here",
-		);
-	};
+	const linkHost = [process.env.PI_SNIPPET_HOST ?? "", hostname(), "localhost"].find(
+		isLinkHost,
+	) as string;
 
-	const linkOn = () =>
-		isEnabled() && getCapabilities().hyperlinks && (!overSsh() || relayed);
+	const linkOn = () => isEnabled() && getCapabilities().hyperlinks;
 
 	/**
 	 * What each rendered message's chips mean, keyed by a hash of the exact
@@ -530,12 +519,11 @@ export default function piSnippetTui(pi: any): void {
 	 * The link server is cheap enough to leave listening: it holds a socket,
 	 * not a terminal mode, so unlike the old mouse reporting it does not need
 	 * an "only while there are chips" gate. It is stopped when suggestions are
-	 * off, the terminal cannot paint a hyperlink, or (over SSH) remote clicking
-	 * is off — because then nothing can paint a URL that names it.
+	 * off or the terminal cannot paint a hyperlink — because then nothing can
+	 * paint a URL that names it.
 	 */
 	const syncClicks = (ctx: any) => {
 		lastCtx = ctx;
-		syncRelay(ctx);
 		const captured = captureTui(ctx);
 		if (captured) watchAltRelease(captured);
 		if (linkOn()) {
@@ -564,7 +552,7 @@ export default function piSnippetTui(pi: any): void {
 			return toTuiMarkdown(markdown, {
 				isStreaming: ctx.isStreaming,
 				enabled: isEnabled(),
-				linkToken: linkOn() ? linkToken : undefined,
+				link: linkOn() ? { host: linkHost, token: linkToken } : undefined,
 				// The second model's anchors, keyed by the exact text the
 				// transformer was handed — the same deterministic key the click
 				// targets use. A lookup, never a build: the anchors were derived
@@ -938,12 +926,15 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const clickStatusLabel = (): string => {
 		if (process.platform !== "linux") return "Ctrl+click: unavailable off Linux";
-		if (overSsh() && !relayed)
-			return "Ctrl+click: over SSH — the click resolves on your machine, not this one; set the relay up below";
 		if (!getCapabilities().hyperlinks) {
 			return "Ctrl+click: inert — this terminal paints no hyperlinks (see docs/linux-terminals.md)";
 		}
-		if (overSsh()) return "Ctrl+click: remote — chips are clickable, relayed back over SSH";
+		// Over SSH this session cannot answer the question it would like to: the
+		// handler, and whether one is registered at all, are on the machine in
+		// front of the user. It says what it painted instead, which is the part
+		// it knows and the part that has to be right (PI_SNIPPET_HOST is the fix
+		// when it is not).
+		if (overSsh()) return `Ctrl+click: chips route back to ${linkHost} — needs a handler on your machine`;
 		if (!linkInstall.isInstalled()) return "Ctrl+click: handler not registered";
 		return "Ctrl+click: on";
 	};
@@ -963,8 +954,8 @@ export default function piSnippetTui(pi: any): void {
 		}
 		if (overSsh()) {
 			ctx.ui.notify(
-				"Over SSH the desktop is on the machine in front of you — register the handler there, "
-					+ "then run the line “SSH relay setup” prints here.",
+				`Over SSH the desktop is on the machine in front of you — run /snippets and register `
+					+ `the handler there. Chips here already name ${linkHost}, so that is the whole of it.`,
 				"warning",
 			);
 			return;
@@ -984,7 +975,7 @@ export default function piSnippetTui(pi: any): void {
 			arrived = true;
 		};
 		try {
-			const url = buildChipUrl(linkToken, PROBE_KEY, 1);
+			const url = buildChipUrl(linkHost, linkToken, PROBE_KEY, 1);
 			const outcome = await linkInstall.probe(url, async () => {
 				// The dispatch is asynchronous all the way through: opener,
 				// handler process, connect. Give it a moment before judging.
@@ -1007,94 +998,6 @@ export default function piSnippetTui(pi: any): void {
 			probeArrived = previous;
 		}
 		syncClicks(ctx);
-	};
-
-	/**
-	 * The address the client reached this host at, from `SSH_CONNECTION`'s
-	 * third field.
-	 *
-	 * A starting point for the relay config, nothing more: an `~/.ssh/config`
-	 * alias is usually the better answer, since it carries the user's keys,
-	 * ports and jump hosts already. Which is why this only ever appears inside
-	 * a line the user edits before running — the remote pi knows which host it
-	 * is on, and must not write the client's config (docs/ssh-back-handler.md).
-	 */
-	const sshServerHost = (): string => {
-		const address = sshConnection(2);
-		return linkInstall.isRelayHost(address) ? address : linkInstall.HOST_PLACEHOLDER;
-	};
-
-	/**
-	 * The one-time client-side setup for relayed clicking.
-	 *
-	 * The manual `ssh -L` forward above costs a flag on every ssh invocation
-	 * and a resume; this costs one paste per client machine and nothing per
-	 * session. The remote pi cannot touch the client's desktop, so the
-	 * bootstrap is in-band — and it goes in the composer, not a toast, for the
-	 * same reason the forward recipe does: toasts clip at the terminal width
-	 * and coalesce within a render tick, and this is a line that has to survive
-	 * being read and copied to another machine.
-	 */
-	const showRelaySetup = (ctx: any): void => {
-		const host = sshServerHost();
-		// Two halves, and the second is what makes this the last time: it
-		// connects straight back here from the client, which both proves the
-		// alias works without a password and leaves the stamp `autoRemoteClicks`
-		// reads. From then on this host paints chip URLs for that client on its
-		// own, in this session and every one after it.
-		const bootstrap = linkInstall.relayBootstrapLine(host);
-		ctx.ui.setEditorText(bootstrap.line);
-		tui?.requestRender?.();
-		const named =
-			host === linkInstall.HOST_PLACEHOLDER
-				? `with this host's ssh alias in place of ${linkInstall.HOST_PLACEHOLDER}`
-				: `(an ~/.ssh/config alias is usually better than ${host})`;
-		ctx.ui.notify(
-			`Run that on your machine ${named}. Register the click handler there once, and chips need no forward — `
-				+ (bootstrap.stamps
-					? "and no toggle here, in this session or the next."
-					: "then turn remote clicking on here."),
-		);
-	};
-
-	/** The relay list as the menu and its toasts say it. */
-	const relayHostList = (hosts: string[]): string =>
-		hosts.length === 0 ? "none" : hosts.join(", ");
-
-	/**
-	 * Add to, or clear, the hosts that clicks are relayed to when no local
-	 * socket answers — the client half of the same feature.
-	 *
-	 * Only ever a host, never a URL and never anything a shell could act on:
-	 * the value reaches an `ssh` argv inside the handler, so it is checked here
-	 * as well as there. An entry adds to the list rather than replacing it,
-	 * since a second remote is ordinary and the handler walks them in order; an
-	 * empty entry clears the file rather than writing a host that means nothing.
-	 */
-	const pickRelayHost = async (ctx: any): Promise<void> => {
-		const current = linkInstall.readRelayHosts();
-		const entry = await ctx.ui.input(
-			`Relay clicks for remote sessions to (currently ${relayHostList(current)})`,
-			"an ~/.ssh/config alias or hostname — adds to the list; empty clears it",
-		);
-		if (entry === undefined) return; // cancelled
-		const host = entry.trim();
-		if (host !== "" && !linkInstall.isRelayHost(host)) {
-			ctx.ui.notify(`Not a hostname or ssh alias: ${host}`, "warning");
-			return;
-		}
-		// Adding rather than replacing: one machine in front of several remotes
-		// is ordinary, and the handler tries them in order until a session
-		// answers, so naming a second one must not cost the first.
-		if (!linkInstall.addRelayHost(host)) {
-			ctx.ui.notify(`Could not write ${linkInstall.remotesPath()}`, "warning");
-			return;
-		}
-		ctx.ui.notify(
-			host === ""
-				? "SSH relay hosts cleared — clicks on remote sessions go back to failing quietly"
-				: `Clicks that find no local session now try ${relayHostList(linkInstall.readRelayHosts())}`,
-		);
 	};
 
 	/**
@@ -1254,33 +1157,17 @@ export default function piSnippetTui(pi: any): void {
 				ctx.ui.notify("Inline suggestions are off for this session (--no-suggestions)");
 				return;
 			}
-			// The click rows, chosen three ways. Over SSH the desktop that would
-			// dispatch a click is the user's own machine, so this session can only
-			// offer the socket forward and the line that sets the relay up there;
-			// off Linux there is no handler to register at all; otherwise it is
-			// register-or-remove — one condition, not the two inverted copies of
-			// it this used to ask — plus the relay host once a handler exists.
-			const clickRows = overSsh()
-				? [
-						// The client half of relayed clicking lives on the client;
-						// what this side can offer is the one-time line to run
-						// there. Offered whether or not it is already set up: it is
-						// also how a second client machine gets set up, and how a
-						// first one is repaired.
-						`SSH relay setup — the one-time command to run on your machine${
-							relayed ? " (this one is set up already)" : ", so Ctrl+click works here"
-						}`,
-					]
-				: process.platform !== "linux"
+			// The click rows, chosen two ways. There is one thing left to set up
+			// anywhere — the desktop handler — and it belongs on the machine the
+			// desktop is on, so over SSH (or off Linux) this session has nothing
+			// to offer and says so in the header instead. Otherwise it is
+			// register-or-remove: one condition, not the two inverted copies of
+			// it this used to ask.
+			const clickRows =
+				process.platform !== "linux" || overSsh()
 					? []
 					: linkInstall.isInstalled()
-						? [
-								"Remove click handler — unregister pisnip:// from the desktop",
-								// Which host a click goes back to when nothing local
-								// answers. Only useful once something dispatches
-								// pisnip:// to the handler.
-								`SSH relay hosts: ${relayHostList(linkInstall.readRelayHosts())} — add or clear`,
-							]
+						? ["Remove click handler — unregister pisnip:// from the desktop"]
 						: ["Register click handler — one-time desktop setup, needed before Ctrl+click works"];
 			const model = effectiveModel();
 			const choice = await ctx.ui.select(
@@ -1297,10 +1184,6 @@ export default function piSnippetTui(pi: any): void {
 				await pickMode(ctx);
 			} else if (choice.startsWith("Second model:")) {
 				await pickModel(ctx);
-			} else if (choice.startsWith("SSH relay setup")) {
-				showRelaySetup(ctx);
-			} else if (choice.startsWith("SSH relay hosts:")) {
-				await pickRelayHost(ctx);
 			} else if (choice.startsWith("Register click handler")) {
 				await installClickHandler(ctx);
 			} else if (choice.startsWith("Remove click handler")) {

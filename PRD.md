@@ -532,7 +532,7 @@ terminal supports OSC 8 hyperlinks it already knows which cells belong to a
 chip — it has to, to underline one under the pointer — so the second delivery
 path hands the click back to it:
 
-- A chip's href stops being inert and becomes `pisnip://<token>/<msg>/<id>`.
+- A chip's href stops being inert and becomes `pisnip://<host>/<token>/<msg>/<id>`.
   pi-tui paints it into an OSC 8 hyperlink, Ghostty resolves Ctrl+click
   (`ctrlOrSuper`, no other modifier), and the desktop dispatches the URL to a
   handler registered once per machine, which forwards it to a per-session unix
@@ -555,10 +555,10 @@ path hands the click back to it:
 - **No terminal-wide mode, and no fallback.** The wheel keeps scrolling the
   terminal's own scrollback and selection needs no Shift, which is the entire
   cost this removes. There is exactly one delivery path: a terminal that
-  cannot paint hyperlinks gets the bare label and no clicking, and over SSH
-  the click is dispatched on the local desktop, where no socket for the remote
-  session exists — so it fails openly rather than inserting into the wrong
-  composer.
+  cannot paint hyperlinks gets the bare label and no clicking. Over SSH the
+  click is dispatched on the local desktop, which has no socket for the remote
+  session — so the URL names the machine that painted it and the click is
+  relayed there (§12.1b), rather than inserting into the wrong composer.
 - **The URL carries an index, never text**, so nothing reaching the socket can
   put words in the composer that the model did not write; and it is **keyed by
   message**, so a chip clicked in old scrollback still resolves to what it
@@ -585,59 +585,59 @@ still missing, is `docs/cross-platform.md` — Windows Terminal paints and
 dispatches, and its per-click confirmation is a `safeUriSchemes` setting away
 from silence, which is the difference from macOS.
 
-**Over SSH** the delivery path inverts: the click is resolved on the machine
-in front of the user, whose desktop has no socket for this session — the
-socket lives here. Without evidence that a click can get back, the chips
-therefore paint as bare labels (`Alt+N` still works — it is in-band), and
-`/snippets` offers *SSH relay setup*: the one-time line to run on the client,
-which is the whole of the setup and the whole of the UI.
+### 12.1b Clicking over SSH
 
-**One delivery, and no toggle.** The handler on the client, having found no
-local socket, reads the hosts from `~/.pi/agent/pi-snippet-remotes.json` and
-tunnels the click back through a fresh `ssh`, which runs a fixed,
-self-contained python one-liner that writes to the socket on the far end
-(`docs/ssh-back-handler.md`). Nothing is installed remotely. More than one host
-is ordinary and needs no choosing: they are tried in order until a session
-answers, and which one did is remembered per session token in the runtime
-directory so the walk is paid once rather than per click. That memory only
-reorders the list — a name no longer in the file is ignored, so the file stays
-the allowlist.
+The delivery path inverts: the click is resolved by the terminal on the machine
+in front of the user, whose desktop has no socket for this session — the socket
+lives on the server. So the chip URL names the server (`pisnip://<host>/…`,
+ADR 0001), the handler on the client finds no local socket, and it tunnels the
+click back through a fresh `ssh` running a fixed, self-contained python
+one-liner that writes to the socket on the far end
+(`docs/ssh-back-handler.md`). Nothing is installed remotely.
 
-The evidence that turns the bare labels back into URLs is a stamp the client
-leaves here: the bootstrap line's second half ssh-es straight back, writing
-`pi-snippet-relay-clients/<address>` in this host's agent directory. A session
-whose `SSH_CONNECTION` names a stamped client paints URLs — in the session that
-is already running, from the next message, and in every session after it, from
-the first. It is never taken from anything the client *says*, only from the far
-end of a connection it actually made, and it does not expire, because what it
-records — that such a connection succeeded — does not either. `/snippets` on
-the client offers *SSH relay hosts* to add one by hand or clear the list.
+**One shape everywhere, and nothing to set up.** A local session paints its own
+hostname too; the handler scans local sockets first, so a local click never
+touches the network, and skips the relay when the named host is this machine
+rather than ssh-ing to itself. Over SSH chips therefore paint exactly as they do
+locally, with no evidence needed about the client and no per-session state
+anywhere. The one thing a client machine needs is the desktop handler, which it
+needed anyway; the one thing a server may need is `PI_SNIPPET_HOST`, when its
+`hostname` is not a name the client can dial.
 
-**The `ssh -L` forward is gone.** It was the first delivery and the reason the
-opt-in above used to be a per-session toggle: a socket forward named by this
-session's token, re-established on every connection and every resume, with a
-verify window because the user's own first click was the only probe. The relay
-reaches the same socket from the same machines with none of that. What went
-with it: a client that cannot ssh back non-interactively — a password-only
-login, since the relay runs `BatchMode=yes` — no longer has a way in, and
-neither does anyone who wanted the tunnel visible in their own ssh invocation.
-Both were judged worth the one delivery path.
+**`known_hosts` is the allowlist.** The rule this reverses — *the host never
+comes from the URL* — existed because a `pisnip://` link is writable by anything
+that can put a link on screen, a model reply included. What makes taking the
+host from the URL acceptable is that ssh already keeps a list of machines this
+user has connected to: the relay runs `BatchMode=yes`, so `StrictHostKeyChecking`
+refuses an unknown host at the host-key check, before authentication. We swap an
+allowlist we maintain for one ssh maintains, and the guards that make that safe
+are not optional: the host is matched against
+`^[A-Za-z0-9][A-Za-z0-9._@-]{0,254}$` (no leading `-`, which `ssh` would read as
+an option) with `--` before it in the argv, and the whole URL's shape is
+validated *before* the relay branch, because `ssh host cmd arg` re-parses the
+command line in a remote shell. That validation is the security boundary; the
+fixed argv is defence in depth. `BatchMode=yes` and two timeouts keep a click
+from ever hanging on a password prompt or a dark host.
 
-The host never comes from the URL: a hostname in a chip URL would make any
-pasteable `pisnip://` link an instruction to SSH somewhere, so the config file
-is the allowlist. The handler validates the URL's shape strictly (netloc
-`isalnum()`, path `^/[0-9a-f]{1,16}/c[0-9]{1,3}$`) *before* the relay branch,
-because `ssh host cmd arg` re-parses the command line in a remote shell — the
-validation is the security boundary, and the fixed argv is defence in depth.
-`BatchMode=yes` and two timeouts keep a click from ever hanging on a password
-prompt or a dark host.
+**Failure is quiet, everywhere.** A chip clicked in old scrollback finds no
+session and says nothing; an unreachable host is the same situation and is
+equally quiet. There is no longer an *unconfigured* state to report — the client
+host list, the walk through it, the cached answer, the server-side stamp that
+proved a client had set the relay up, and the one-time bootstrap line that
+created the last two all existed to work out which machine a session was on, and
+the server now says so in the URL. The cost is recorded rather than hidden: a
+client with no handler registered does nothing visible, and the server can no
+longer say honestly whether clicking will work here, because it paints URLs
+unconditionally and finds out never.
 
-Failure stays quiet with one exception. A chip clicked in old scrollback finds
-no session and must say nothing; a *configured but unreachable* host is the
-same situation and is equally quiet. Unconfigured is the one state worth
-reporting, because it has a one-time fix: `notify-send` where it exists, rate-
-limited to once an hour per token through a stamp file, since the handler is
-stateless and spawns fresh per click.
+**The `ssh -L` forward is gone**, and went before all of that. It was the first
+delivery and the reason the opt-in used to be a per-session toggle: a socket
+forward named by this session's token, re-established on every connection and
+every resume, with a verify window because the user's own first click was the
+only probe. What went with it: a client that cannot ssh back non-interactively —
+a password-only login, since the relay runs `BatchMode=yes` — no longer has a
+way in, and neither does anyone who wanted the tunnel visible in their own ssh
+invocation. Both were judged worth the one delivery path.
 
 ### 12.2 Addressing more than ten suggestions
 
