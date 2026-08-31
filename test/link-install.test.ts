@@ -8,7 +8,7 @@
  * them keeps the desktop answering "pisnip:// is handled" after the user was
  * told it was removed. Everything here runs against a private XDG home.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,5 +150,94 @@ describe("uninstall", () => {
 		expect(result.removed).toEqual([]);
 		expect(result.clean).toBe(true);
 		expect(existsSync(join(env.XDG_DATA_HOME!, "pi-snippet"))).toBe(false);
+	});
+});
+
+/**
+ * The desktop tooling, faked. Everything below needs `xdg-mime` and
+ * `update-desktop-database` to exist and to answer, which they do not in a
+ * bare container — so these paths had never run at all, including the one that
+ * reports a handler the uninstall could not shift.
+ */
+describe("install and uninstall against a desktop that answers", () => {
+	let bin: string;
+	const realPath = process.env.PATH ?? "";
+
+	afterEach(() => {
+		process.env.PATH = realPath;
+	});
+
+	/** A PATH entry holding fake xdg tools that record and answer. */
+	function fakeTools(queryAnswer: string): void {
+		bin = join(home, "bin");
+		mkdirSync(bin, { recursive: true });
+		for (const [name, body] of [
+			["update-desktop-database", "#!/bin/sh\nexit 0\n"],
+			[
+				"xdg-mime",
+				`#!/bin/sh\nif [ "$1" = "query" ]; then printf '%s\\n' '${queryAnswer}'; fi\nexit 0\n`,
+			],
+		] as const) {
+			const path = join(bin, name);
+			writeFileSync(path, body, "utf8");
+			chmodSync(path, 0o755);
+		}
+		// `run()` shells out with this process's PATH, not the env it is given,
+		// so the fakes have to be findable from here. Restored in afterEach.
+		process.env.PATH = `${bin}:${realPath}`;
+		env.PATH = process.env.PATH;
+	}
+
+	it("uses the desktop's own tools when they are there", () => {
+		fakeTools("");
+		const result = install(env);
+		expect(result.ok).toBe(true);
+		// xdg-mime took the association, so nothing was written by hand.
+		expect(existsSync(join(env.XDG_CONFIG_HOME!, "mimeapps.list"))).toBe(false);
+		expect(result.warnings).toEqual([]);
+	});
+
+	it("reports a handler the desktop still names after an uninstall", () => {
+		fakeTools("pi-snippet-open.desktop");
+		install(env);
+		const result = uninstall(env);
+		expect(result.clean).toBe(false);
+		expect(result.warnings.join(" ")).toContain("still reports");
+	});
+
+	it("is clean when the desktop names nothing afterwards", () => {
+		fakeTools("");
+		install(env);
+		const result = uninstall(env);
+		expect(result.clean).toBe(true);
+	});
+});
+
+describe("install — a path the Exec line cannot express", () => {
+	it("says so rather than installing something that half works", () => {
+		const spaced = join(home, "data dir");
+		const result = install({ ...env, XDG_DATA_HOME: spaced });
+		expect(result.ok).toBe(true);
+		expect(result.warnings.join(" ")).toContain("contains a space");
+	});
+});
+
+describe("uninstall — a mimeapps entry with an empty id in it", () => {
+	it("drops the empty id along with ours, keeping the rest", () => {
+		const path = join(env.XDG_CONFIG_HOME!, "mimeapps.list");
+		seedMimeapps(
+			path,
+			"[Default Applications]\nx-scheme-handler/pisnip=;pi-snippet-open.desktop;other.desktop;\n",
+		);
+		uninstall(env);
+		expect(read(path)).toContain("x-scheme-handler/pisnip=other.desktop");
+	});
+});
+
+describe("isInstalled — half of an installation", () => {
+	it("is not installed when the desktop entry is missing", () => {
+		install(env);
+		rmSync(join(env.XDG_DATA_HOME!, "applications", "pi-snippet-open.desktop"));
+		expect(isInstalled(env)).toBe(false);
 	});
 });
