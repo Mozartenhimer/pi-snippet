@@ -10,14 +10,14 @@ cd "$(dirname "$0")/../.."
 
 rm -rf .mcdc
 mkdir -p .mcdc/runs
-npx tsx scripts/mcdc/instrument.ts .
-cp scripts/mcdc/recorder.ts .mcdc/src/__mcdc-recorder.ts
+npx tsx scripts/mcdc/cli.ts instrument .
+cp scripts/mcdc/recorder.ts .mcdc/__mcdc-recorder.ts
 
 # Each worker writes its own observations when its last test finishes. An exit
 # hook is not enough: vitest tears workers down around it.
 cat > .mcdc/flush.ts <<'FLUSH'
 import { afterAll } from "vitest";
-import { __mcdcFlush } from "./src/__mcdc-recorder.js";
+import { __mcdcFlush } from "./__mcdc-recorder.js";
 
 afterAll(__mcdcFlush);
 FLUSH
@@ -36,6 +36,11 @@ export default defineConfig({
 			// deeper, as `../../src/…`). Rewriting the prefix is enough to run the
 			// whole suite against the instrumented tree.
 			{ find: /^(?:\.\.\/)+src\/(.*)$/, replacement: resolve(root, ".mcdc/src") + "/$1" },
+			// The tool measures itself too: test/mcdc-tool.test.ts imports these.
+			{
+				find: /^(?:\.\.\/)+scripts\/mcdc\/(.*)$/,
+				replacement: resolve(root, ".mcdc/scripts/mcdc") + "/$1",
+			},
 		],
 	},
 	test: {
@@ -47,4 +52,4 @@ export default defineConfig({
 CONFIG
 
 MCDC_OUT="$(pwd)/.mcdc/runs" npx vitest run --config .mcdc/vitest.config.ts "$@"
-npx tsx scripts/mcdc/analyze.ts .
+npx tsx scripts/mcdc/cli.ts analyze .

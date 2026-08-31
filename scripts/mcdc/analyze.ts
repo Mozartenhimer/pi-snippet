@@ -126,13 +126,33 @@ export function loadRuns(dir: string): Record<string, string[]>[] {
 	}
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-	const root = process.argv[2] ?? ".";
-	const decisions = JSON.parse(
-		readFileSync(join(root, ".mcdc", "decisions.json"), "utf8"),
-	) as DecisionSite[];
-	const reports = analyze(decisions, loadRuns(join(root, ".mcdc", "runs")));
+export interface Formatted {
+	text: string;
+	/** One line per condition with no MC/DC pair, naming why it has none. */
+	gaps: string[];
+}
 
+/** Why a condition has no pair, in the terms a reader can act on. */
+export function gapReason(report: DecisionReport, condition: ConditionReport): string {
+	if (!report.evaluated) return "decision never evaluated";
+	if (!condition.seen.true) return "never true";
+	if (!condition.seen.false) return "never false";
+	return "no independence pair";
+}
+
+function percent(covered: number, total: number): string {
+	// A file with no decisions at all is vacuously covered, not 0/0 = NaN.
+	return total === 0 ? "100.00" : ((covered / total) * 100).toFixed(2);
+}
+
+/**
+ * The per-file table and the gap list, as text.
+ *
+ * A pure function of the reports so it can be tested: this is where the
+ * numbers a reader acts on are actually produced, and it used to live inside
+ * an `import.meta.url` guard where no test could reach it.
+ */
+export function formatReport(reports: readonly DecisionReport[]): Formatted {
 	const byFile = new Map<string, DecisionReport[]>();
 	for (const report of reports) {
 		const list = byFile.get(report.decision.file) ?? [];
@@ -152,15 +172,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 				fileTotal++;
 				if (condition.covered) fileCovered++;
 				else {
-					const missing = !report.evaluated
-						? "decision never evaluated"
-						: !condition.seen.true
-							? "never true"
-							: !condition.seen.false
-								? "never false"
-								: "no independence pair";
 					gaps.push(
-						`${file}:${condition.line}  ${condition.text}\n      (${missing}; in \`${report.decision.text}\`)`,
+						`${file}:${condition.line}  ${condition.text}\n      (${gapReason(report, condition)}; in \`${report.decision.text}\`)`,
 					);
 				}
 			}
@@ -170,20 +183,24 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 		rows.push([file, fileCovered, fileTotal]);
 	}
 
-	const pct = (a: number, b: number) => (b === 0 ? "100.00" : ((a / b) * 100).toFixed(2));
 	const width = Math.max(...rows.map(([f]) => f.length), 10);
-	console.log("\nMasking MC/DC by file\n");
-	console.log(`${"file".padEnd(width)}  ${"cond".padStart(9)}  covered`);
-	console.log("-".repeat(width + 22));
+	const lines = [
+		"",
+		"Masking MC/DC by file",
+		"",
+		`${"file".padEnd(width)}  ${"cond".padStart(9)}  covered`,
+		"-".repeat(width + 22),
+	];
 	for (const [file, c, t] of rows) {
-		console.log(`${file.padEnd(width)}  ${`${c}/${t}`.padStart(9)}  ${pct(c, t).padStart(6)}%`);
+		lines.push(`${file.padEnd(width)}  ${`${c}/${t}`.padStart(9)}  ${percent(c, t).padStart(6)}%`);
 	}
-	console.log("-".repeat(width + 22));
-	console.log(`${"TOTAL".padEnd(width)}  ${`${covered}/${total}`.padStart(9)}  ${pct(covered, total).padStart(6)}%`);
-
+	lines.push("-".repeat(width + 22));
+	lines.push(
+		`${"TOTAL".padEnd(width)}  ${`${covered}/${total}`.padStart(9)}  ${percent(covered, total).padStart(6)}%`,
+	);
 	if (gaps.length > 0) {
-		console.log(`\n${gaps.length} condition(s) without an MC/DC pair:\n`);
-		for (const gap of gaps) console.log(`  - ${gap}`);
+		lines.push("", `${gaps.length} condition(s) without an MC/DC pair:`, "");
+		for (const gap of gaps) lines.push(`  - ${gap}`);
 	}
-	process.exitCode = gaps.length === 0 ? 0 : 1;
+	return { text: lines.join("\n"), gaps };
 }

@@ -142,8 +142,12 @@ export function instrumentFile(
 	};
 
 	const record = (expr: ts.Expression): void => {
+		// No re-entry guard here: `visit` already refuses a logical node it has
+		// claimed, and an if/while/do/for/ternary condition cannot be a node some
+		// enclosing decision claimed — a statement is not an expression, and a
+		// decision's leaves are never descended into. Asserting on this case
+		// across the whole of src/ and scripts/ never fired.
 		const inner = unwrap(expr);
-		if (claimed.has(inner)) return;
 		const conds: ts.Expression[] = [];
 		conditionsOf(inner, conds);
 		// A single-condition decision is still MC/DC-relevant: the one condition
@@ -203,22 +207,42 @@ function walk(dir: string, out: string[] = []): string[] {
 	return out;
 }
 
-export function instrumentTree(srcDir: string, outDir: string): DecisionSite[] {
+/**
+ * Files that are copied through untouched.
+ *
+ * The recorder cannot be instrumented: its own hooks would call themselves.
+ * `cli.ts` is the executable shim and holds no logic to measure — the work it
+ * used to do inline was moved out precisely so it could be reached by tests.
+ */
+const NOT_INSTRUMENTED = new Set(["__mcdc-recorder.ts", "recorder.ts", "cli.ts"]);
+
+export function instrumentTree(
+	srcDir: string,
+	outDir: string,
+	startId: number,
+	recorder: string,
+	label: string,
+): DecisionSite[] {
 	const files = walk(srcDir).sort();
 	const decisions: DecisionSite[] = [];
 	for (const file of files) {
 		const rel = relative(srcDir, file);
 		const target = join(outDir, rel);
 		mkdirSync(dirname(target), { recursive: true });
-		// Every instrumented file reaches the one recorder, however deep it sits.
-		const depth = rel.split("/").length - 1;
-		const specifier = `${"../".repeat(depth) || "./"}__mcdc-recorder.js`;
+		if (NOT_INSTRUMENTED.has(rel)) {
+			writeFileSync(target, readFileSync(file, "utf8"), "utf8");
+			continue;
+		}
+		// Every instrumented file reaches the one recorder, however deep it sits
+		// and whichever tree it came from.
+		let specifier = relative(dirname(target), recorder).replace(/\.ts$/, ".js");
+		if (!specifier.startsWith(".")) specifier = `./${specifier}`;
 		const result = instrumentFile(
 			file,
 			readFileSync(file, "utf8"),
-			rel,
+			join(label, rel),
 			specifier,
-			decisions.length,
+			startId + decisions.length,
 		);
 		writeFileSync(target, result.code, "utf8");
 		decisions.push(...result.decisions);
@@ -226,12 +250,36 @@ export function instrumentTree(srcDir: string, outDir: string): DecisionSite[] {
 	return decisions;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-	const root = resolve(process.argv[2] ?? ".");
-	const outDir = join(root, ".mcdc", "src");
-	mkdirSync(outDir, { recursive: true });
-	const decisions = instrumentTree(join(root, "src"), outDir);
+/**
+ * Instrument every tree into `.mcdc/`, writing the decision table beside it.
+ *
+ * Exported rather than run from an `import.meta.url` guard so it is reachable
+ * from a test: a guard comparing against `process.argv[1]` is never true under
+ * vitest, which would leave everything behind it permanently unmeasurable. The
+ * executable shim lives in `cli.ts`, which holds no logic of its own.
+ */
+export function instrumentAll(root: string, trees: readonly string[]): DecisionSite[] {
+	const decisions: DecisionSite[] = [];
+	for (const tree of trees) {
+		const outDir = join(root, ".mcdc", tree);
+		mkdirSync(outDir, { recursive: true });
+		decisions.push(
+			...instrumentTree(
+				join(root, tree),
+				outDir,
+				decisions.length,
+				join(root, ".mcdc", "__mcdc-recorder.ts"),
+				tree,
+			),
+		);
+	}
+	mkdirSync(join(root, ".mcdc"), { recursive: true });
 	writeFileSync(join(root, ".mcdc", "decisions.json"), JSON.stringify(decisions, null, "\t"));
+	return decisions;
+}
+
+/** What the CLI prints once instrumentation is done. */
+export function summarize(decisions: readonly DecisionSite[]): string {
 	const conditions = decisions.reduce((n, d) => n + d.conditions.length, 0);
-	console.log(`instrumented ${decisions.length} decisions, ${conditions} conditions`);
+	return `instrumented ${decisions.length} decisions, ${conditions} conditions`;
 }
