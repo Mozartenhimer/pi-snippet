@@ -50,6 +50,20 @@ export interface DecisionSite {
 interface Edit {
 	pos: number;
 	text: string;
+	/**
+	 * Tie-break for insertions at the same offset, which is the norm rather
+	 * than the exception: a decision and its first condition start at the same
+	 * character in `a && b`, and end at the same character too.
+	 *
+	 * Insertions are applied back-to-front at a point, so at equal offsets the
+	 * *last* one applied ends up leftmost. The decision's wrapper has to end up
+	 * outside its conditions' wrappers, which means its opening text is applied
+	 * last (leftmost) and its closing text first (rightmost). Getting this
+	 * backwards produced `__mcdcC(id,0,__mcdcD(id,a) && __mcdcC(id,1,b))` —
+	 * the decision recording only its first condition's value as the outcome,
+	 * and condition 0 recording the whole expression.
+	 */
+	order: number;
 }
 
 /** Peel parentheses and `as`/`!` assertions to reach the expression that matters. */
@@ -104,6 +118,29 @@ export function instrumentFile(
 
 	const lineOf = (pos: number) => sf.getLineAndCharacterOfPosition(pos).line + 1;
 
+	/**
+	 * Claim every logical node in a decision's tree, not just its leaves.
+	 *
+	 * `a || (b && c)` is one decision with three conditions. Claiming only the
+	 * leaves left the inner `b && c` unclaimed, so the walk below picked it up
+	 * as a decision of its own and instrumented b and c twice — inflating the
+	 * denominator with conditions that already belonged to their parent.
+	 */
+	const claimTree = (node: ts.Expression): void => {
+		const inner = unwrap(node);
+		claimed.add(inner);
+		if (isLogical(inner)) {
+			claimTree(inner.left);
+			claimTree(inner.right);
+			return;
+		}
+		if (ts.isPrefixUnaryExpression(inner) && inner.operator === ts.SyntaxKind.ExclamationToken) {
+			claimTree(inner.operand);
+		}
+		// A leaf is claimed but not descended into: a ternary nested inside one
+		// carries its own decision and must still be found by the walk.
+	};
+
 	const record = (expr: ts.Expression): void => {
 		const inner = unwrap(expr);
 		if (claimed.has(inner)) return;
@@ -112,8 +149,7 @@ export function instrumentFile(
 		// A single-condition decision is still MC/DC-relevant: the one condition
 		// must be seen both ways. Keep it.
 		const id = nextId++;
-		for (const c of conds) claimed.add(c);
-		claimed.add(inner);
+		claimTree(inner);
 		decisions.push({
 			id,
 			file: relPath,
@@ -124,13 +160,13 @@ export function instrumentFile(
 				text: c.getText(sf).replace(/\s+/g, " ").slice(0, 120),
 			})),
 		});
-		// Wrap the decision, then each condition. Insertions are points, so a
-		// condition inside the decision nests without the two colliding.
-		edits.push({ pos: inner.getStart(sf), text: `__mcdcD(${id},` });
-		edits.push({ pos: inner.getEnd(), text: ")" });
+		// The decision wraps the conditions, never the other way round: see the
+		// `order` field on Edit for why equal offsets have to be broken this way.
+		edits.push({ pos: inner.getStart(sf), text: `__mcdcD(${id},`, order: 1 });
+		edits.push({ pos: inner.getEnd(), text: ")", order: 0 });
 		conds.forEach((c, index) => {
-			edits.push({ pos: c.getStart(sf), text: `__mcdcC(${id},${index},` });
-			edits.push({ pos: c.getEnd(), text: ")" });
+			edits.push({ pos: c.getStart(sf), text: `__mcdcC(${id},${index},`, order: 0 });
+			edits.push({ pos: c.getEnd(), text: ")", order: 1 });
 		});
 	};
 
@@ -151,7 +187,7 @@ export function instrumentFile(
 	};
 	visit(sf);
 
-	edits.sort((a, b) => b.pos - a.pos);
+	edits.sort((a, b) => b.pos - a.pos || a.order - b.order);
 	let code = sourceText;
 	for (const edit of edits) code = code.slice(0, edit.pos) + edit.text + code.slice(edit.pos);
 	const importLine = `import { __mcdcC, __mcdcD } from "${recorderSpecifier}";\n`;
