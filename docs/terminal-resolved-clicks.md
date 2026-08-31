@@ -276,7 +276,7 @@ The socket is a local IPC endpoint that types into the user's composer, so:
 
 | Situation | What happens |
 |---|---|
-| SSH / remote pi | Clicks resolve on the client; the socket is here. Shipped: `/snippets` → *Remote clicking* paints URLs and prints the `ssh -L` forward for this session (verified by the user's own click). Designed: the ssh-back handler (`docs/ssh-back-handler.md`) removes the per-session forward. |
+| SSH / remote pi | Clicks resolve on the client; the socket is here. Shipped: the ssh-back relay (`docs/ssh-back-handler.md`) — one line run once on the client, after which chips carry URLs with no toggle and nothing per session. The `ssh -L` forward that preceded it, and its *Remote clicking* opt-in, were removed. |
 | tmux without `hyperlinks` | No OSC 8 emitted; auto-detected (§5); bare labels. |
 | Terminal without OSC 8 at all | Same. |
 | Terminal that restricts URI schemes | The unmeasured risk. See §9. |

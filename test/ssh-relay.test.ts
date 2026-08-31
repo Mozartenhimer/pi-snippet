@@ -20,7 +20,6 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
-	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { createServer, type Server } from "node:net";

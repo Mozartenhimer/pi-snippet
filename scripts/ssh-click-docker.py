@@ -6,7 +6,7 @@
 
 Ensures the client has the handler `link-install.ts` generates — installed by
 calling the extension's own `install()`, so what fires the click is the script
-that ships, not a copy — then runs scripts/ssh-click-client.py inside the client
+that ships, not a copy — then runs scripts/ssh-relay-client.py inside the client
 container and relays its verdict.
 
 Rebuild first: the containers mount this repo and load dist/, not the sources.
@@ -61,27 +61,14 @@ try:
 finally:
 	shutil.rmtree(tmp, ignore_errors=True)
 
-DRIVERS = {
-	"forward": ("ssh-click-client.py", "the shipped ssh -L forward"),
-	"relay": ("ssh-relay-client.py", "the ssh-back relay, with no forward at all"),
-}
-which = sys.argv[1] if len(sys.argv) > 1 else "both"
-if which not in ("both", *DRIVERS):
-	die(f"usage: ssh-click-docker.py [both|{'|'.join(DRIVERS)}]")
-chosen = list(DRIVERS) if which == "both" else [which]
-
-failed = []
-for name in chosen:
-	script, blurb = DRIVERS[name]
-	driver = os.path.join(ROOT, "scripts", script)
-	if run("docker", "cp", driver, f"{CLIENT}:/tmp/{script}").returncode != 0:
-		die(f"could not copy {script} into the client")
-	print(f"\n--- {name}: {blurb} ---", flush=True)
-	if subprocess.run(["docker", "exec", "-u", "dev", CLIENT, "python3", f"/tmp/{script}"]).returncode != 0:
-		failed.append(name)
+DRIVER = "ssh-relay-client.py"
+driver = os.path.join(ROOT, "scripts", DRIVER)
+if run("docker", "cp", driver, f"{CLIENT}:/tmp/{DRIVER}").returncode != 0:
+	die(f"could not copy {DRIVER} into the client")
+print("\n--- the ssh-back relay: a click resolved here, delivered there ---", flush=True)
+failed = subprocess.run(
+	["docker", "exec", "-u", "dev", CLIENT, "python3", f"/tmp/{DRIVER}"]).returncode != 0
 
 print()
-if failed:
-	print("FAILED: " + ", ".join(failed))
-	sys.exit(1)
-print("all paths passed: " + ", ".join(chosen))
+print("FAILED" if failed else "the relay passed end to end")
+sys.exit(1 if failed else 0)

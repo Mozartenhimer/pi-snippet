@@ -3,9 +3,9 @@
 #
 # Terminal-resolved clicking over SSH is the one path that cannot be tested on
 # one machine: the click resolves on the *client*, the socket lives on the
-# *server*, and the whole feature is the wire between them. Faking SSH_TTY (as
-# scripts/ssh-remote-tmux.py does) exercises the UI and nothing else. This
-# builds the real thing — sshd, two hosts, a unix-socket forward.
+# *server*, and the whole feature is the wire between them. Faking SSH_TTY in
+# one process exercises the UI and nothing else. This builds the real thing —
+# sshd, two hosts, and key-only auth, which is what the relay needs.
 #
 # No image is pulled. Registry blob CDNs are commonly blocked by egress policy,
 # and a harness that needs Docker Hub is a harness that stops working; the base
@@ -83,15 +83,15 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 		> "$R/usr/local/bin/pi"
 	chmod +x "$R/usr/local/bin/pi"
 
-	# sshd: keys only, and unix-socket forwarding, which is the feature's wire.
+	# sshd: keys only — the relay runs `ssh -o BatchMode=yes`, so a password
+	# prompt is not a slow path but no path at all.
 	mkdir -p "$R/run/sshd"
 	sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' "$R/etc/ssh/sshd_config"
 	sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' "$R/etc/ssh/sshd_config"
-	grep -q StreamLocalBindUnlink "$R/etc/ssh/sshd_config" || echo "StreamLocalBindUnlink yes" >> "$R/etc/ssh/sshd_config"
 	echo "nameserver 8.8.8.8" > "$R/etc/resolv.conf"
 
-	# One user, same uid on both ends, so /tmp/pi-snippet-<uid> reads the same
-	# on each side of the forward — as it would for one person's two machines.
+	# One user, same uid on both ends — as it would be for one person's two
+	# machines, and what makes /tmp/pi-snippet-<uid> mean the same thing there.
 	chroot "$R" /bin/bash -c "id dev >/dev/null 2>&1 || useradd -m -s /bin/bash -u $UID_DEV dev"
 	chroot "$R" /bin/bash -c "mkdir -p /home/dev/.ssh && chmod 700 /home/dev/.ssh"
 	chroot "$R" /bin/bash -c "ssh-keygen -A" >/dev/null 2>&1

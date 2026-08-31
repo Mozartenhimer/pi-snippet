@@ -1,12 +1,12 @@
 # The ssh-back handler: clicking over SSH without per-session forwards
 
-*Shipped. Register the handler on the **client** machine, and a click that
-finds no local socket relays itself back over SSH to the host the session
-lives on — no per-session forward, no flag, no resume, and (since the
-automatic opt-in below) no toggle either. The manual recipe stays
-beside it: over SSH, `/snippets` → "Remote clicking" paints chip URLs again and
-prints the `ssh -L` argument that carries this session's socket across the
-wire. Both feed the same socket protocol and the same verify window.*
+*Shipped, and now the only way a click crosses the wire. Register the handler
+on the **client** machine, run one line there, and a click that finds no local
+socket relays itself back over SSH to the host the session lives on — no
+per-session forward, no flag, no resume, no toggle. The `ssh -L` recipe this
+document was written beside has since been removed: it reached the same socket
+from the same machines and cost a flag on every connection (see "What it
+replaces" at the end).*
 
 *This document was the design, and is kept as written except where the build
 settled a question differently — those points are marked **As built**. The
@@ -29,9 +29,9 @@ inside (or beside) the pi process.
 
 So the question is never "how does a click become a message" — that machinery
 exists on both ends, unmodified. It is "how does the click cross the wire
-backwards". Two answers exist. The manual forward tunnels the socket through
-the user's own ssh command (shipped). This document tunnels the *click*
-through a fresh ssh invocation instead.
+backwards". Two answers exist. The manual forward tunnelled the socket through
+the user's own ssh command; this tunnels the *click* through a fresh ssh
+invocation instead, and is what shipped.
 
 ## The shape
 
@@ -120,8 +120,8 @@ password-prompting alias would fail. The bootstrap line proves the whole path
 at setup time instead of at first click.
 
 The bootstrap is in-band, because the remote pi cannot touch the client
-desktop: the remote `/snippets` → *Remote clicking* entry puts the command to
-run on the client into the composer (the editor, not a toast — toasts clip at
+desktop: the remote `/snippets` puts the command to run on the client into the
+composer (the editor, not a toast — toasts clip at
 the terminal width and coalesce within a render tick, both measured live).
 One copy-paste, once per client machine — not per session, which is the
 entire point. As built it is two commands joined by `&&`: the config write, and
@@ -131,10 +131,8 @@ single-quoted shell word, which only an exotic `PI_CODING_AGENT_DIR` causes: an
 unpasteable line is worse than a shorter one, and the per-session toggle still
 works.
 
-**As built.** It is its own row, *SSH relay setup*, rather than more output
-from *Remote clicking*: the two write different things to the one composer, and
-a user who wanted the forward should not have to read past the paste for the
-path they did not choose. The line carries the address the client reached this
+**As built.** It is the row *SSH relay setup*, and — since the forward was
+removed — the only row `/snippets` offers over SSH. The line carries the address the client reached this
 host at (`SSH_CONNECTION`'s third field) — the remote knows that much and
 nothing about the client's aliases, so the accompanying toast says to prefer
 one. It is a `printf` into the config file rather than an instruction to run
@@ -225,14 +223,29 @@ collapses it to the socket write. The remote `/snippets` recipe should say so
 in one line rather than trying to configure it (touching the user's ssh
 config is out of bounds for an extension).
 
-## What it replaces, and what it doesn't
+## What it replaced
 
-The manual `ssh -L` forward stays. It needs no client config file, works
-today, and suits a user who wants the tunnel visible in their own ssh
-invocation. The relay replaces its *per-session* cost — no flag, no resume
-dance, no token in the command line — with a one-time per-client setup. Both
-paths feed the same socket protocol, the same verify window in `/snippets`,
-and the same Alt+N fallback underneath.
+The manual `ssh -L` forward was kept beside this at first — it needed no client
+config file, it worked, and it suited a user who wanted the tunnel visible in
+their own ssh invocation. It is gone now. Both paths always fed the same socket
+protocol from the same pair of machines; the forward's price was per session
+(a flag on every connection, a resume after every reconnect, a socket named by
+a token that dies with the process) against the relay's one paste per client
+machine. With the automatic opt-in above there was nothing left for a toggle to
+choose between, so the toggle, the recipe, the verify window and the harness
+that drove them went too.
+
+Two things went with it, and neither is coming back on its own:
+
+- A client that can only ssh back **interactively** — a password-only login —
+  has no way in, because the relay runs `BatchMode=yes` precisely so a click
+  can never hang on a prompt. A key or an agent-forwarded identity is now a
+  requirement, not a convenience.
+- Anyone who preferred the tunnel visible in their own command line has no such
+  option; what the relay does is visible in the handler and in this document
+  instead.
+
+`Alt+N` is unaffected and remains the in-band path that needs no wire at all.
 
 ## Testing
 
@@ -248,16 +261,17 @@ notifications).
 builds them, `scripts/ssh-click-docker.py` drives them — because a relay to
 `localhost` can pass while the click never leaves the machine, and the whole
 feature is the wire. `ssh-relay-client.py` removes the local socket directory
-and kills any forward before it clicks, so nothing there can succeed by the
-shipped path; `ssh-click-client.py` asserts that shipped path beside it. The
-bootstrap line is not hardcoded in the harness — it is scraped out of the
+before it clicks, so nothing there can answer by accident, and asserts the
+honest default first: a chip painted before the bootstrap line is run carries
+no URL at all. The bootstrap line is not hardcoded in the harness — it is scraped out of the
 composer where *SSH relay setup* put it and then run, so the paste a user is
 given is the paste that is tested.
 
-**As built** the harness has a fourth phase, which is the one the automatic
-opt-in exists for: pi is restarted on the server *without* wiping its agent
-directory, and must paint chip URLs — and land a click through them — with
-nothing asked of the user at all.
+**As built** the harness asserts the automatic opt-in twice, which is the point
+of the whole thing: the session that was already running starts painting URLs
+on the next message, and a pi restarted on the server (*without* wiping its
+agent directory) paints them from the first — landing a real click both times,
+with nothing asked of the user.
 
 `test/ssh-relay.test.ts` covers what does not need two machines by *running*
 the generated handler with a recording `ssh` stub on its PATH: the local socket

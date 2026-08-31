@@ -265,25 +265,17 @@ export default function piSnippetTui(pi: any): void {
 	 * there dispatches it to *its* handler — which has no socket for this
 	 * session; the socket lives here. A chip URL painted by default over SSH
 	 * is therefore a dead click that fails silently, which is the one outcome
-	 * this layer refuses to dress up: without an explicit opt-in, SSH paints
-	 * bare labels (Alt+N still works — it is in-band). The opt-in, "Remote
-	 * clicking" in `/snippets`, is session state, not a persisted setting:
-	 * the socket it forwards is named by *this* session's token, so a persisted
-	 * yes would paint dead URLs into every future session that never set a
-	 * forward up. The recipe it prints is the `ssh -L` unix-socket forward;
-	 * `docs/ssh-back-handler.md` designs the zero-setup successor.
+	 * this layer refuses to dress up: until the click has a way back, SSH
+	 * paints bare labels (Alt+N still works — it is in-band).
+	 *
+	 * The way back is the relay (`docs/ssh-back-handler.md`), set up once per
+	 * client machine, and this session learns of it from the stamp that setup
+	 * leaves here — no toggle, and nothing per session. There is no second
+	 * delivery to choose between: the `ssh -L` forward this used to offer cost
+	 * a flag on every connection and a resume, and is gone.
 	 */
 	const overSsh = (): boolean =>
 		Boolean(process.env.SSH_TTY || process.env.SSH_CONNECTION);
-	let remoteClicks = false;
-	/**
-	 * Set once the user has answered the question themselves, so nothing below
-	 * answers it for them again — an auto-enable that undid a deliberate "off"
-	 * on the next `/resume` would be a toggle that does not stay where it is put.
-	 */
-	let remoteClicksChosen = false;
-	/** Whether what is painting URLs is the relay rather than a forward. */
-	let remoteClicksRelayed = false;
 
 	/**
 	 * A field of `SSH_CONNECTION`: 0 is the client, 2 is this host. Empty when
@@ -294,28 +286,27 @@ export default function piSnippetTui(pi: any): void {
 		(process.env.SSH_CONNECTION ?? "").split(/\s+/)[field] ?? "";
 
 	/**
-	 * Paint chip URLs without being asked, when the relay is known to work for
-	 * this client (docs/ssh-back-handler.md).
+	 * Whether this session's client has set relayed clicking up with this host.
 	 *
-	 * The relay costs nothing per session — that is its whole point — but the
-	 * opt-in it inherited from the `ssh -L` forward is per session, so a user
-	 * who did the one-time client setup was still flipping a switch on every
-	 * connection. This is the evidence that makes the switch unnecessary: a
-	 * stamp left in this host's agent directory by the client itself, either by
-	 * the ssh-back in the bootstrap line or by the last click it relayed. No
-	 * stamp, a stale one, or a different client, and the honest default stands.
+	 * Held rather than asked, because `linkOn()` is read on every render and
+	 * this is a `stat`. `syncRelay()` re-reads it while it is false — at every
+	 * session start and after every message — so a bootstrap line pasted in
+	 * another window starts painting URLs on the next message rather than the
+	 * next session. Once true it stays true: the stamp does not un-write, and
+	 * a session that has been painting URLs should not stop mid-conversation.
 	 */
-	const autoRemoteClicks = (ctx: any): void => {
-		if (!overSsh() || remoteClicks || remoteClicksChosen) return;
+	let relayed = false;
+	const syncRelay = (ctx: any): void => {
+		if (!overSsh() || relayed) return;
 		if (!linkInstall.relayClientSeen(sshConnection(0))) return;
-		remoteClicks = true;
-		remoteClicksRelayed = true;
+		relayed = true;
 		ctx.ui?.notify?.(
-			"Remote clicking on — your machine relays clicks back to this one, so chips carry URLs with no forward",
+			"Chips carry URLs again — your machine relays clicks back to this one, so Ctrl+click works here",
 		);
 	};
+
 	const linkOn = () =>
-		isEnabled() && getCapabilities().hyperlinks && (!overSsh() || remoteClicks);
+		isEnabled() && getCapabilities().hyperlinks && (!overSsh() || relayed);
 
 	/**
 	 * What each rendered message's chips mean, keyed by a hash of the exact
@@ -409,12 +400,6 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	/** Set while an install probe is in flight; see `installClickHandler`. */
 	let probeArrived: (() => void) | null = null;
-	/**
-	 * Set while the remote-clicking verify window is open: fired by any click
-	 * that resolves, probe or real, because over SSH there is no local opener
-	 * to fire a synthetic probe — the user's own Ctrl+click is the probe.
-	 */
-	let anyClickArrived: (() => void) | null = null;
 	/** The message key a probe URL uses, which no real message can collide with. */
 	const PROBE_KEY = "00000000";
 	const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -422,7 +407,6 @@ export default function piSnippetTui(pi: any): void {
 	const linkServer = new LinkServer({
 		token: () => linkToken,
 		resolve: (msg, index) => {
-			anyClickArrived?.();
 			if (msg === PROBE_KEY) {
 				probeArrived?.();
 				return undefined; // a probe proves the path; it inserts nothing
@@ -551,12 +535,7 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const syncClicks = (ctx: any) => {
 		lastCtx = ctx;
-		// Asked here rather than at `session_start` alone, because this runs on
-		// every message too: a stamp that appears while pi is open — the user
-		// pasting the bootstrap line in another window — starts painting URLs
-		// on the next message rather than on the next session. It costs one
-		// `stat` per message until it answers yes, and nothing after.
-		autoRemoteClicks(ctx);
+		syncRelay(ctx);
 		const captured = captureTui(ctx);
 		if (captured) watchAltRelease(captured);
 		if (linkOn()) {
@@ -959,15 +938,12 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	const clickStatusLabel = (): string => {
 		if (process.platform !== "linux") return "Ctrl+click: unavailable off Linux";
-		if (overSsh() && !remoteClicks)
-			return "Ctrl+click: over SSH — the click resolves on your machine, not this one; enable remote clicking below";
+		if (overSsh() && !relayed)
+			return "Ctrl+click: over SSH — the click resolves on your machine, not this one; set the relay up below";
 		if (!getCapabilities().hyperlinks) {
 			return "Ctrl+click: inert — this terminal paints no hyperlinks (see docs/linux-terminals.md)";
 		}
-		if (overSsh())
-			return remoteClicksRelayed
-				? "Ctrl+click: remote — chips are clickable, relayed back over SSH (no forward)"
-				: "Ctrl+click: remote — chips are clickable through the ssh socket forward";
+		if (overSsh()) return "Ctrl+click: remote — chips are clickable, relayed back over SSH";
 		if (!linkInstall.isInstalled()) return "Ctrl+click: handler not registered";
 		return "Ctrl+click: on";
 	};
@@ -987,8 +963,8 @@ export default function piSnippetTui(pi: any): void {
 		}
 		if (overSsh()) {
 			ctx.ui.notify(
-				"Over SSH the desktop is on the machine in front of you — register the handler there. "
-					+ "Here, use “Remote clicking” instead.",
+				"Over SSH the desktop is on the machine in front of you — register the handler there, "
+					+ "then run the line “SSH relay setup” prints here.",
 				"warning",
 			);
 			return;
@@ -1031,81 +1007,6 @@ export default function piSnippetTui(pi: any): void {
 			probeArrived = previous;
 		}
 		syncClicks(ctx);
-	};
-
-	/**
-	 * Remote clicking over SSH, on and off.
-	 *
-	 * Turning it on paints chip URLs again (this session only) and prints the
-	 * one thing the user cannot derive from here: the `ssh -L` argument that
-	 * carries this session's socket across the wire, with the local side
-	 * written as `$(id -u)` so it expands in *their* shell on the client
-	 * machine, where the handler looks for it. The remote side is the path the
-	 * listener actually bound — not a path computed from the same rules, which
-	 * is exactly the disagreement a confined snap can introduce (see
-	 * `link-server.ts`).
-	 *
-	 * Every invocation while on ends in a verify window: over SSH there is no
-	 * local opener to fire a synthetic probe, so the user's own Ctrl+click is
-	 * the probe, and the first enable cannot pass it (the forward does not
-	 * exist until they reconnect). The verdict is honest about that — "no click
-	 * yet" is the expected first-run answer, not a failure to retry blindly.
-	 */
-	const toggleRemoteClicking = async (ctx: any): Promise<void> => {
-		// Whichever way it goes, the user has now answered this themselves, and
-		// `autoRemoteClicks` stops answering it for them.
-		remoteClicksChosen = true;
-		if (remoteClicks) {
-			remoteClicks = false;
-			remoteClicksRelayed = false;
-			syncClicks(ctx);
-			ctx.ui.notify("Remote clicking off — chips paint as plain labels again");
-			return;
-		}
-		remoteClicks = true;
-		syncClicks(ctx); // starts the listener: the far end of the forward
-		const started = linkServer.listening ? linkServer.socketPath : linkServer.start();
-		if (!started) {
-			remoteClicks = false;
-			syncClicks(ctx);
-			ctx.ui.notify("Could not open a socket to forward", "warning");
-			return;
-		}
-		// The verify window opens here, not after the recipe below: the socket
-		// exists from this moment, and a click that lands while the toasts
-		// settle must still count.
-		let arrived = false;
-		const previous = anyClickArrived;
-		anyClickArrived = () => {
-			arrived = true;
-		};
-		// The recipe goes in the composer, not a toast: it is something the user
-		// must copy to another machine verbatim, and toasts clip at the terminal
-		// width and coalesce when fired within a render tick — both measured
-		// live, and either would silently truncate the one line that matters.
-		// The editor already has the precedent (`/snippets model` prefills it)
-		// and one more property toasts lack: the text survives reading it.
-		ctx.ui.setEditorText(
-			`mkdir -p /tmp/pi-snippet-$(id -u) && ssh -L /tmp/pi-snippet-$(id -u)/${linkToken}.sock:${started} <host>`,
-		);
-		tui?.requestRender?.();
-		ctx.ui.notify("Remote clicking on — the ssh command is in the editor. Reconnect with it, then resume (pi --continue).");
-		// A beat apart, or the toast coalescing above eats the first one.
-		await delay(1200);
-		ctx.ui.notify("Once, on your machine: pi /snippets → “Register click handler”.");
-		try {
-			for (let i = 0; i < 100 && !arrived; i++) await delay(100);
-		} finally {
-			anyClickArrived = previous;
-		}
-		if (arrived) {
-			ctx.ui.notify("Verified: a click made the whole trip — desktop, handler, forward, this session.");
-		} else {
-			ctx.ui.notify(
-				"No click yet — expected until you reconnect. Then pick this again to verify.",
-				"warning",
-			);
-		}
 	};
 
 	/**
@@ -1361,19 +1262,14 @@ export default function piSnippetTui(pi: any): void {
 			// it this used to ask — plus the relay host once a handler exists.
 			const clickRows = overSsh()
 				? [
-						// Picking this while it is on turns it off, so the row
-						// says that rather than describing the enable it already
-						// did — and it names which delivery is painting the URLs,
-						// because "on" without a forward reads like a bug to
-						// anyone who set one up last time.
-						`Remote clicking: ${
-							remoteClicks
-								? `on${remoteClicksRelayed ? " (relayed back over SSH — no forward)" : ""} — turn it off, chips go back to plain labels`
-								: "off — make Ctrl+click work over SSH (forwards this session's socket)"
-						}`,
 						// The client half of relayed clicking lives on the client;
-						// what this side can offer is the one-time line to run there.
-						"SSH relay setup — the one-time command to run on your machine, instead of a forward",
+						// what this side can offer is the one-time line to run
+						// there. Offered whether or not it is already set up: it is
+						// also how a second client machine gets set up, and how a
+						// first one is repaired.
+						`SSH relay setup — the one-time command to run on your machine${
+							relayed ? " (this one is set up already)" : ", so Ctrl+click works here"
+						}`,
 					]
 				: process.platform !== "linux"
 					? []
@@ -1401,8 +1297,6 @@ export default function piSnippetTui(pi: any): void {
 				await pickMode(ctx);
 			} else if (choice.startsWith("Second model:")) {
 				await pickModel(ctx);
-			} else if (choice.startsWith("Remote clicking:")) {
-				await toggleRemoteClicking(ctx);
 			} else if (choice.startsWith("SSH relay setup")) {
 				showRelaySetup(ctx);
 			} else if (choice.startsWith("SSH relay hosts:")) {

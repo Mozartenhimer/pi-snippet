@@ -4,20 +4,21 @@
 Runs inside the *client* container (see scripts/docker-ssh-env.sh); driven by
 scripts/ssh-click-docker.py, which is the thing to run by hand.
 
-The sibling harness (ssh-click-client.py) asserts the shipped `ssh -L` path,
-which costs a flag on every ssh invocation. This asserts the successor
-(docs/ssh-back-handler.md): the click finds no socket on this machine, reads
-the relay host off the client's own config, and tunnels *itself* back through
-a fresh ssh — so the only per-machine setup is the one-time bootstrap line,
-which is taken from where the remote /snippets put it rather than hardcoded.
+The only delivery there is (docs/ssh-back-handler.md): the click finds no
+socket on this machine, reads the relay hosts off the client's own config, and
+tunnels *itself* back through a fresh ssh — so the only per-machine setup is
+the one-time bootstrap line, which is taken from where the remote /snippets put
+it rather than hardcoded. The `ssh -L` forward this used to be tested beside is
+gone; there is no toggle here at all.
 
 Deliberately hostile to a false pass: the local socket directory is removed and
 any forward killed first, so nothing here can succeed by the shipped path.
 
-The last phase is the automatic opt-in: pi is restarted on the server without
-wiping its agent directory, and must paint chip URLs with nothing asked of the
-user — no /snippets, no toggle, no forward. That is what the stamp the
-bootstrap line left there is for.
+The phase that matters most is the automatic opt-in, asserted twice: the
+session that was already running starts painting URLs on the next message, and
+a pi restarted on the server (without wiping its agent directory) paints them
+from the first one. Nothing is asked of the user either time. That is what the
+stamp the bootstrap line left there is for.
 """
 import json, os, pty, re, select, shutil, subprocess, sys, time
 
@@ -174,6 +175,15 @@ def bail(message):
 check("pi started over ssh", wait_for("Inline suggestions", 30) or wait_for("auto", 10))
 pump(2)
 
+# --- before any setup, a chip over SSH is a bare label ------------------------
+# The click would resolve on this machine, where nothing answers, so a URL here
+# would be a click that dies in silence.
+clear_composer(); send(b"go\r")
+check("assistant replied", wait_for("Two ways", 30))
+pump(3)
+check("chip carries no URL before the client is set up",
+      re.search(r"\x1b\]8;[^;]*;pisnip://", text()) is None)
+
 # --- the one-time bootstrap, taken from where the remote put it ---------------
 clear_composer(); send(b"/snippets\r")
 check("menu opened", wait_for("SSH relay setup", 20))
@@ -213,20 +223,17 @@ check("server now has a stamp for this client",
       stamped.returncode == 0 and stamped.stdout.strip() != "")
 print(f"    stamped={stamped.stdout.strip()!r}", flush=True)
 
-# --- paint URLs (a chip over SSH is bare until the user opts in) --------------
-clear_composer(); send(b"/snippets\r")
-wait_for("Remote clicking", 15)
-check("selected the Remote clicking row", select_row("Remote clicking"))
-send(b"\r")
-check("remote clicking on", wait_for("Remote clicking on", 20))
-check("first enable says no click yet", wait_for("No click yet", 25))
-pump(2)
-
+# --- the next message paints URLs, with nothing asked of the user -------------
+# The stamp the line above left is read on every message, so the session that
+# was already running picks it up: no toggle, no reconnect, no resume. An
+# already-painted message keeps its bare labels — pi caches a finished message
+# on its text — which is why this asserts against a new one.
 clear_composer(); send(b"go\r")
-check("assistant replied", wait_for("Two ways", 30))
+check("assistant replied again", wait_for("Two ways", 30))
+check("session says it can relay now", wait_for("relays clicks back", 20))
 pump(3)
 urls = re.findall(r"\x1b\]8;[^;]*;(pisnip://[^\x1b\x07]+)", text())
-check("chip carries a pisnip:// URL", len(urls) > 0)
+check("chip now carries a pisnip:// URL", len(urls) > 0)
 if not urls:
 	bail("no chip URL painted")
 url = urls[-1]
@@ -236,15 +243,8 @@ print(f"    chip url={url}", flush=True)
 shutil.rmtree(SOCKDIR, ignore_errors=True)
 check("no local socket directory on the client", not os.path.exists(SOCKDIR))
 
-# --- re-arm the verify window, then click -------------------------------------
-clear_composer(); send(b"/snippets\r"); wait_for("Remote clicking", 15)
-select_row("Remote clicking"); send(b"\r")
-check("toggling off reported off", wait_for("Remote clicking off", 20))
-pump(1)
-clear_composer(); send(b"/snippets\r"); wait_for("Remote clicking", 15)
-select_row("Remote clicking"); send(b"\r")
-check("verify window re-armed", wait_for("Remote clicking on", 20))
-
+# --- the click, resolved here and delivered there -----------------------------
+clear_composer()
 before = len(raw)
 started = time.time()
 rc = subprocess.run([HANDLER, url], capture_output=True, timeout=30)
@@ -252,7 +252,7 @@ elapsed = time.time() - started
 print(f"    handler exit={rc.returncode} in {elapsed:.1f}s", flush=True)
 check("handler exited 0 (it relayed over ssh)", rc.returncode == 0)
 check("handler said nothing on the way", rc.stdout == b"" and rc.stderr == b"")
-check("click made the whole trip, with no forward", wait_for("Verified", 25))
+pump(3)
 after = flat(bytes(raw[before:]).decode("utf-8", "replace"))
 check("suggestion text landed in the composer", SUGGESTION in after)
 
@@ -280,13 +280,13 @@ check("the host that answered is remembered",
 close_session()
 open_session(reset=False)
 check("pi restarted on the server", wait_for("Inline suggestions", 30) or wait_for("auto", 10))
-check("second session turned remote clicking on by itself",
+check("second session says it can relay, unprompted",
       wait_for("relays clicks back", 20))
 clear_composer(); send(b"go\r")
 check("assistant replied in the second session", wait_for("Two ways", 30))
 pump(3)
 auto_urls = re.findall(r"\x1b\]8;[^;]*;(pisnip://[^\x1b\x07]+)", text())
-check("chips carry URLs with no toggle and no forward", len(auto_urls) > 0)
+check("chips carry URLs from the first message, nothing asked", len(auto_urls) > 0)
 if auto_urls:
 	before = len(raw)
 	rc = subprocess.run([HANDLER, auto_urls[-1]], capture_output=True, timeout=30)
