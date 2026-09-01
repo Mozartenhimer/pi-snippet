@@ -66,6 +66,29 @@ describe("registerPromptSnippet — the appendSystemPrompt path", () => {
 		fire(event);
 		expect(event.systemPromptOptions?.appendSystemPrompt).toBe(SNIPPET);
 	});
+
+	it("removes the snippet when layer 1 is switched off mid-session", () => {
+		let on = true;
+		const fire = register(() => on);
+		const event: StartEvent = { systemPrompt: "base", systemPromptOptions: {} };
+		fire(event);
+		on = false;
+		fire(event);
+		expect(event.systemPromptOptions?.appendSystemPrompt).toBeUndefined();
+	});
+
+	it("leaves another extension's appendSystemPrompt behind when switched off", () => {
+		let on = true;
+		const fire = register(() => on);
+		const event: StartEvent = {
+			systemPrompt: "base",
+			systemPromptOptions: { appendSystemPrompt: "someone else's rules" },
+		};
+		fire(event);
+		on = false;
+		fire(event);
+		expect(event.systemPromptOptions?.appendSystemPrompt).toBe("someone else's rules");
+	});
 });
 
 describe("registerPromptSnippet — the systemPrompt path", () => {

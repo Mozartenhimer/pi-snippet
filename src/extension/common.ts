@@ -17,8 +17,20 @@ export function registerPromptSnippet(pi: any, isEnabled: () => boolean = () => 
 	pi.on(
 		"before_agent_start",
 		(event: { systemPrompt: string; systemPromptOptions?: { appendSystemPrompt?: string } }) => {
-			if (!isEnabled()) return undefined;
 			const snippet = buildPromptSnippet();
+			if (!isEnabled()) {
+				// systemPromptOptions survives between turns, so a mode change to
+				// one without layer 1 has to undo an earlier turn's mutation.
+				const appended = event.systemPromptOptions?.appendSystemPrompt;
+				if (event.systemPromptOptions && appended?.includes(snippet)) {
+					// A conditional rather than `without || undefined`: a constant right
+					// operand is never true, so neither side of that `||` can be shown to
+					// drive it and MC/DC has no pair for either.
+					const without = appended.replace(snippet, "").trim();
+					event.systemPromptOptions.appendSystemPrompt = without ? without : undefined;
+				}
+				return undefined;
+			}
 			if (
 				event.systemPromptOptions &&
 				!event.systemPromptOptions.appendSystemPrompt?.includes(snippet)
