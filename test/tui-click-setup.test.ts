@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { install } from "../src/extension/link-install.js";
+import { install, isInstalled } from "../src/extension/link-install.js";
 
 vi.mock("@earendil-works/pi-tui", () => ({
 	getCapabilities: () => ({ hyperlinks: true }),
@@ -172,6 +172,7 @@ function makeCtx(
 	// `select` — and the menu reopens after a change, so a `choose` that keeps
 	// naming its row would run that row's action over and over.
 	let answered = false;
+	const asked: string[] = [];
 	const listeners: Array<(data: string) => void> = [];
 	const tui: FakeTui = {
 		input: (data: string) => {
@@ -192,6 +193,8 @@ function makeCtx(
 	return {
 		notices,
 		tui,
+		/** Every question put to the user, so "asked nothing" is assertable. */
+		asked,
 		editorText: () => text,
 		ctx: {
 			mode: "tui",
@@ -207,7 +210,8 @@ function makeCtx(
 				setFooter: (factory?: (i: any) => any) => {
 					factory?.(instance);
 				},
-				select: async (_title: string, options: string[]) => {
+				select: async (title: string, options: string[]) => {
+					asked.push(title);
 					if (answered) return undefined;
 					const picked = choose(options);
 					if (picked !== undefined) answered = true;
@@ -225,6 +229,8 @@ const msg = (...texts: string[]) => ({
 });
 
 const REGISTER = "Register click handler — one-time desktop setup, needed before Ctrl+click works";
+/** The first-click prompt's affirmative, which is deliberately not REGISTER. */
+const REGISTER_NOW = "Register the click handler now — one-time desktop setup";
 const MESSAGE = "Want me to <snippet>rebuild</snippet> or <snippet>wait</snippet>?";
 
 describe("registering the click handler", () => {
@@ -352,27 +358,88 @@ describe("the Alt-release watch", () => {
 	});
 });
 
-describe("the registration hint", () => {
-	it("is not offered off Linux, where there is no handler to register", () => {
+describe("the first-click prompt", () => {
+	it("is not put off Linux, where there is no handler to register", () => {
 		pretendPlatform("darwin");
 		const pi = makeFakePi();
-		const { ctx, notices } = makeCtx();
+		const { ctx, asked } = makeCtx();
 		pi.fire("session_start", { reason: "startup" }, ctx);
 		try {
 			pi.fire("message_end", { message: msg(MESSAGE) }, ctx);
-			expect(notices.filter((n) => n.includes("one-time handler registration"))).toEqual([]);
+			expect(asked).toEqual([]);
 		} finally {
 			pi.shutdown();
 		}
 	});
 
-	it("is offered on Linux with a handler that is not registered", () => {
+	it("is put on Linux with a handler that is not registered", () => {
 		const pi = makeFakePi();
-		const { ctx, notices } = makeCtx();
+		const { ctx, asked } = makeCtx();
 		pi.fire("session_start", { reason: "startup" }, ctx);
 		try {
 			pi.fire("message_end", { message: msg(MESSAGE) }, ctx);
-			expect(notices.filter((n) => n.includes("one-time handler registration"))).toHaveLength(1);
+			expect(asked.filter((t) => t.includes("one-time pisnip:// handler"))).toHaveLength(1);
+		} finally {
+			pi.shutdown();
+		}
+	});
+
+	it("is not put to a session with no UI to answer it", () => {
+		// A print-mode run has nowhere to show a question and nobody to answer
+		// one; blocking it on a dialog would be worse than never clicking.
+		const pi = makeFakePi();
+		const { ctx, asked } = makeCtx();
+		const headless = { ...ctx, hasUI: false };
+		pi.fire("session_start", { reason: "startup" }, headless);
+		try {
+			pi.fire("message_end", { message: msg(MESSAGE) }, headless);
+			expect(asked).toEqual([]);
+		} finally {
+			pi.shutdown();
+		}
+	});
+
+	it("registers the handler when it is accepted, without a trip through the menu", async () => {
+		// No opener on PATH, so the probe fails at once and this test measures
+		// the registration rather than the round trip (which has its own test).
+		fakeBin({});
+		const pi = makeFakePi();
+		const { ctx, notices } = makeCtx((options) => options.find((o) => o === REGISTER_NOW));
+		pi.fire("session_start", { reason: "startup" }, ctx);
+		try {
+			pi.fire("message_end", { message: msg(MESSAGE) }, ctx);
+			await waitFor(() => notices.some((n) => n.includes("no opener completed the round trip")));
+			expect(isInstalled(process.env)).toBe(true);
+		} finally {
+			pi.shutdown();
+		}
+	});
+
+	it("does nothing but say so when it is declined", () => {
+		const pi = makeFakePi();
+		const { ctx, asked } = makeCtx();
+		pi.fire("session_start", { reason: "startup" }, ctx);
+		try {
+			pi.fire("message_end", { message: msg(MESSAGE) }, ctx);
+			expect(asked).toHaveLength(1);
+			expect(isInstalled(process.env)).toBe(false);
+		} finally {
+			pi.shutdown();
+		}
+	});
+
+	it("is not put again once /snippets has offered the same row", async () => {
+		// The menu carries the register row itself, so a prompt on top of it
+		// would be a second question about one thing — and a select over a
+		// select at that.
+		const pi = makeFakePi();
+		const { ctx, asked } = makeCtx();
+		pi.fire("session_start", { reason: "startup" }, ctx);
+		try {
+			await pi.run("", ctx);
+			asked.length = 0;
+			pi.fire("message_end", { message: msg(MESSAGE) }, ctx);
+			expect(asked).toEqual([]);
 		} finally {
 			pi.shutdown();
 		}

@@ -257,7 +257,7 @@ Ordered by what blocks what. Nothing below item 0 is worth doing first.
    (`pi-snippet-tui.ts`) is `isEnabled() && getCapabilities().hyperlinks &&
    (!overSsh() || remoteClicks)` — no platform term. On macOS today, and on
    Windows the moment anyone runs it, chips paint real `pisnip://` hrefs that
-   nothing can resolve: a modal, then silence. `hintIfUnregistered()` is
+   nothing can resolve: a modal, then silence. `promptToRegister()` is
    suppressed off Linux too, so nothing explains it. This is a bug on `main`
    independent of any Windows work.
 1. **Split the URL/transport layer by platform** — `socketDirCandidates()` →

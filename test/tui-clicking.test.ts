@@ -64,11 +64,14 @@ function makeFakePi() {
 	};
 }
 
-function makeCtx(editor = "") {
+function makeCtx(editor = "", choose: (options: string[]) => string | undefined = () => undefined) {
 	const notices: string[] = [];
+	/** Every question put to the user, so "asked once" is a thing to assert. */
+	const asked: string[] = [];
 	let text = editor;
 	return {
 		notices,
+		asked,
 		editorText: () => text,
 		ctx: {
 			mode: "cli",
@@ -82,7 +85,10 @@ function makeCtx(editor = "") {
 				notify: (m: string) => notices.push(m),
 				setStatus: () => {},
 				setFooter: () => {},
-				select: async () => undefined,
+				select: async (title: string, options: string[]) => {
+					asked.push(title);
+					return choose(options);
+				},
 			},
 		},
 	};
@@ -142,29 +148,52 @@ describe("a terminal that can paint hyperlinks", () => {
 		}
 	});
 
-	it("offers the registration hint once, not on every message", () => {
+	it("asks about registration at the first chip, once, not on every message", () => {
+		// The question is put where a Ctrl+click first becomes possible, because
+		// the click that would have failed never reaches this process at all.
 		const pi = makeFakePi();
-		const { ctx, notices } = makeCtx();
+		const { ctx, asked } = makeCtx();
 		pi.fire("session_start", { reason: "startup" }, ctx);
 		try {
+			// No chips yet, so nothing to click and nothing to ask about.
+			expect(asked).toEqual([]);
 			pi.fire("message_end", { message: msg(MESSAGE) }, ctx);
 			pi.fire("message_end", { message: msg(MESSAGE) }, ctx);
-			expect(notices.filter((n) => n.includes("one-time handler registration"))).toHaveLength(1);
+			expect(asked.filter((t) => t.includes("one-time pisnip:// handler"))).toHaveLength(1);
 		} finally {
 			pi.shutdown();
 		}
 	});
 
-	it("does not offer it once the handler is registered", () => {
+	it("does not ask once the handler is registered", () => {
 		install(process.env);
 		const pi = makeFakePi();
-		const { ctx, notices } = makeCtx();
+		const { ctx, asked } = makeCtx();
 		pi.fire("session_start", { reason: "startup" }, ctx);
 		try {
 			pi.fire("message_end", { message: msg(MESSAGE) }, ctx);
-			expect(notices.filter((n) => n.includes("one-time handler registration"))).toEqual([]);
+			expect(asked).toEqual([]);
 		} finally {
 			pi.shutdown();
+		}
+	});
+
+	it("just says where the setup belongs over SSH, and asks nothing", () => {
+		// The desktop that resolves the click is the client's, so there is
+		// nothing here to register and nothing to decide — only somewhere else
+		// to point at.
+		process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
+		try {
+			const pi = makeFakePi();
+			const { ctx, notices, asked } = makeCtx();
+			pi.fire("session_start", { reason: "startup" }, ctx);
+			pi.fire("message_end", { message: msg(MESSAGE) }, ctx);
+			expect(notices.join(" ")).toContain("lives on the machine in front of you");
+			expect(notices.join(" ")).toContain("routes chips back to testbox");
+			expect(asked).toEqual([]);
+			pi.shutdown();
+		} finally {
+			delete process.env.SSH_CONNECTION;
 		}
 	});
 
