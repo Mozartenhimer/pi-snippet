@@ -288,13 +288,23 @@ describe("the /snippets menu", () => {
 	it("toggles the Alt+digit shortcuts off and back on", async () => {
 		const pi = makeFakePi();
 		const { ctx, notices } = makeCtx();
-		const pick = (prefix: string) => ({
-			...ctx,
-			ui: {
-				...ctx.ui,
-				select: async (_t: string, options: string[]) => options.find((o) => o.startsWith(prefix)),
-			},
-		});
+		const pick = (prefix: string) => {
+			// Matches only once — the menu now reopens after a change, and a
+			// mock that keeps matching would toggle forever instead of letting
+			// the reopened menu see a dismiss.
+			let used = false;
+			return {
+				...ctx,
+				ui: {
+					...ctx.ui,
+					select: async (_t: string, options: string[]) => {
+						if (used) return undefined;
+						used = true;
+						return options.find((o) => o.startsWith(prefix));
+					},
+				},
+			};
+		};
 		await pi.run("", pick("Alt+digit"));
 		expect(notices.at(-1)).toContain("disabled");
 

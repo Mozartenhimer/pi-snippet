@@ -47,7 +47,12 @@ afterEach(() => {
 function setup(
 	settings: Partial<typeof DEFAULT_SETTINGS>,
 	env: Record<string, string>,
-	opts: { selectReply?: string | ((options: string[]) => string | undefined) } = {},
+	opts: {
+		selectReply?:
+			| string
+			| ((options: string[]) => string | undefined)
+			| Array<(options: string[]) => string | undefined>;
+	} = {},
 ) {
 	writeFileSync(
 		process.env.PI_SNIPPET_SETTINGS!,
@@ -120,7 +125,15 @@ function setup(
 				titles.push(title);
 				offered.push(...choices);
 				// A function answers each select by what it was offered, which is
-				// how a test drives a row and then the picker behind it.
+				// how a test drives a row and then the picker behind it. An array
+				// of them answers one per call and then dismisses — needed now
+				// that the menu reopens after a change, so a single always-on
+				// matcher would otherwise keep re-picking the same top-level row
+				// forever.
+				if (Array.isArray(opts.selectReply)) {
+					const next = opts.selectReply.shift();
+					return next?.(choices);
+				}
 				return typeof opts.selectReply === "function"
 					? opts.selectReply(choices)
 					: opts.selectReply;
@@ -202,9 +215,10 @@ describe("clicking on by default, by the terminal", () => {
 			{},
 			{ TERM_PROGRAM: "ghostty", PI_SNIPPET_SOCKET_DIR: sockets },
 			{
-				selectReply: (options) =>
-					options.find((o) => o.startsWith("Suggestions:"))
-					?? options.find((o) => o.startsWith("off —")),
+				selectReply: [
+					(options) => options.find((o) => o.startsWith("Suggestions:")),
+					(options) => options.find((o) => o.startsWith("off —")),
+				],
 			},
 		);
 		h.say(CHIPPED);

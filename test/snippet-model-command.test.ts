@@ -38,10 +38,17 @@ function makeCtx(overrides: { mode?: string; pick?: string; input?: string } = {
 	const notices: string[] = [];
 	let editorText = "";
 	let menu: string[] = [];
+	const menus: string[][] = [];
+	// `pick` answers only the first `select` call that matches it; every call
+	// after that returns undefined, as if the user dismissed. Without that,
+	// the `/snippets` menu reopening after a change (it now loops until
+	// dismissed) would see the same prefix match forever and never return.
+	let pickUsed = false;
 	return {
 		notices,
 		editorText: () => editorText,
 		menu: () => menu,
+		menus: () => menus,
 		ctx: {
 			mode: overrides.mode ?? "tui",
 			hasUI: true,
@@ -57,7 +64,11 @@ function makeCtx(overrides: { mode?: string; pick?: string; input?: string } = {
 				setFooter: () => {},
 				select: async (_title: string, options: string[]) => {
 					menu = options;
-					return overrides.pick === undefined ? undefined : options.find((o) => o.startsWith(overrides.pick!));
+					menus.push(options);
+					if (overrides.pick === undefined || pickUsed) return undefined;
+					const match = options.find((o) => o.startsWith(overrides.pick!));
+					if (match !== undefined) pickUsed = true;
+					return match;
 				},
 				input: async () => overrides.input,
 			},
@@ -210,7 +221,9 @@ describe("/snippets menu: Second model style — change", () => {
 		const seen = makeCtx({ pick: "Second model style:" });
 		await commands.get("snippets").handler("", seen.ctx);
 
-		expect(seen.menu()).toEqual([
+		// menus()[0] is the top-level menu, menus()[1] the nested style picker;
+		// the top-level menu reopens after it (dismissed there, per `pickUsed`).
+		expect(seen.menus()[1]).toEqual([
 			"tag re-emit — rewrites the message with more <snippet> tags added (current)",
 			"options list — lists bare reply lines; every match in the message lights up",
 		]);
@@ -261,10 +274,12 @@ describe("/snippets menu: Second model style — change", () => {
 			...seen.ctx,
 			ui: {
 				...seen.ctx.ui,
-				select: async (_t: string, options: string[]) =>
-					opened++ === 0
-						? options.find((o) => o.startsWith("Second model style:"))
-						: "not a style",
+				select: async (_t: string, options: string[]) => {
+					const call = opened++;
+					if (call === 0) return options.find((o) => o.startsWith("Second model style:"));
+					if (call === 1) return "not a style";
+					return undefined; // dismiss the reopened top-level menu
+				},
 			},
 		});
 
@@ -430,15 +445,20 @@ describe("/snippets — where chips come from", () => {
 		const { pi, commands } = makeFakePi();
 		piSnippetTui(pi);
 		const seen = makeCtx({ pick: "Suggestions:" });
-		// The first select picks "Suggestions:"; the second (the mode picker)
-		// is answered with something no mode label matches.
+		// The first select picks "Suggestions:"; the second (the mode picker) is
+		// answered with something no mode label matches; the third (the
+		// reopened top-level menu) is dismissed to end the interaction.
 		let opened = 0;
 		await commands.get("snippets").handler("", {
 			...seen.ctx,
 			ui: {
 				...seen.ctx.ui,
-				select: async (_t: string, options: string[]) =>
-					opened++ === 0 ? options.find((o) => o.startsWith("Suggestions:")) : "not a mode",
+				select: async (_t: string, options: string[]) => {
+					const call = opened++;
+					if (call === 0) return options.find((o) => o.startsWith("Suggestions:"));
+					if (call === 1) return "not a mode";
+					return undefined;
+				},
 			},
 		});
 		expect(loadSettings(file).mode).toBe(DEFAULT_SETTINGS.mode);

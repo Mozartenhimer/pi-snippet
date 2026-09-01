@@ -40,6 +40,7 @@ function makeCtx(...picks: string[]) {
 	const notices: string[] = [];
 	let menu: string[] = [];
 	const pending = [...picks];
+	let captured = false;
 	return {
 		notices,
 		options: () => menu,
@@ -54,7 +55,14 @@ function makeCtx(...picks: string[]) {
 				setStatus: () => {},
 				setFooter: () => {},
 				select: async (_title: string, options: string[]) => {
-					menu = options;
+					// Captures the menu shown once every configured pick is spent —
+					// the picker being tested, or (with no picks at all) the
+					// top-level menu itself. The top-level menu now reopens after a
+					// change, so a later call must not overwrite this with itself.
+					if (!captured && pending.length === 0) {
+						menu = options;
+						captured = true;
+					}
 					const pick = pending.shift();
 					return pick === undefined ? undefined : options.find((o) => o.startsWith(pick));
 				},
