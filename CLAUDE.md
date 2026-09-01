@@ -155,7 +155,6 @@ These were established by measurement (against `libghostty-vt` and live ptys) an
 ## Conventions
 
 - Tabs for indentation, TypeScript strict with `noUncheckedIndexedAccess`.
-- `PRD.md` is the spec and is kept current — when behavior changes, update the relevant section rather than letting it drift.
 - Tests needing a DOM opt in per file with `// @vitest-environment happy-dom`. happy-dom's `TreeWalker` with `SHOW_TEXT` returns nothing; walk `childNodes` recursively instead.
 
 # Pull requests
