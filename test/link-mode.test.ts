@@ -81,8 +81,12 @@ function setup(
 	]) {
 		delete process.env[key];
 	}
-	// Keep `isInstalled()` off the developer's real ~/.local/share.
-	process.env.XDG_DATA_HOME ??= mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
+	// Keep `isInstalled()` off the developer's real ~/.local/share — where the
+	// handler may well be registered, which would silently drop the first-chip
+	// install prompt and shift every answer in `selectReply` up by one. Assigned,
+	// not defaulted: the developer's own XDG_DATA_HOME is exactly what leaks in.
+	// A test that wants the installed case passes one in `env`, applied below.
+	process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "pi-snippet-xdg-"));
 	Object.assign(process.env, env);
 	resetCapabilitiesCache();
 

@@ -214,6 +214,52 @@ describe("install and uninstall against a desktop that answers", () => {
 	});
 });
 
+describe("install — writing the association by hand into a file already there", () => {
+	/**
+	 * With no xdg tools on PATH `install()` falls back to editing mimeapps.list
+	 * itself, and the interesting half of that is the file it did not create:
+	 * an existing `[Default Applications]` section takes the entry spliced in
+	 * under it, not a second section appended. Both were reached only by the
+	 * developer's own ~/.config leaking into the suite — which also meant the
+	 * suite was rewriting a real mimeapps.list.
+	 */
+	const realPath = process.env.PATH ?? "";
+
+	afterEach(() => {
+		process.env.PATH = realPath;
+	});
+
+	it("splices into the section that is already there, keeping its neighbours", () => {
+		// `run()` uses this process's PATH, so an empty one is how both tools go
+		// missing and the by-hand path is taken.
+		process.env.PATH = join(home, "empty-bin");
+		const path = join(env.XDG_CONFIG_HOME!, "mimeapps.list");
+		seedMimeapps(path, "[Added Associations]\ntext/plain=nano.desktop\n\n[Default Applications]\ntext/plain=nano.desktop\n");
+		install({ ...env, PATH: process.env.PATH });
+		const lines = read(path).split("\n");
+		expect(lines.filter((line) => line === "[Default Applications]")).toHaveLength(1);
+		expect(lines[lines.indexOf("[Default Applications]") + 1]).toBe(
+			"x-scheme-handler/pisnip=pi-snippet-open.desktop",
+		);
+		expect(read(path)).toContain("[Added Associations]");
+	});
+
+	it("falls back to ~/.local/share when XDG_DATA_HOME is unset", () => {
+		// The default every machine that sets no XDG variables uses. `homedir()`
+		// reads $HOME on Linux, which is what keeps this off the real one.
+		const realHome = process.env.HOME;
+		process.env.HOME = home;
+		try {
+			const result = install({ HOME: home });
+			expect(result.handler).toBe(join(home, ".local", "share", "pi-snippet", "open-handler"));
+			expect(isInstalled({ HOME: home })).toBe(true);
+		} finally {
+			if (realHome === undefined) delete process.env.HOME;
+			else process.env.HOME = realHome;
+		}
+	});
+});
+
 describe("install — a path the Exec line cannot express", () => {
 	it("says so rather than installing something that half works", () => {
 		const spaced = join(home, "data dir");

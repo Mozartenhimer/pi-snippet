@@ -27,7 +27,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { install, relayCommand } from "../src/extension/link-install.js";
 import { isLinkHost } from "../src/shared/link-url.js";
 
-const hasPython = spawnSync("python3", ["-c", "pass"]).status === 0;
+const python = spawnSync("python3", ["-c", "import sys; print(sys.executable)"], {
+	encoding: "utf8",
+});
+const hasPython = python.status === 0;
+/** By absolute path, so a test can hand the handler a PATH holding only its stubs. */
+const pythonExe = python.stdout?.trim() || "python3";
 
 /** A URL for this machine, and one for somewhere else. */
 const HERE = "pisnip://testbox/a1b2c3d4/0f3e2a91/c3";
@@ -173,7 +178,7 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 	});
 
 	const runHandler = (url: string, extra: NodeJS.ProcessEnv = {}) =>
-		spawnSync("python3", [handler, url], {
+		spawnSync(pythonExe, [handler, url], {
 			env: {
 				HOME: home,
 				PATH: `${binDir}:${process.env.PATH ?? ""}`,
@@ -248,7 +253,10 @@ describe.skipIf(!hasPython)("the generated handler, run", () => {
 
 	it("carries on quietly past an ssh it could not run at all", () => {
 		chmodSync(join(binDir, "ssh"), 0o644);
-		const result = runHandler(THERE);
+		// Only the stub on PATH: `execvp` skips a name it may not execute and
+		// keeps searching, so with the usual PATH appended this would find the
+		// real /usr/bin/ssh and assert its connection failure instead.
+		const result = runHandler(THERE, { PATH: binDir });
 		expect(result.status).toBe(1);
 		expect(result.stderr).toBe("");
 	});
