@@ -432,7 +432,8 @@ entirely), is sketched in `docs/win-mac-clicks.md`.
   both default on, guarded by the capability check and the no-silent-fallback
   rule (§2). The installer is now the real product decision, as predicted — a
   fresh install paints working hyperlinks the desktop cannot yet dispatch, and
-  says so once when chips first appear.
+  offers to register once, at the first chip — the last moment pi hears about a
+  click that is about to go nowhere, since an unregistered one never reaches it.
 - The inference gate now reads effective reachability (`clickActive()`) rather
   than the toggle, which preserves §17.2's intent — but with clicking on by
   default, a hyperlink-capable terminal now reaches that layer without anyone

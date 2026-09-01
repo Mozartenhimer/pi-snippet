@@ -216,6 +216,10 @@ describe("clicking on by default, by the terminal", () => {
 			{ TERM_PROGRAM: "ghostty", PI_SNIPPET_SOCKET_DIR: sockets },
 			{
 				selectReply: [
+					// `say()` below is the first chip of the session, so the
+					// first-click prompt is the first question asked. Declined:
+					// what this test drives is the menu behind it.
+					() => undefined,
 					(options) => options.find((o) => o.startsWith("Suggestions:")),
 					(options) => options.find((o) => o.startsWith("off —")),
 				],

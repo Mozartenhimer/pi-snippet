@@ -15,7 +15,10 @@
  *   (`link-server.ts`). No terminal-wide mouse mode is ever engaged, so the
  *   wheel and text selection are never taken away. Where pi-tui reports the
  *   terminal cannot paint a hyperlink no URL is painted at all and clicking
- *   is inert — it never falls back to mouse reporting.
+ *   is inert — it never falls back to mouse reporting. The first chip of a
+ *   session offers to register that handler, because that is the last moment
+ *   pi hears about a click that is about to go nowhere; over SSH it says where
+ *   the handler belongs instead of asking.
  * - Alt+N inserts the Nth suggestion of the most recent assistant message into
  *   the editor. A suggestion becomes addressable the moment its closing tag
  *   arrives, so a chip can be triggered while the model is still writing —
@@ -513,25 +516,59 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/**
-	 * Say once, when it would actually help, that the handler is missing.
+	 * The prompt's own affirmative, deliberately not the menu row's wording:
+	 * these are two different questions, and neither a test nor a user should
+	 * have to tell them apart by guessing which one is on screen.
+	 */
+	const REGISTER_NOW = "Register the click handler now — one-time desktop setup";
+
+	/**
+	 * Ask, once, whether to register the handler — at the first moment a click
+	 * could land.
 	 *
 	 * A fresh install paints working hyperlinks that the desktop has nothing to
-	 * dispatch to — Ctrl+click would do nothing, with no way to tell why. This
-	 * is said at most once per session, and only when there is something to
-	 * click, so it is a next step rather than a complaint.
+	 * dispatch to: Ctrl+click does nothing, with no way to tell why. The
+	 * question is put at the first painted chip rather than on the click that
+	 * would have failed, because **an unregistered click is not observable from
+	 * here** — the desktop resolves the URL, finds nothing claiming
+	 * `pisnip://`, and drops it without this process being involved at all. The
+	 * first chip is the first moment the user can Ctrl+click, and it is the
+	 * last moment this extension hears about it.
+	 *
+	 * Asked at most once per session, and only when there is something to click,
+	 * so it is a next step rather than a complaint. Declining costs nothing: the
+	 * `/snippets` row that always registered the handler is untouched, and the
+	 * "not now" arm says so.
 	 */
-	let unregisteredHintShown = false;
-	const hintIfUnregistered = (ctx: any): void => {
-		if (unregisteredHintShown || process.platform !== "linux") return;
-		// Over SSH the desktop is on the client machine; "register the handler"
-		// here would write into a desktop nobody is looking at.
-		if (overSsh()) return;
+	let registrationAsked = false;
+	const promptToRegister = async (ctx: any): Promise<void> => {
+		if (registrationAsked || process.platform !== "linux") return;
+		// A prompt is a question, and a session with no UI to answer it (print
+		// mode) would hang on one. Nothing about clicking matters there anyway.
+		if (!ctx.hasUI) return;
 		if (state.addressable.length === 0) return;
+		if (overSsh()) {
+			// Over SSH the desktop is on the client machine, so there is nothing
+			// to offer and nothing to ask: registering here would write into a
+			// desktop nobody is looking at, and `isInstalled()` here describes the
+			// wrong machine — which is why it is not consulted before this. Just
+			// say where the setup belongs.
+			registrationAsked = true;
+			ctx.ui?.notify?.(
+				`Ctrl+click routes chips back to ${linkHost}, but the handler that carries them ` +
+					"lives on the machine in front of you — register it there, from a local pi session.",
+			);
+			return;
+		}
 		if (linkInstall.isInstalled()) return;
-		unregisteredHintShown = true;
-		ctx.ui?.notify?.(
-			"Ctrl+click needs a one-time handler registration — run /snippets and pick “Register click handler”",
+		// Latched before the await: lifecycle events keep arriving while the
+		// question is on screen, and a second copy of it is worse than none.
+		registrationAsked = true;
+		const choice = await ctx.ui?.select?.(
+			"Ctrl+click a chip to insert it — that needs a one-time pisnip:// handler registration",
+			[REGISTER_NOW, "Not now — /snippets offers it whenever you want it"],
 		);
+		if (choice === REGISTER_NOW) await installClickHandler(ctx);
 	};
 
 	/**
@@ -550,7 +587,11 @@ export default function piSnippetTui(pi: any): void {
 		if (captured) watchAltRelease(captured);
 		if (linkOn()) {
 			if (!linkServer.listening) linkServer.start();
-			hintIfUnregistered(ctx);
+			// Deliberately not awaited: this runs from the message lifecycle,
+			// which cannot wait on a person. A rejection is swallowed for the
+			// same reason the rest of this path is — a failed setup offer must
+			// cost the offer, never the session.
+			void promptToRegister(ctx).catch(() => {});
 		} else if (linkServer.listening) {
 			linkServer.stop();
 		}
@@ -1245,6 +1286,12 @@ export default function piSnippetTui(pi: any): void {
 				ctx.ui.notify("Inline suggestions are off for this session (--no-suggestions)");
 				return;
 			}
+			// The menu carries the register row itself, so the first-click prompt
+			// has nothing left to ask — and asking anyway would open a `select`
+			// on top of the one below. An assignment rather than a guard inside
+			// `promptToRegister`, so the loop stays free of a second condition
+			// about a question it does not ask.
+			registrationAsked = true;
 			// Reopens after every change so several settings can be adjusted in
 			// one visit — a `select` dismissed with Escape (`!choice`) is the
 			// ordinary way out. `open` rather than `while (true)` because the one

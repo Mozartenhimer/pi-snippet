@@ -41,7 +41,7 @@ or keep loading it per run with `pi -e /path/to/pi-snippet/src/extension/pi-snip
 
 ## Using it
 
-- **Ctrl+click a chip** to insert it. The click is resolved by the terminal itself — the chip's href is a real `pisnip://` URL, and the desktop dispatches it back to the pi session that painted it. No terminal-wide mouse mode is ever engaged: the scroll wheel and text selection are never taken away. One-time setup: `/snippets` → *Register click handler* (Linux; needs a terminal that paints OSC 8 hyperlinks — Ghostty, kitty, WezTerm, …).
+- **Ctrl+click a chip** to insert it. The click is resolved by the terminal itself — the chip's href is a real `pisnip://` URL, and the desktop dispatches it back to the pi session that painted it. No terminal-wide mouse mode is ever engaged: the scroll wheel and text selection are never taken away. One-time setup: the first chip of a session offers to register the handler, and `/snippets` → *Register click handler* does the same thing whenever you want it (Linux; needs a terminal that paints OSC 8 hyperlinks — Ghostty, kitty, WezTerm, …).
 - **`Alt+N`** inserts the Nth suggestion of the most recent message. Beyond ten, hold Alt and type two digits; `Alt+0` means the tenth. A chip goes live the moment its closing tag arrives, so you can answer while the model is still writing, and numbering never shifts as more suggestions stream in.
 - **`/snippets`** chooses where chips come from — `off`, `tags only`, `tags + second model`, or `second model only` — and registers or removes the click handler. The choices are remembered in `~/.pi/agent/pi-snippet.json`. `--no-suggestions` disables everything for one session.
 
@@ -74,7 +74,10 @@ unproven: the failure modes are quiet by design, so the way it breaks for you
 will probably be a chip that does nothing.
 
 Two things it needs, both easy to miss: the click handler registered on the
-*client* (`/snippets` → *Register click handler* there, Linux only), and an ssh
+*client* (a local pi session there will offer it at its first chip, or
+`/snippets` → *Register click handler*; Linux only — a remote session only
+tells you that is where it belongs, since it cannot register anything on your
+desktop), and an ssh
 back to the server that works without typing anything — the relay runs
 `BatchMode=yes` so a click can never hang on a password prompt. One thing it
 assumes: that the server's own `hostname` is a name your machine can dial. Where

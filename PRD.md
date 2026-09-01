@@ -572,11 +572,23 @@ path hands the click back to it:
   trail a chip), and it never silently falls back to mouse reporting — a
   terminal that cannot paint a hyperlink gets no clicking, rather than a
   terminal-wide mode nobody asked for. `H4` still applies: the choice persists.
-- Registration is a `/snippets` action and is only believed when a probe URL
-  completes the whole round trip; until then, Ctrl+click fails openly. A fresh
-  install says so once, when chips first appear and everything else is ready.
-  Linux only for now — on macOS Ghostty routes OSC 8 through a safe-open policy
-  that puts a confirmation dialog in front of every custom-scheme click.
+- Registration is offered at the first chip and is also a `/snippets` action;
+  either way it is only believed when a probe URL completes the whole round
+  trip, and until then Ctrl+click fails openly. **The offer is a question, asked
+  once per session, put at the first painted chip** — the first moment a
+  Ctrl+click is possible, and the last moment this extension hears about one:
+  an unregistered click is resolved by the desktop, finds nothing claiming
+  `pisnip://`, and is dropped without pi being involved, so there is no failed
+  click to hook the offer to. Accepting registers and probes exactly as the menu
+  row does; declining costs nothing, because the menu row is untouched and says
+  so. A session with no UI to answer with (print mode) is never asked. Over SSH
+  the question has no answer worth having — the desktop that dispatches the
+  click is the client's, `isInstalled()` here describes the wrong machine, and
+  registering here would write into a desktop nobody is looking at — so that
+  case gets a message naming the host the chips route to and where the handler
+  belongs, and no question. Linux only for now — on macOS Ghostty routes OSC 8
+  through a safe-open policy that puts a confirmation dialog in front of every
+  custom-scheme click.
 
 Support on terminals other than Ghostty — gnome-terminal in particular — is
 catalogued in `docs/linux-terminals.md`. Design, measurements and open items:
