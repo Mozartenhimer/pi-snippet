@@ -70,6 +70,12 @@ function makeGate() {
 function makeCtx(registry: unknown, choose: (options: string[]) => string | undefined = () => undefined) {
 	const statuses: string[] = [];
 	let text = "";
+	// Capped at two real answers — enough for a top-level pick plus the
+	// nested picker it opens. The `/snippets` menu reopens after a change,
+	// and `choose` here matches by content rather than call count, so
+	// without the cap a matcher that (deliberately) matches the top-level
+	// "Suggestions:" row again would reopen and re-pick forever.
+	let calls = 0;
 	return {
 		statuses,
 		editorText: () => text,
@@ -87,7 +93,7 @@ function makeCtx(registry: unknown, choose: (options: string[]) => string | unde
 				// pi's footer takes a key and the line; the line is what is asserted on.
 				setStatus: (_key: string, line?: string) => statuses.push(line ?? ""),
 				setFooter: () => {},
-				select: async (_title: string, options: string[]) => choose(options),
+				select: async (_title: string, options: string[]) => (calls++ < 2 ? choose(options) : undefined),
 			},
 		},
 	};

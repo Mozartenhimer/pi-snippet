@@ -167,6 +167,11 @@ function makeCtx(
 ) {
 	const notices: string[] = [];
 	let text = "";
+	// One answer, then dismiss. Every test here picks a single top-level row
+	// and any follow-up it has goes through `ui.input`, never a second
+	// `select` — and the menu reopens after a change, so a `choose` that keeps
+	// naming its row would run that row's action over and over.
+	let answered = false;
 	const listeners: Array<(data: string) => void> = [];
 	const tui: FakeTui = {
 		input: (data: string) => {
@@ -202,7 +207,12 @@ function makeCtx(
 				setFooter: (factory?: (i: any) => any) => {
 					factory?.(instance);
 				},
-				select: async (_title: string, options: string[]) => choose(options),
+				select: async (_title: string, options: string[]) => {
+					if (answered) return undefined;
+					const picked = choose(options);
+					if (picked !== undefined) answered = true;
+					return picked;
+				},
 				input: async (title: string) => answer(title),
 			},
 		},

@@ -1245,61 +1245,73 @@ export default function piSnippetTui(pi: any): void {
 				ctx.ui.notify("Inline suggestions are off for this session (--no-suggestions)");
 				return;
 			}
-			// The click rows, chosen two ways. There is one thing left to set up
-			// anywhere — the desktop handler — and it belongs on the machine the
-			// desktop is on, so over SSH (or off Linux) this session has nothing
-			// to offer and says so in the header instead. Otherwise it is
-			// register-or-remove: one condition, not the two inverted copies of
-			// it this used to ask.
-			const clickRows =
-				process.platform !== "linux" || overSsh()
-					? []
-					: linkInstall.isInstalled()
-						? ["Remove click handler — unregister pisnip:// from the desktop"]
-						: ["Register click handler — one-time desktop setup, needed before Ctrl+click works"];
-			const model = effectiveModel();
-			const choice = await ctx.ui.select(
-				`${snippetStats(ctx)} — ${clickStatusLabel()}`,
-				[
+			// Reopens after every change so several settings can be adjusted in
+			// one visit — a `select` dismissed with Escape (`!choice`) is the
+			// ordinary way out. `open` rather than `while (true)` because the one
+			// row that hands focus to the composer (a prefilled `/snippets model `)
+			// closes the menu instead of reopening on top of what was just typed
+			// in — and a literal `true` is a condition with no false outcome, the
+			// one shape MC/DC cannot pair.
+			let open = true;
+			while (open) {
+				// The click rows, chosen two ways. There is one thing left to set up
+				// anywhere — the desktop handler — and it belongs on the machine the
+				// desktop is on, so over SSH (or off Linux) this session has nothing
+				// to offer and says so in the header instead. Otherwise it is
+				// register-or-remove: one condition, not the two inverted copies of
+				// it this used to ask. Rebuilt each time round the loop, since
+				// registering or removing the handler changes which row applies.
+				const clickRows =
+					process.platform !== "linux" || overSsh()
+						? []
+						: linkInstall.isInstalled()
+							? ["Remove click handler — unregister pisnip:// from the desktop"]
+							: ["Register click handler — one-time desktop setup, needed before Ctrl+click works"];
+				const model = effectiveModel();
+				const rows = [
 					`Suggestions: ${MODE_SUMMARY[state.mode]} — change`,
 					`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
 					`Second model: ${model.id}${model.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
 					`Second model style: ${STYLE_SUMMARY[state.inferStyle]} — change`,
 					...clickRows,
-				],
-			);
-			if (!choice) return;
-			if (choice.startsWith("Suggestions:")) {
-				await pickMode(ctx);
-			} else if (choice.startsWith("Second model style:")) {
-				await pickInferStyle(ctx);
-			} else if (choice.startsWith("Second model:")) {
-				await pickModel(ctx);
-			} else if (choice.startsWith("Register click handler")) {
-				await installClickHandler(ctx);
-			} else if (choice.startsWith("Remove click handler")) {
-				const result = linkInstall.uninstall();
-				const detail =
-					result.removed.length > 0 ? ` (${result.removed.length} files cleaned)` : "";
-				if (result.clean) {
-					ctx.ui.notify(`pisnip:// unregistered${detail}${persist()}`);
+				];
+				const choice = await ctx.ui.select(`${snippetStats(ctx)} — ${clickStatusLabel()}`, rows);
+				if (!choice) return;
+				if (choice.startsWith("Suggestions:")) {
+					await pickMode(ctx);
+				} else if (choice.startsWith("Second model style:")) {
+					await pickInferStyle(ctx);
+				} else if (choice.startsWith("Second model:")) {
+					await pickModel(ctx);
+					// In the TUI that prefilled `/snippets model ` and handed focus
+					// back, so there is nothing to come back to this menu for.
+					if (ctx.mode === "tui") open = false;
+				} else if (choice.startsWith("Register click handler")) {
+					await installClickHandler(ctx);
+				} else if (choice.startsWith("Remove click handler")) {
+					const result = linkInstall.uninstall();
+					const detail =
+						result.removed.length > 0 ? ` (${result.removed.length} files cleaned)` : "";
+					if (result.clean) {
+						ctx.ui.notify(`pisnip:// unregistered${detail}${persist()}`);
+					} else {
+						for (const warning of result.warnings) ctx.ui.notify(warning, "warning");
+						ctx.ui.notify(
+							`pisnip:// unregistered, but not cleanly${detail}. If Ctrl+click still opens ` +
+								"the old handler, restart the terminal or run " +
+								"`systemctl --user restart xdg-desktop-portal` — desktop daemons cache " +
+								`the handler until then${persist()}`,
+							"warning",
+						);
+					}
 				} else {
-					for (const warning of result.warnings) ctx.ui.notify(warning, "warning");
+					state.hotkeysEnabled = !state.hotkeysEnabled;
 					ctx.ui.notify(
-						`pisnip:// unregistered, but not cleanly${detail}. If Ctrl+click still opens ` +
-							"the old handler, restart the terminal or run " +
-							"`systemctl --user restart xdg-desktop-portal` — desktop daemons cache " +
-							`the handler until then${persist()}`,
-						"warning",
+						`Suggestion shortcuts ${state.hotkeysEnabled ? "enabled" : "disabled"}${persist()}`,
 					);
 				}
-			} else {
-				state.hotkeysEnabled = !state.hotkeysEnabled;
-				ctx.ui.notify(
-					`Suggestion shortcuts ${state.hotkeysEnabled ? "enabled" : "disabled"}${persist()}`,
-				);
+				syncClicks(ctx);
 			}
-			syncClicks(ctx);
 		},
 	});
 }

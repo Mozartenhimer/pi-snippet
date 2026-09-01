@@ -58,6 +58,17 @@ function partial(text: string) {
 	return { role: "assistant", content: [{ type: "text", text }] };
 }
 
+/**
+ * A `select` that always answers the first option — enough to turn
+ * suggestions off (top-level menu, then "off" as the first mode) in exactly
+ * two calls. The `/snippets` menu reopens after a change, so it must stop
+ * answering after that or it would toggle forever.
+ */
+function selectFirstOptionTwice() {
+	let calls = 0;
+	return async (_title: string, options: string[]) => (calls++ < 2 ? options[0] : undefined);
+}
+
 describe("pi-snippet-tui: addressing while the model is still writing", () => {
 	it("makes a suggestion addressable as soon as its closing tag arrives", () => {
 		const { pi, handlers, shortcuts } = makeFakePi();
@@ -179,7 +190,7 @@ describe("pi-snippet-tui: addressing while the model is still writing", () => {
 		// `/snippets` → toggle suggestions off.
 		await commands.get("snippets")!("", {
 			...ctx,
-			ui: { ...ctx.ui, select: async (_title: string, options: string[]) => options[0] },
+			ui: { ...ctx.ui, select: selectFirstOptionTwice() },
 		});
 
 		handlers.get("message_start")!({ message: partial("") }, ctx);
@@ -649,7 +660,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			// /snippets → toggle suggestions off: the line has nothing to say.
 			await commands.get("snippets")!("", {
 				...ctx,
-				ui: { ...ctx.ui, select: async (_title: string, options: string[]) => options[0] },
+				ui: { ...ctx.ui, select: selectFirstOptionTwice() },
 			});
 			expect(statusLine(ctx).at(-1)).toBeUndefined();
 		} finally {
