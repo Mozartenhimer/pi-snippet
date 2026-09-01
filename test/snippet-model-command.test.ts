@@ -443,4 +443,31 @@ describe("/snippets — where chips come from", () => {
 		});
 		expect(loadSettings(file).mode).toBe(DEFAULT_SETTINGS.mode);
 	});
+
+	it("stays open after applying a change, so more than one setting can be changed in one visit", async () => {
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx();
+		// Three visits to `select`, if the menu reopens: the top-level menu, the
+		// nested mode picker, then the top-level menu again — dismissed there to
+		// end the interaction. Today the handler returns as soon as `pickMode`
+		// resolves, so this never sees a third call.
+		const calls: string[][] = [];
+		await commands.get("snippets").handler("", {
+			...seen.ctx,
+			ui: {
+				...seen.ctx.ui,
+				select: async (_t: string, options: string[]) => {
+					calls.push(options);
+					if (calls.length === 1) return options.find((o) => o.startsWith("Suggestions:"));
+					if (calls.length === 2) return options.find((o) => o.startsWith("tags only"));
+					return undefined;
+				},
+			},
+		});
+
+		expect(loadSettings(file).mode).toBe("tags");
+		expect(calls.length).toBe(3);
+		expect(calls[2]?.some((o) => o.startsWith("Suggestions:"))).toBe(true);
+	});
 });
