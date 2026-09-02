@@ -60,7 +60,8 @@ function makeCustomCtx(notices: string[], edits: string[]) {
 			select: async () => undefined,
 			custom: (factory: any) => {
 				const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
-				let resolve: (v?: string) => void;
+				// Definitely assigned: the Promise executor below runs synchronously.
+				let resolve!: (v?: string) => void;
 				const promise = new Promise<string | undefined>((r) => (resolve = r));
 				captured.component = factory({ requestRender: () => {} }, theme, undefined, resolve);
 				return promise;
@@ -225,6 +226,34 @@ describe("pi-snippet-tui: /snippets settings menu (TUI)", () => {
 		component.handleInput(ESC); // close the menu
 		await running;
 		expect(notices.join("\n")).toContain("Registered, but no opener completed the round trip");
+	});
+
+	it("shows what the rows already are when the menu opens on them", async () => {
+		// Every other test opens on the defaults, which is one half of each row.
+		// The rows are built once, at open, so the other half needs its own open.
+		writeFileSync(file, JSON.stringify({ hotkeysEnabled: false }), "utf8");
+		isInstalledNow = true;
+		const { running, component } = await openMenu();
+		const text = component.render(100).join("\n");
+		expect(text).toContain("off");
+		expect(text).toContain("registered");
+		component.handleInput(ESC);
+		await running;
+	});
+
+	it("removes the click handler from the submenu", async () => {
+		isInstalledNow = true;
+		const { running, notices, component } = await openMenu();
+		component.handleInput(DOWN);
+		component.handleInput(DOWN);
+		component.handleInput(DOWN);
+		component.handleInput(DOWN);
+		component.handleInput(ENTER);
+		expect(component.render(100).join("\n")).toContain("Remove — unregister");
+		component.handleInput(ENTER);
+		expect(notices.join("\n")).toContain("pisnip:// unregistered");
+		component.handleInput(ESC);
+		await running;
 	});
 
 	it("drops the click handler row over SSH but keeps the status in the title", async () => {

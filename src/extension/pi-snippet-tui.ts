@@ -1109,6 +1109,17 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/**
+	 * The same answer as a label: the model, and the override standing in for
+	 * it when there is one. The menu row, the fallback menu's row and the
+	 * typed prompt all say this, so they say it in one place — three copies of
+	 * the parenthetical is three chances for them to drift apart.
+	 */
+	const modelDisplay = (): string => {
+		const model = effectiveModel();
+		return `${model.id}${model.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""}`;
+	};
+
+	/**
 	 * Apply a `provider/id` pin: empty resets to the default, anything else is
 	 * validated against the registry before it is stored, because the engine
 	 * falls through to the default on an unknown pin — a typo must cost a
@@ -1237,9 +1248,8 @@ export default function piSnippetTui(pi: any): void {
 			tui?.requestRender?.();
 			return;
 		}
-		const current = effectiveModel();
 		const entry = await ctx.ui.input(
-			`Second model (tags the primary model didn't add) — currently ${current.id}${current.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""}`,
+			`Second model (tags the primary model didn't add) — currently ${modelDisplay()}`,
 			"provider/id — leave empty to reset to the default",
 		);
 		if (entry === undefined) return; // cancelled
@@ -1247,16 +1257,237 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/**
-	 * The `/snippets` menu, reopened after every change so several settings
-	 * can be adjusted in one visit — a `select` dismissed with Escape
-	 * (`!choice`) is the ordinary way out. `open` rather than `while (true)`
-	 * because the one row that hands focus to the composer (a prefilled
-	 * `/snippets model `) closes the menu instead of reopening on top of what
-	 * was just typed in — and a literal `true` is a condition with no false
-	 * outcome, the one shape MC/DC cannot pair. Also the reentry point once
-	 * that prefilled command is submitted (see the `model`/`style` branches in
-	 * the handler below), so picking "Second model — change" comes back to
-	 * the menu instead of leaving the user dropped out of it.
+	 * Unregister `pisnip://` from the desktop. Its own row in the fallback
+	 * menu, a submenu option in the settings one; the notifications are the
+	 * same either way.
+	 */
+	const removeClickHandler = async (ctx: any): Promise<void> => {
+		const result = linkInstall.uninstall();
+		const detail = result.removed.length > 0 ? ` (${result.removed.length} files cleaned)` : "";
+		if (result.clean) {
+			ctx.ui.notify(`pisnip:// unregistered${detail}${persist()}`);
+		} else {
+			for (const warning of result.warnings) ctx.ui.notify(warning, "warning");
+			ctx.ui.notify(
+				`pisnip:// unregistered, but not cleanly${detail}. If Ctrl+click still opens ` +
+					"the old handler, restart the terminal or run " +
+					"`systemctl --user restart xdg-desktop-portal` — desktop daemons cache " +
+					`the handler until then${persist()}`,
+				"warning",
+			);
+		}
+	};
+
+	/** Theme callbacks for the settings and select lists, built from the theme the factory hands us. */
+	const menuTheme = (theme: any): SettingsListTheme => ({
+		label: (text: string, selected: boolean) => (selected ? theme.fg("accent", text) : text),
+		value: (text: string, selected: boolean) => (selected ? theme.fg("accent", text) : theme.fg("muted", text)),
+		description: (text: string) => theme.fg("dim", text),
+		cursor: theme.fg("accent", "→ "),
+		hint: (text: string) => theme.fg("dim", text),
+	});
+
+	const selectListTheme = (theme: any) => ({
+		selectedPrefix: (t: string) => theme.fg("accent", t),
+		selectedText: (t: string) => theme.fg("accent", t),
+		description: (t: string) => theme.fg("muted", t),
+		scrollInfo: (t: string) => theme.fg("dim", t),
+		noMatch: (t: string) => theme.fg("warning", t),
+	});
+
+	/**
+	 * A titled `SelectList` shown in place of the settings list while a choice
+	 * is open — the shape of pi's own `SelectSubmenu`, which is not exported,
+	 * so rebuilt here against pi-tui's public pieces. `done` closes it; the
+	 * settings list restores the cursor to the row that opened it.
+	 */
+	const submenuList = (
+		theme: any,
+		title: string,
+		options: SelectItem[],
+		done: (value?: string) => void,
+	): Component => {
+		const container = new Container();
+		container.addChild(new Text(theme.fg("accent", theme.bold(title)), 0, 0));
+		container.addChild(new Spacer(1));
+		const list = new SelectList(options, Math.min(options.length, 10), selectListTheme(theme));
+		list.onSelect = (item) => done(item.value);
+		list.onCancel = () => done();
+		container.addChild(list);
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(theme.fg("dim", "Enter to select · Esc to go back"), 0, 0));
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => list.handleInput(data),
+		};
+	};
+
+	/**
+	 * The `/snippets` menu, TUI form: one `SettingsList` hosted in
+	 * `ctx.ui.custom` that stays mounted until Escape. Toggling a row updates
+	 * it in place, so the cursor never jumps — the reason this replaced the
+	 * `select` loop, which reopened from the top after every change. Only the
+	 * composer handoff (typing a model pin) closes the menu, because focus
+	 * moves to the editor.
+	 */
+	const openMenuSettings = async (ctx: any): Promise<void> => {
+		const title = `${snippetStats(ctx)} — ${clickStatusLabel()}`;
+		const open = (factory: (
+			menuTui: { requestRender?: (force?: boolean) => void },
+			theme: any,
+			kb: unknown,
+			done: (value?: string) => void,
+		) => Component): Promise<string | undefined> => ctx.ui.custom(factory);
+		await open(
+			(
+				menuTui: { requestRender?: (force?: boolean) => void },
+				theme: any,
+				_kb: unknown,
+				done: (value?: string) => void,
+			) => {
+				let menu: SettingsList | undefined;
+				const items: SettingItem[] = [
+					{
+						id: "mode",
+						label: "Suggestions",
+						currentValue: MODE_SUMMARY[state.mode],
+						values: SNIPPET_MODES.map((mode) => MODE_SUMMARY[mode]),
+						description: "Where chips come from",
+					},
+					{
+						id: "hotkeys",
+						label: "Alt+digit shortcuts",
+						currentValue: state.hotkeysEnabled ? "on" : "off",
+						values: ["on", "off"],
+					},
+					{
+						id: "model",
+						label: "Second model",
+						currentValue: modelDisplay(),
+						submenu: (_current, submenuDone) =>
+							submenuList(theme, "Second model", [
+								{
+									value: "type",
+									label: "Type a provider/id — opens the composer (tab-completes)",
+								},
+								{ value: "reset", label: `Reset to the default (${DEFAULT_INFER_MODEL})` },
+							], (value) => {
+								submenuDone();
+								if (value === "type") {
+									// The composer takes over from here, so the menu
+									// goes too — same as the fallback menu's row.
+									ctx.ui.setEditorText("/snippets model ");
+									ctx.ui.notify(
+										"Tab-completes provider/id — leave it empty and press Enter to reset to the default",
+									);
+									menuTui.requestRender?.();
+									done("model");
+									return;
+								}
+								if (value === "reset") {
+									void applyModelPin("", ctx);
+									menu?.updateValue("model", modelDisplay());
+								}
+							}),
+					},
+					{
+						id: "style",
+						label: "Second model style",
+						currentValue: STYLE_SUMMARY[state.inferStyle],
+						values: INFER_STYLES.map((style) => STYLE_SUMMARY[style]),
+					},
+				];
+				// Register-or-remove is local-Linux-only: over SSH the desktop is
+				// the client's, and its status is already in the title above.
+				if (process.platform === "linux" && !overSsh()) {
+					items.push({
+						id: "click",
+						label: "Click handler",
+						currentValue: linkInstall.isInstalled() ? "registered" : "not registered",
+						submenu: (_current, submenuDone) =>
+							// Built at open time, so it follows a register or remove
+							// made since the menu came up.
+							submenuList(theme, "Click handler", [
+								linkInstall.isInstalled()
+									? { value: "remove", label: "Remove — unregister pisnip:// from the desktop" }
+									: { value: "register", label: "Register — one-time desktop setup, needed before Ctrl+click works" },
+							], (value) => {
+								submenuDone();
+								if (value === "register") {
+									void installClickHandler(ctx);
+								} else if (value === "remove") {
+									void removeClickHandler(ctx);
+								}
+								menu?.updateValue(
+									"click",
+									linkInstall.isInstalled() ? "registered" : "not registered",
+								);
+							}),
+					});
+				}
+				/**
+				 * What a cycled row does with the value `SettingsList` moved it
+				 * to. A table keyed by row id, not an `if`/`else if` chain: the
+				 * chain's last test can never go false — only these three rows
+				 * carry `values`, and a submenu row reports no change — and a
+				 * condition with one outcome is exactly what MC/DC cannot pair.
+				 * The `?.` is the same story without the condition.
+				 *
+				 * The summaries are looked up back to their mode and style the
+				 * same way, by filtering rather than by `find` and a guard: the
+				 * values offered were built from these very tables, so a miss is
+				 * unreachable, and a guard against it would never fire either.
+				 */
+				const changed: Record<string, (newValue: string) => void> = {
+					mode: (newValue) => {
+						for (const mode of SNIPPET_MODES.filter((m) => MODE_SUMMARY[m] === newValue)) {
+							void applyMode(mode, ctx);
+						}
+					},
+					hotkeys: (newValue) => {
+						state.hotkeysEnabled = newValue === "on";
+						ctx.ui.notify(
+							`Suggestion shortcuts ${state.hotkeysEnabled ? "enabled" : "disabled"}${persist()}`,
+						);
+					},
+					style: (newValue) => {
+						for (const style of INFER_STYLES.filter((s) => STYLE_SUMMARY[s] === newValue)) {
+							void applyInferStyle(style, ctx);
+						}
+					},
+				};
+				const onChange = (id: string, newValue: string) => {
+					changed[id]?.(newValue);
+					syncClicks(ctx);
+				};
+				menu = new SettingsList(items, Math.min(items.length, 10), menuTheme(theme), onChange, () =>
+					done(undefined));
+				const container = new Container();
+				container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
+				container.addChild(new Spacer(1));
+				container.addChild(menu);
+				container.addChild(new Spacer(1));
+				container.addChild(new Text(theme.fg("dim", "↑↓ move · enter change · esc close"), 1, 0));
+				return {
+					render: (w: number) => container.render(w),
+					invalidate: () => container.invalidate(),
+					handleInput: (data: string) => {
+						menu?.handleInput(data);
+						menuTui.requestRender?.();
+					},
+				};
+			},
+		);
+	};
+
+	/**
+	 * The `/snippets` menu, in whichever form this session can show.
+	 *
+	 * Also the reentry point once the prefilled `/snippets model ` is
+	 * submitted (see the `model` branch in the handler below), so picking
+	 * "Second model" comes back to the menu instead of leaving the user
+	 * dropped out of it.
 	 */
 	const runSnippetsMenu = async (ctx: any): Promise<void> => {
 		// The menu carries the register row itself, so the first-click prompt
@@ -1265,30 +1496,52 @@ export default function piSnippetTui(pi: any): void {
 		// `promptToRegister`, so the loop stays free of a second condition
 		// about a question it does not ask.
 		registrationAsked = true;
+		// Two forms. In the TUI one `SettingsList` in `ctx.ui.custom` stays
+		// mounted until Escape, and every change updates its row in place —
+		// the cursor never jumps. The `select` fallback (RPC, print, tests
+		// that fake the UI) reopens after every change instead, so several
+		// settings can still be adjusted in one visit; a `select` dismissed
+		// with Escape (`!choice`) is the ordinary way out. `open` rather than
+		// `while (true)` because the one row that hands focus to the composer
+		// (a prefilled `/snippets model `) closes the menu instead of reopening
+		// on top of what was just typed in — and a literal `true` is a
+		// condition with no false outcome, the one shape MC/DC cannot pair.
+		if (ctx.mode === "tui" && typeof ctx.ui.custom === "function") {
+			await openMenuSettings(ctx);
+			return;
+		}
 		let open = true;
 		while (open) {
 			// The click rows, chosen two ways. There is one thing left to set up
 			// anywhere — the desktop handler — and it belongs on the machine the
-			// desktop is on, so over SSH (or off Linux) this session has nothing
-			// to offer and says so in the header instead. Otherwise it is
+			// desktop is on, so over SSH this session has nothing to offer and
+			// says so in the row that would otherwise register it (off Linux there
+			// is no row at all, since the header already says so). Otherwise it is
 			// register-or-remove: one condition, not the two inverted copies of
 			// it this used to ask. Rebuilt each time round the loop, since
 			// registering or removing the handler changes which row applies.
 			const clickRows =
-				process.platform !== "linux" || overSsh()
+				process.platform !== "linux"
 					? []
-					: linkInstall.isInstalled()
-						? ["Remove click handler — unregister pisnip:// from the desktop"]
-						: ["Register click handler — one-time desktop setup, needed before Ctrl+click works"];
-			const model = effectiveModel();
+					: overSsh()
+						? [clickStatusLabel()]
+						: linkInstall.isInstalled()
+							? ["Remove click handler — unregister pisnip:// from the desktop"]
+							: ["Register click handler — one-time desktop setup, needed before Ctrl+click works"];
 			const rows = [
 				`Suggestions: ${MODE_SUMMARY[state.mode]} — change`,
 				`Alt+digit shortcuts: ${state.hotkeysEnabled ? "on" : "off"} — toggle`,
-				`Second model: ${model.id}${model.fromEnv ? " (PI_SNIPPET_MODEL override)" : ""} — change`,
+				`Second model: ${modelDisplay()} — change`,
 				`Second model style: ${STYLE_SUMMARY[state.inferStyle]} — change`,
 				...clickRows,
 			];
-			const choice = await ctx.ui.select(`${snippetStats(ctx)} — ${clickStatusLabel()}`, rows);
+			// The status moves from the header into a row only when there is one
+			// to move it into: off Linux there is no row at all, so it stays put.
+			const title =
+				process.platform === "linux" && overSsh()
+					? snippetStats(ctx)
+					: `${snippetStats(ctx)} — ${clickStatusLabel()}`;
+			const choice = await ctx.ui.select(title, rows);
 			if (!choice) return;
 			if (choice.startsWith("Suggestions:")) {
 				await pickMode(ctx);
@@ -1297,28 +1550,16 @@ export default function piSnippetTui(pi: any): void {
 			} else if (choice.startsWith("Second model:")) {
 				await pickModel(ctx);
 				// In the TUI that prefilled `/snippets model ` and handed focus
-				// back; the model/style branches in the handler below reopen this
-				// menu once that command is submitted, so there is nothing to wait
-				// on here.
+				// back; the model branch in the handler below reopens this menu
+				// once that command is submitted, so there is nothing to wait on
+				// here.
 				if (ctx.mode === "tui") open = false;
 			} else if (choice.startsWith("Register click handler")) {
 				await installClickHandler(ctx);
 			} else if (choice.startsWith("Remove click handler")) {
-				const result = linkInstall.uninstall();
-				const detail =
-					result.removed.length > 0 ? ` (${result.removed.length} files cleaned)` : "";
-				if (result.clean) {
-					ctx.ui.notify(`pisnip:// unregistered${detail}${persist()}`);
-				} else {
-					for (const warning of result.warnings) ctx.ui.notify(warning, "warning");
-					ctx.ui.notify(
-						`pisnip:// unregistered, but not cleanly${detail}. If Ctrl+click still opens ` +
-							"the old handler, restart the terminal or run " +
-							"`systemctl --user restart xdg-desktop-portal` — desktop daemons cache " +
-							`the handler until then${persist()}`,
-						"warning",
-					);
-				}
+				await removeClickHandler(ctx);
+			} else if (choice.startsWith("Ctrl+click:")) {
+				// Informational only over SSH: there is no handler to register from here.
 			} else {
 				state.hotkeysEnabled = !state.hotkeysEnabled;
 				ctx.ui.notify(

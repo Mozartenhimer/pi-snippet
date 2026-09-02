@@ -218,6 +218,40 @@ describe("a terminal that can paint hyperlinks", () => {
 		}
 	});
 
+	it("does nothing when the SSH status row is picked, and reopens the menu", async () => {
+		// `ctx.ui.select` cannot mark a row unselectable, so the status row can
+		// be chosen like any other. Picking it is a deliberate no-op that comes
+		// back to the menu — there is no handler on this machine to register.
+		process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 22";
+		try {
+			const pi = makeFakePi();
+			const { ctx, notices } = makeCtx();
+			pi.fire("session_start", { reason: "startup" }, ctx);
+			// Bounded: the status row once, then dismissed (see CLAUDE.md — a mock
+			// that keeps answering by content never lets the menu close).
+			let answered = false;
+			const opens: number[] = [];
+			await pi.run("", {
+				...ctx,
+				ui: {
+					...ctx.ui,
+					select: async (_title: string, rows: string[]) => {
+						opens.push(rows.length);
+						if (answered) return undefined;
+						answered = true;
+						return rows.find((row) => row.startsWith("Ctrl+click:"));
+					},
+				},
+			});
+			expect(answered).toBe(true);
+			expect(opens).toHaveLength(2);
+			expect(notices).toEqual([]);
+			pi.shutdown();
+		} finally {
+			delete process.env.SSH_CONNECTION;
+		}
+	});
+
 	it("paints the same URL over SSH, and names the host it routes to", async () => {
 		// Since ADR 0001 a remote session is indistinguishable from a local one
 		// where painting is concerned: the URL says which machine to deliver to,

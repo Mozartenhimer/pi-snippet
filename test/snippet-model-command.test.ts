@@ -298,6 +298,21 @@ describe("/snippets model handler", () => {
 		expect(loadSettings(file).inferModel).toBe("mockllm/mock-large-reasoner");
 	});
 
+	it("opens no menu for a scripted caller, which never came from one", async () => {
+		// In the TUI the typed form is where the menu's prefilled
+		// `/snippets model ` lands, so submitting it reopens the menu. An RPC or
+		// print caller (docs/rpc.md) typed the command outright — there is no
+		// menu behind it to come back to, and opening one would hang a caller
+		// that has nothing to answer a `select` with.
+		const { pi, commands } = makeFakePi();
+		piSnippetTui(pi);
+		const seen = makeCtx({ mode: "rpc" });
+		await commands.get("snippets").handler("model mockllm/mock-large-reasoner", seen.ctx);
+
+		expect(loadSettings(file).inferModel).toBe("mockllm/mock-large-reasoner");
+		expect(seen.menus()).toEqual([]);
+	});
+
 	it("rejects an unknown pin without changing anything", async () => {
 		const { pi, commands } = makeFakePi();
 		piSnippetTui(pi);
