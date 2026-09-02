@@ -51,9 +51,16 @@ describe("INFER_OPTIONS_SYSTEM_PROMPT", () => {
 			"The build failed in three places. Want me to <snippet>fix them one at a time</snippet>, or <snippet>show you all three errors first</snippet>?",
 		);
 		expect(INFER_OPTIONS_SYSTEM_PROMPT).toContain("fix them one at a time\nshow you all three errors first");
-		// The no-op example agrees too, rendered plain in one and empty in the other.
+		// The no-op example agrees too, rendered plain in one and empty in the
+		// other. "Empty" is what there is to assert and nothing is what it looks
+		// like, so the match runs to whatever follows the block — the separator
+		// before the next example, or the end of the prompt when it is the last
+		// one. Anchoring it to the end alone said the same thing only while it
+		// stayed last, and broke the moment an example was appended after it.
 		expect(INFER_SYSTEM_PROMPT).toContain("I've pushed the branch and CI is green.");
-		expect(INFER_OPTIONS_SYSTEM_PROMPT).toMatch(/I've pushed the branch and CI is green\.\n\nExample reply:\n$/);
+		expect(INFER_OPTIONS_SYSTEM_PROMPT).toMatch(
+			/I've pushed the branch and CI is green\.\n\nExample reply:\n(?:\n\nExample message:|$)/,
+		);
 	});
 });
 
