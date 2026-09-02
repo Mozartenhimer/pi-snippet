@@ -32,9 +32,16 @@ What's checked, in order:
   3. Enter submits it, pi confirms with a notice, and the setting lands in
      the settings file on disk — the same file `/snippets` reads back from
      on the next restart.
-  4. `/snippets` → "Second model: … — change" prefills the composer with
-     `/snippets model mockllm/zzpisnip-large-reasoner ` instead of opening a
-     blocking dialog with no completion at all.
+  4. The `/snippets` menu's "Second model" row reaches that same completing
+     command: its submenu's "Type a provider/id" closes the menu and leaves
+     `/snippets model ` in the composer — blank, never the current pin, since
+     picking it means replacing whatever is set. Then it types into what was
+     handed over and expects the dropdown again, because that is the part a
+     unit test cannot see: pi's `showExtensionCustom` restores the composer's
+     text when the menu closes, so a prefill written from inside the menu is
+     wiped on the way out and the row silently does nothing at all. Asserting
+     the row's *effect on the composer*, not just that the menu closed, is
+     what catches that.
 
 Usage:  python3 scripts/snippet-model-tmux.py   (exit 0 = PASS)
 """
@@ -135,6 +142,16 @@ def main():
     try:
         wait_for(lambda s: any(l.strip() for l in s[11:]), 30, "pi to boot below the shell output")
         time.sleep(1)
+        # A machine that has never trusted this folder (a container, a fresh
+        # checkout) gets asked before pi reaches the composer, and the
+        # keystrokes below would answer that instead. Take the session-only
+        # row — third — so the harness leaves no trust decision behind.
+        if find_text(capture(), "Trust project folder?"):
+            tmux("send-keys", "-t", SESSION, "Down")
+            tmux("send-keys", "-t", SESSION, "Down")
+            tmux("send-keys", "-t", SESSION, "Enter")
+            wait_for(lambda s: not find_text(s, "Trust project folder?"), 10, "the trust prompt to close")
+            time.sleep(1)
 
         # --- 1 & 2: type a partial query, expect a dropdown, accept it ---
         tmux("send-keys", "-t", SESSION, "/snippets model zzpisnip-larg")
@@ -185,12 +202,36 @@ def main():
         tmux("send-keys", "-t", SESSION, "Down")
         tmux("send-keys", "-t", SESSION, "Down")
         tmux("send-keys", "-t", SESSION, "Enter")
-        prefilled = wait_for(
-            lambda s: line_containing(s, "/snippets model mockllm/zzpisnip-large-reasoner"),
+        wait_for(
+            lambda s: find_text(s, "Type a provider/id"),
             10,
-            "\u201cSecond model \u2014 change\u201d to prefill /snippets model instead of opening a dialog",
+            "the Second model submenu to open on the row",
         )
-        print("PASS: menu prefilled %r" % prefilled.strip())
+        tmux("send-keys", "-t", SESSION, "Enter")
+        # Blank, and it has to still be blank after the menu has gone: pi
+        # restores the composer's text as it closes, which is what used to
+        # swallow this prefill whole.
+        wait_for(
+            lambda s: any(l.strip() == "/snippets model" for l in s),
+            10,
+            "the menu to hand the composer a blank /snippets model and close",
+        )
+        wait_for(
+            lambda s: not find_text(s, "Alt+digit shortcuts"),
+            10,
+            "the menu to close behind the handoff",
+        )
+        print("PASS: menu prefilled a blank '/snippets model ' and closed")
+
+        # Typing into what it handed over: the dropdown coming back is the
+        # proof that the composer has both the text and the focus.
+        tmux("send-keys", "-t", SESSION, "zzpisnip-larg")
+        wait_for(
+            lambda s: find_text(s, "zzpisnip-large-reasoner"),
+            10,
+            "the handed-over composer to accept typing and complete again",
+        )
+        print("PASS: typing into the handed-over composer completes")
 
         cleanup()
         print("PASS: /snippets model tab-completes, applies, persists, and is reachable from the /snippets menu")
