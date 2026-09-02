@@ -289,7 +289,7 @@ describe("over SSH", () => {
 		const choices = await h.menu();
 		expect(choices).not.toContainEqual(expect.stringContaining("Register click handler"));
 		expect(choices).not.toContainEqual(expect.stringContaining("Remove click handler"));
-		expect(h.titles.join("\n")).toContain("chips route back to testbox");
+		expect(choices).toContainEqual(expect.stringContaining("chips route back to testbox"));
 	});
 
 	it("names what PI_SNIPPET_HOST says when the hostname would not do", () => {

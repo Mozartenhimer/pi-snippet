@@ -228,20 +228,21 @@ describe("a terminal that can paint hyperlinks", () => {
 			const { ctx } = makeCtx();
 			pi.fire("session_start", { reason: "startup" }, ctx);
 			pi.fire("message_end", { message: msg(MESSAGE) }, ctx);
-			let heading = "";
+			let choices: string[] = [];
 			await pi.run("", {
 				...ctx,
 				ui: {
 					...ctx.ui,
-					select: async (title: string) => {
-						heading = title;
+					select: async (_title: string, rows: string[]) => {
+						choices = rows;
 						return undefined;
 					},
 				},
 			});
 			// The one thing this session still cannot answer is whether a handler
-			// exists on the client, so it reports what it painted instead.
-			expect(heading).toContain("chips route back to testbox");
+			// exists on the client, so it reports what it painted instead, in the
+			// row that would otherwise register the handler.
+			expect(choices).toContainEqual(expect.stringContaining("chips route back to testbox"));
 			expect(pi.transform(MESSAGE, { messageType: "assistant", isStreaming: false })).toContain(
 				"pisnip://testbox/",
 			);

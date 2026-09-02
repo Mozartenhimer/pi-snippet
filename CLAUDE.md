@@ -49,7 +49,7 @@ The Python harnesses fork a pty, run real `pi`, emulate a terminal (tracking a g
 
 ## Environment constraints
 
-- pi is the **snap** build (`/snap/pi-coding-agent`, 0.84.2). Docs live at `/snap/pi-coding-agent/current/bin/docs/`. npm's `@earendil-works/pi-coding-agent` used to lag badly; it no longer does (0.84.3 at last check), and installing it is the way to read the real extension API types — `node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` for `ExtensionContext`/`ExtensionAPI`, `core/model-registry.d.ts` for `ModelRegistry`. Prefer those over guessing from docs.
+- pi is the **npm build** managed by pi-node (`/home/fch/.local/share/pi-node/node-v22.22.3-linux-x64/lib/node_modules/@earendil-works/pi-coding-agent`, 0.84.4), on PATH at `~/.local/share/pi-node/node-v22.22.3-linux-x64/bin/pi`. There is no snap here. Docs live under that package's `docs/`, and the real extension API types are in it too — `dist/core/extensions/types.d.ts` for `ExtensionContext`/`ExtensionAPI`, `dist/core/model-registry.d.ts` for `ModelRegistry`. Prefer those over guessing from docs.
 - **`pi -p` (print mode) hangs** with the claude-bridge provider and must be killed. Use `--mode rpc` for anything automated; that is what the e2e test does.
 - claude-bridge is the only provider with working auth for the *primary* model here; `claude-haiku-4-5` is the test model. OpenRouter (`OPENROUTER_API_KEY`) is what the second model uses, and is the only provider `modelRegistry.getAvailable()` reports auth for.
 
@@ -151,6 +151,7 @@ These were established by measurement (against `libghostty-vt` and live ptys) an
 - **Ghostty sends no bytes at all for a standalone Alt press or release** at the Kitty flags pi requests (7); modifier events need flag 8. So "commit on modifier release" is unavailable in the terminal, and the two-digit chord settles on a timeout instead. The browser gets a real `keyup`.
 - **Superscript digits are not one contiguous range.** `¹²³` are Latin-1 (U+00B9/B2/B3), the rest are U+2070–2079, so `[⁰-⁹]` is a broken character class. Chip labels use these, so regexes over rendered text must enumerate all ten.
 - **Desktop daemons cache the scheme-handler database.** After removing the handler, files alone do not settle it — query `xdg-mime query default x-scheme-handler/pisnip` and point at `systemctl --user restart xdg-desktop-portal` when the answer is stale. `link-install.ts` `uninstall()` cleans both mimeapps.list locations and the mimeinfo cache for the same reason.
+- **`ctx.ui.select` cannot mark a row non-selectable.** It takes a plain `string[]`, and pi-tui's `SelectItem` has no disabled state, so every row in the `/snippets` menu is selectable no matter what it says. An informational row (the SSH `Ctrl+click:` status) is handled as a deliberate no-op branch that reopens the menu, not by trying to disable it.
 
 ## Conventions
 
