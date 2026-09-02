@@ -45,14 +45,20 @@ function makeFakePi() {
 
 function makeCustomCtx(notices: string[], edits: string[]) {
 	const captured: { component?: any } = {};
+	// What the composer holds. A real menu is opened by submitting
+	// `/snippets`, which leaves it empty.
+	let editorText = "";
 	const ctx = {
 		mode: "tui",
 		hasUI: true,
 		sessionManager: { getBranch: () => [] },
 		modelRegistry: { getAvailable: () => [] },
 		ui: {
-			getEditorText: () => "",
-			setEditorText: (text: string) => edits.push(text),
+			getEditorText: () => editorText,
+			setEditorText: (text: string) => {
+				editorText = text;
+				edits.push(text);
+			},
 			notify: (m: string) => notices.push(m),
 			setStatus: () => {},
 			setFooter: () => {},
@@ -63,12 +69,23 @@ function makeCustomCtx(notices: string[], edits: string[]) {
 				// Definitely assigned: the Promise executor below runs synchronously.
 				let resolve!: (v?: string) => void;
 				const promise = new Promise<string | undefined>((r) => (resolve = r));
-				captured.component = factory({ requestRender: () => {} }, theme, undefined, resolve);
+				// pi's own `showExtensionCustom`: it snapshots the composer on
+				// the way in and writes that text back on the way out, so
+				// anything the mounted menu sets is overwritten when it closes.
+				// The fake copies that, because it is the whole reason the
+				// model row hands its prefill out through `done` instead of
+				// setting it from inside. Without it a test cannot tell the
+				// working order from the broken one.
+				const saved = editorText;
+				captured.component = factory({ requestRender: () => {} }, theme, undefined, (v?: string) => {
+					editorText = saved;
+					resolve(v);
+				});
 				return promise;
 			},
 		},
 	};
-	return { captured, ctx };
+	return { captured, ctx, composer: () => editorText };
 }
 
 let file: string;
@@ -95,9 +112,9 @@ describe("pi-snippet-tui: /snippets settings menu (TUI)", () => {
 		piSnippetTui(pi);
 		const notices: string[] = [];
 		const edits: string[] = [];
-		const { captured, ctx } = makeCustomCtx(notices, edits);
+		const { captured, ctx, composer } = makeCustomCtx(notices, edits);
 		const running = commands.get("snippets")!("", ctx);
-		return { handlers, running, notices, edits, component: captured.component };
+		return { handlers, running, notices, edits, composer, component: captured.component };
 	}
 
 	it("mounts one menu whose title carries the stats and the click status", async () => {
@@ -191,7 +208,7 @@ describe("pi-snippet-tui: /snippets settings menu (TUI)", () => {
 	});
 
 	it("hands a typed model pin to the composer and closes the menu", async () => {
-		const { running, notices, edits, component } = await openMenu();
+		const { running, notices, edits, composer, component } = await openMenu();
 		component.handleInput(DOWN);
 		component.handleInput(DOWN);
 		component.handleInput(ENTER);
@@ -199,6 +216,11 @@ describe("pi-snippet-tui: /snippets settings menu (TUI)", () => {
 		component.handleInput(ENTER);
 		await running;
 		expect(edits).toEqual(["/snippets model "]);
+		// And it is still there once the menu has gone: a prefill written
+		// while the menu was up is wiped by the restore on close (see the
+		// fake's `custom`), which is what made this row look like it did
+		// nothing at all.
+		expect(composer()).toBe("/snippets model ");
 		expect(notices.join("\n")).toContain("Tab-completes provider/id");
 	});
 

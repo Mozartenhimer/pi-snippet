@@ -1339,7 +1339,7 @@ export default function piSnippetTui(pi: any): void {
 			kb: unknown,
 			done: (value?: string) => void,
 		) => Component): Promise<string | undefined> => ctx.ui.custom(factory);
-		await open(
+		const picked = await open(
 			(
 				menuTui: { requestRender?: (force?: boolean) => void },
 				theme: any,
@@ -1376,12 +1376,10 @@ export default function piSnippetTui(pi: any): void {
 								submenuDone();
 								if (value === "type") {
 									// The composer takes over from here, so the menu
-									// goes too — same as the fallback menu's row.
-									ctx.ui.setEditorText("/snippets model ");
-									ctx.ui.notify(
-										"Tab-completes provider/id — leave it empty and press Enter to reset to the default",
-									);
-									menuTui.requestRender?.();
+									// goes too — but the prefill itself waits until it
+									// has. `done` only carries the intent out; see the
+									// prefill after the await below for why it cannot
+									// happen here.
 									done("model");
 									return;
 								}
@@ -1479,6 +1477,16 @@ export default function piSnippetTui(pi: any): void {
 				};
 			},
 		);
+		// The composer handoff, deliberately out here rather than in the
+		// submenu row that asked for it: pi's `showExtensionCustom` reads the
+		// editor's text when the menu mounts and writes that text back when
+		// the menu closes, so a prefill set from inside is overwritten on the
+		// way out — the row looked dead because nothing survived to the
+		// composer. (`ui.select` has no such snapshot, which is why the
+		// fallback menu's identical row always worked.) So the row hands the
+		// intent out through `done`, and the prefill lands here, once the
+		// editor is back and focused.
+		if (picked === "model") await pickModel(ctx);
 	};
 
 	/**
