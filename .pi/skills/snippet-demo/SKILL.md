@@ -1,11 +1,11 @@
 ---
 name: snippet-demo
-description: Demonstrates pi-snippet's clickable-chip tool with a fully made-up, bogus scenario. Use when the user wants to see or test for a  <snippet> demo, without any real task attached.
+description: Demonstrates pi-snippet's clickable-chip tool with a fully made-up, bogus scenario. Use when the user wants to see or test a suggestion-chip demo, without any real task attached.
 ---
 
 # Snippet Demo
 
-A throwaway scenario for showing off pi-snippet's `<snippet>...</snippet>` chips. None of this is real — it's a fictional "quest" so the demo doesn't require any actual project context.
+A throwaway scenario for showing off pi-snippet's clickable chips. None of this is real — it's a fictional "quest" so the demo doesn't require any actual project context.
 
 ## When to use this skill
 
@@ -13,19 +13,19 @@ The user asks to "demo the snippet feature," "show me the chip tool," "test sugg
 
 ## How to use this skill
 
-Reply with something like the following (invent your own flavor of nonsense each time — the point is variety of chip shapes, not this exact wording):
+Reply with something like the following (invent your own flavor of nonsense each time — the point is variety of chip shapes, not this exact wording), marking each candidate reply the way your system prompt instructs:
 
 ---
 
 Welcome, adventurer. The Wizard of Cardboard has three quests posted on the board. Which will you take:
 
-1. <snippet>Retrieve the Sock of Infinite Static</snippet>?
-2. <snippet>Negotiate peace with the Gnome Tax Auditors</snippet>?
-3. <snippet>Teach the dragon to do taxes instead</snippet>?
+1. Retrieve the Sock of Infinite Static?
+2. Negotiate peace with the Gnome Tax Auditors?
+3. Teach the dragon to do taxes instead?
 
-Also, the tavern keeper wants to know: should I <snippet>put anchovies on it</snippet>, or <snippet>absolutely not, never again</snippet>?
+Also, the tavern keeper wants to know: should I put anchovies on it, or absolutely not, never again?
 
-One more thing — the parrot keeps repeating a name. Options seen so far: <snippet>Bartholomew</snippet>, <snippet>Kevin</snippet>, or <snippet>Nigel the Unwise</snippet>. Which one sticks?
+One more thing — the parrot keeps repeating a name. Options seen so far: Bartholomew, Kevin, or Nigel the Unwise. Which one sticks?
 
 ---
 
@@ -34,9 +34,9 @@ This hits the three shapes worth showing:
 - a binary yes/no framed as two complete replies
 - bare option names offered as a flat list
 
-## A caveat on `<snippet>` itself
+## A caveat on chips appearing at all
 
-The `<snippet>` tag isn't guaranteed to be in your system prompt — it's injected only when the session's suggestion mode is `tags` or `both` (`tagsOn()` in `pi-snippet-tui.ts`). In `infer` mode nothing is injected into the primary model's prompt at all; chips there come entirely from the second-model layer reading your finished message after the fact. So if you write `<snippet>` tags and no chips appear, don't assume you did it wrong — check the session's mode first, and know that in `infer` mode this demo's chips (if any show up) came from that second pass, not from you writing the tag.
+Whether a candidate reply becomes a clickable chip depends on the session's suggestion mode, which you don't control. If you mark up replies as instructed and no chips appear, don't assume you did it wrong — the session may be configured so that chips come from a separate pass over your finished message rather than from anything in your own output.
 
 ## What this skill is not
 

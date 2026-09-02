@@ -14,10 +14,8 @@ Below is what the machine created. Fable 5 did the initial design costing about 
 ## Design history
 Originally I tried having the TUI extension do mouse reporting, but that sacrificed scrollback and other terminal TUI functionality. Landing on markdown hyperlink rendering made me realize I could instead register an `xdg-open` handler, since my instinct already wanted to Ctrl+click links.
 
-## Testing notes
-- [ ] /snippet model doesn't re-resume the menu, just exits the menu.
-- [ ] Clicking the hyperlink should prompt to install the hyperlink handler,  not when the hyperlinks are displayed. 
-
+## TODOs
+- [ ] Merge the examples for the infference (2nd model ) and the system propmt variety.
 # pi-snippet
 **Below is 99% clanker generated.**
 

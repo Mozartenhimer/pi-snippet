@@ -89,6 +89,11 @@ const INFER_EXAMPLES: readonly InferExample[] = [
 		replies: ["fix them one at a time", "show you all three errors first"],
 	},
 	{ message: "I've pushed the branch and CI is green.", replies: [] },
+	{
+		message: "Which package manager should I use: npm, yarn, or pnpm?",
+		replies: ["npm", "yarn", "pnpm"],
+	},
+	{ message: "Shall we proceed?", replies: ["proceed"] },
 ];
 
 /** `reemit`'s shape for one example: the message with every reply wrapped in tags. */
