@@ -90,6 +90,14 @@ describe("extractAnchors", () => {
 		expect(extractAnchors(bad, message)).toEqual(["commit"]);
 	});
 
+	it("drops an anchor whose words only occur inside a longer word", () => {
+		// "commit" is verbatim in "recommitted", and a chip there would send a
+		// truncation of a word the assistant wrote, not a reply it offered.
+		const msg = "I rebuilt it and recommitted.";
+		const rep = "I rebuilt it and re<snippet>commit</snippet>ted.";
+		expect(extractAnchors(rep, msg)).toEqual([]);
+	});
+
 	it("drops an anchor that sits inside a code block of the message", () => {
 		const msg = "Run this?\n\n```\nnpm run build?\n```";
 		const rep = "Run this?\n\n```\nnpm run <snippet>build</snippet>?\n```";
@@ -144,6 +152,10 @@ describe("extractOptionAnchors", () => {
 	it("drops a line that duplicates a chip the primary model already tagged", () => {
 		const tagged = "Do you want to <snippet>rebuild</snippet> or commit?";
 		expect(extractOptionAnchors("rebuild\ncommit", tagged, ["rebuild"])).toEqual(["commit"]);
+	});
+
+	it("drops a line that only occurs inside a longer word", () => {
+		expect(extractOptionAnchors("commit", "I rebuilt it and recommitted.")).toEqual([]);
 	});
 
 	it("drops a line that only exists inside a code block", () => {
@@ -224,6 +236,44 @@ describe("locateAnchors", () => {
 		]);
 	});
 
+	it("walks past a match that starts inside a word", () => {
+		// "commit" is verbatim inside "recommit", and painting it there would
+		// underline six letters of a word and send half of another.
+		const text = "Should I recommit, or commit as-is?";
+		expect(locateAnchors(text, ["commit"])).toEqual([
+			{ text: "commit", start: text.indexOf("commit as-is"), end: text.indexOf("commit as-is") + 6, order: 0 },
+		]);
+	});
+
+	it("walks past a match that ends inside a word", () => {
+		const text = "There are commits to push, or commit now?";
+		expect(locateAnchors(text, ["commit"])).toEqual([
+			{ text: "commit", start: text.indexOf("commit now"), end: text.indexOf("commit now") + 6, order: 0 },
+		]);
+	});
+
+	it("drops an anchor whose every occurrence is a word fragment", () => {
+		expect(locateAnchors("I rebuilt it and recommitted.", ["commit"])).toEqual([]);
+	});
+
+	it("still places an anchor in a script written without spaces", () => {
+		// Japanese runs its words together, so every anchor in it would sit
+		// between two "word characters"; the boundary rule must not read that
+		// as a cut, or these messages get no chips at all.
+		const text = "ビルドしますか、それともコミットしますか？";
+		const [found] = locateAnchors(text, ["コミット"]);
+		expect(found).toEqual({ text: "コミット", start: text.indexOf("コミット"), end: text.indexOf("コミット") + 4, order: 0 });
+	});
+
+	it("places an anchor whose own edges are punctuation, flush against letters", () => {
+		// The rule is about words, not about having a space next door: neither
+		// seam here has a word character on both sides.
+		const text = "Pass --force(twice) to skip it.";
+		expect(locateAnchors(text, ["--force(twice)"])).toEqual([
+			{ text: "--force(twice)", start: 5, end: 19, order: 0 },
+		]);
+	});
+
 	it("stops at the first occurrence — the `reemit` shape, one span per anchor", () => {
 		const text = "rebuild it, or just rebuild without asking?";
 		expect(locateAnchors(text, ["rebuild"])).toEqual([
@@ -238,6 +288,15 @@ describe("locateAllOccurrences", () => {
 		const found = locateAllOccurrences(text, ["rebuild", "commit"]);
 		expect(found.map((f) => f.order)).toEqual([0, 0, 1, 1]);
 		expect(found.map((f) => f.text)).toEqual(["rebuild", "rebuild", "commit", "commit"]);
+	});
+
+	it("skips the fragments and keeps every whole-word occurrence", () => {
+		const text = "commits, commit, recommit, commit again";
+		const found = locateAllOccurrences(text, ["commit"]);
+		expect(found.map((f) => f.start)).toEqual([
+			text.indexOf("commit,"),
+			text.indexOf("commit again"),
+		]);
 	});
 
 	it("never lands inside a code fence, for any occurrence", () => {

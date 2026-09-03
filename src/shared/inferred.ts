@@ -23,6 +23,15 @@
  * and would underline something the assistant never wrote. So a tag whose
  * content does not appear verbatim in the message's non-code text is dropped
  * rather than repaired: the failure mode is a missing chip, never a wrong one.
+ *
+ * ## Why verbatim is not enough on its own
+ *
+ * `indexOf` happily finds "commit" inside "commits" and "build" inside
+ * "rebuild". Such a match is verbatim and still wrong: it underlines part of
+ * a word the assistant wrote, and clicking it sends a truncation of the reply
+ * the model actually offered. So a match is kept only where both of its edges
+ * fall on a word boundary (`cutsWord` below), and a fragment-only anchor is
+ * dropped like any other unlocatable one.
  */
 
 import { fencedRegions, MAX_SUGGESTIONS_PER_MESSAGE, parseSuggestions, SNIPPET_TAG } from "./suggestions.js";
@@ -36,6 +45,51 @@ function codeRegions(text: string): Array<{ start: number; end: number }> {
 		regions.push({ start: m.index, end: m.index + m[0].length });
 	}
 	return regions;
+}
+
+/**
+ * Scripts written without spaces between words. Two Han characters in a row
+ * is what ordinary Chinese looks like, not a word cut in half, and the same
+ * goes for Japanese, Thai, Lao, Khmer and Burmese — treating adjacency there
+ * as a word boundary violation would drop every anchor those messages could
+ * ever offer, which is a worse bug than the fragment it guards against.
+ * (Korean and Vietnamese put spaces between words, so they are not here.)
+ */
+const UNSPACED_SCRIPT =
+	"(?![\\p{sc=Han}\\p{sc=Hiragana}\\p{sc=Katakana}\\p{sc=Thai}\\p{sc=Lao}\\p{sc=Khmer}\\p{sc=Myanmar}])";
+
+/**
+ * Two word characters in a row — what a word boundary looks like when a match
+ * cuts through it. The class is Unicode letters, digits and `_` — what `\b`
+ * is defined over — minus the unspaced scripts above, so the rule agrees with
+ * a reader's idea of a word in whatever language the assistant wrote in.
+ *
+ * Up here beside `codeRegions` rather than down beside `placeAnchors`, its
+ * only caller: the prompt constants below locate their own worked examples at
+ * module load, so a `const` this walk needs must already be initialized by
+ * then — declared after them, it throws before a single test runs.
+ */
+const WORD_SEAM = new RegExp(`^(${UNSPACED_SCRIPT}[\\p{L}\\p{N}_]){2}$`, "u");
+
+/**
+ * True when placing an anchor at [start, end) would cut a word in half —
+ * "commit" found inside "commits", "build" inside "rebuild".
+ *
+ * Each edge is judged by the two characters that meet across it, so nothing
+ * here needs to know which side is the anchor: a cut is a word character on
+ * both sides of the seam. An edge at either end of `text`, or one where the
+ * anchor's own outermost character is punctuation ("--force", "proceed?"),
+ * yields fewer than two word characters and is already a boundary — the rule
+ * is about words, not about having a space next door.
+ */
+function cutsWord(text: string, start: number, end: number): boolean {
+	// `Math.max` rather than `start - 1`: a negative index would make `slice`
+	// count from the end of the string and judge the seam against the wrong
+	// characters entirely.
+	return (
+		WORD_SEAM.test(text.slice(Math.max(start - 1, 0), start + 1)) ||
+		WORD_SEAM.test(text.slice(end - 1, end + 1))
+	);
 }
 
 /**
@@ -66,7 +120,7 @@ const INFER_GUIDANCE = `What counts as a plausible reply:
 - The bare name of an option in a list, when the name alone is a complete reply.
 - A binary question's affirmative: "Shall I proceed?" -> proceed.
 
-There is no limit on how many you find — more options are better than fewer. But never offer a noun, a filename, or a fragment that only makes sense inside the assistant's own sentence; every reply must stand alone as the user's own words, copied verbatim, and must never come from inside a code block or code span.`;
+There is no limit on how many you find — more options are better than fewer. But never offer a noun, a filename, or a fragment that only makes sense inside the assistant's own sentence; every reply must stand alone as the user's own words, copied verbatim and in whole words — one that starts or ends in the middle of a word is dropped — and must never come from inside a code block or code span.`;
 
 /**
  * One example message, and the plausible replies a good answer finds in it —
@@ -183,8 +237,9 @@ export interface LocatedAnchor {
  * against the exact text the transformer was handed (which may be one text
  * block of a message, or the whole message — both forms are located
  * independently), so a chip appears wherever its words actually are. An
- * anchor that overlaps an existing chip or an earlier anchor is dropped: the
- * failure mode is a missing chip, never a doubled one.
+ * anchor that overlaps an existing chip or an earlier anchor is dropped, and
+ * so is one whose only occurrences cut through a word (`cutsWord`): the
+ * failure mode is a missing chip, never a doubled or half-a-word one.
  */
 function placeAnchors(
 	text: string,
@@ -203,6 +258,11 @@ function placeAnchors(
 			start = text.indexOf(anchor, start + 1)
 		) {
 			const end = start + anchor.length;
+			// A verbatim hit that starts or ends mid-word is a fragment of the
+			// assistant's prose, not the reply the model listed, so the search
+			// walks on to the next occurrence rather than giving up on the
+			// anchor: "commit" skips past "commits" and lands on "commit".
+			if (cutsWord(text, start, end)) continue;
 			if (regions.some((r) => start < r.end && end > r.start)) continue;
 			if (taken.some((t) => start < t.end && end > t.start)) continue;
 			found.push({ text: anchor, start, end, order });
