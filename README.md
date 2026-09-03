@@ -33,6 +33,38 @@ renders as
 
 — link-styled text led by a small superscript number. The superscript is all a chip needs: `Alt+N` addresses it, and the URL behind it stays hidden whenever the terminal supports hyperlinks. On terminals that cannot paint a hyperlink the chip paints as a bare label — inert rather than falling back to some other input mode.
 
+## What it looks like
+
+![A pi session: the model's reply streams in with chips ¹–⁵ lighting up as it writes, a second model adds ⁶ ⁷ ⁸ on three names the primary left bare, and Alt+7 drops "Kevin" into the composer, where it is edited before being sent](docs/demo/pi-snippet.gif)
+
+Real pi, the real extension, and the repo's own `snippet-demo` skill
+(`.pi/skills/snippet-demo`) for the scenario. The model is
+`test/fixtures/mock-llm.js` playing both parts, so the recording costs nothing
+and comes out the same every time — everything the reply is *rendered into* is
+the extension's own output.
+
+What is happening in it:
+
+- **¹–⁵ are the primary model's own tags**, and each goes live the moment its
+  closing tag arrives — the first three are already clickable in the frame
+  where the message is still being written.
+- **⁶ ⁷ ⁸ are the second model's.** It read the finished message and tagged the
+  three names the primary left bare; they take the next free numbers instead of
+  renumbering chips already on screen. The footer tracks that pass: `not sent`
+  while the message streams, `sent (waiting)` while the second model writes,
+  then `3 new chips`. On the next message it has nothing to add and says so —
+  `0 new chips`.
+- **`Alt+7` puts *Kevin* in the composer**, where it gets `, obviously` typed
+  onto the end before it is sent. Inserting never sends.
+
+Ctrl+click does the same thing with the mouse, and is the one part a terminal
+recording cannot show — the click is resolved by the desktop, not by anything
+in the frame.
+
+Re-record it with `python3 scripts/readme-demo.py` (needs `asciinema`; render
+the GIF with [`agg`](https://github.com/asciinema/agg)). The cast itself is
+`docs/demo/pi-snippet.cast`.
+
 ## Install
 
 ```bash
