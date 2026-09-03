@@ -19,9 +19,14 @@ The exchange shows, in order: chips lighting up mid-stream as the primary
 model closes each tag; the footer moving through `not sent` → `sent (waiting)`
 → `3 new chips`; the second model tagging the parrot's three names, which the
 primary left bare, and those chips taking the next free numbers rather than
-renumbering what is already on screen; `Alt+7` inserting one into the
+renumbering what is already on screen; `Alt+2` inserting a chip into the
 composer; and the inserted text being edited before it is sent, because
 inserting never sends.
+
+**The chip that gets inserted is the longest one on screen, deliberately.**
+`Negotiate peace with the Gnome Tax Auditors` is 43 characters that arrive on
+one keystroke, which is the whole argument for the feature; demonstrating it
+on a one-word chip shows the mechanism and hides the point.
 
 Three things about the harness itself:
 
@@ -99,12 +104,13 @@ INFER_ONE = (
 	"<snippet>Nigel the Unwise</snippet>. Which one sticks?"
 )
 # What the user adds to the inserted chip before sending it, to show that
-# inserting is not sending.
-EDIT = ", obviously"
+# inserting is not sending. Kept short on purpose: the contrast between the 43
+# characters Alt+2 delivered and the four typed after it is the demo.
+EDIT = ", and bring snacks"
 PRIMARY_TWO = (
-	"Kevin it is — the parrot looks relieved. Shall I "
-	"<snippet>post the quest to the board</snippet>, or "
-	"<snippet>ask the wizard first</snippet>?"
+	"Peace talks it is, snacks acquired. Shall I "
+	"<snippet>open with the Sock of Infinite Static</snippet>, or "
+	"<snippet>let the dragon speak first</snippet>?"
 )
 # Nothing left for the second model to find, which is the ordinary case and
 # the footer says so: `0 new chips`.
@@ -233,6 +239,24 @@ def main():
 			time.sleep(0.05)
 		raise SystemExit("timed out waiting for %s\n%s" % (label, pump.tail()))
 
+	def wait_regex(pattern, since, seconds, label):
+		"""Wait for a match in output painted *after* `since`.
+
+		The pump keeps every byte the session ever painted, so a plain
+		substring cannot tell a fresh paint from the twentieth repaint of the
+		same sentence. The composer insertion is exactly that case: the chip's
+		text is already on screen inside the message, so what proves Alt+2
+		landed is the same words painted again without the superscript in
+		front of them, after the keystroke.
+		"""
+		rx = re.compile(pattern)
+		end = time.time() + seconds
+		while time.time() < end:
+			if rx.search(pump.text()[since:]):
+				return
+			time.sleep(0.05)
+		raise SystemExit("timed out waiting for %s\n%s" % (label, pump.tail()))
+
 	try:
 		wait_for("mock-small", 40, "pi to boot")
 		time.sleep(2.0)
@@ -253,16 +277,24 @@ def main():
 		wait_for("3 new chips", 15, "the footer to report the new chips")
 		time.sleep(3.5)
 
-		# --- Alt+7 inserts into the composer; ESC-prefixed, as a terminal sends it ---
-		send(b"\x1b7")
-		time.sleep(2.0)
+		# --- Alt+2 inserts 43 characters; ESC-prefixed, as a terminal sends it ---
+		# Checked rather than slept through: the mock answers whatever is sent,
+		# so a chord that never arrived would still produce a plausible-looking
+		# recording of the wrong thing.
+		mark = len(pump.text())
+		send(b"\x1b2")
+		wait_regex("(?<!²)Negotiate peace with the Gnome Tax Auditors", mark, 15,
+				   "Alt+2 to put the chip in the composer")
+		time.sleep(2.2)
 		type_text(EDIT)
 		time.sleep(1.8)
 		send(b"\r")
 
 		# --- the second exchange, so the loop is visible ---
-		wait_for("parrot looks relieved", 30, "the second reply")
-		wait_for("²ask the wizard", 30, "the second reply's own chips")
+		wait_for("snacks acquired", 30, "the second reply")
+		# Short fragments only: at 100 columns pi wraps this reply inside
+		# "²let the dragon", and the captured text carries the break.
+		wait_for("²let", 30, "the second reply's own chips")
 		wait_for("0 new chips", 20, "the second model's report on the second message")
 		time.sleep(3.5)
 

@@ -35,7 +35,7 @@ renders as
 
 ## What it looks like
 
-![A pi session: the model's reply streams in with chips ¹–⁵ lighting up as it writes, a second model adds ⁶ ⁷ ⁸ on three names the primary left bare, and Alt+7 drops "Kevin" into the composer, where it is edited before being sent](docs/demo/pi-snippet.gif)
+![A pi session: the model's reply streams in with chips ¹–⁵ lighting up as it writes, a second model adds ⁶ ⁷ ⁸ on three names the primary left bare, and Alt+2 drops the 43-character "Negotiate peace with the Gnome Tax Auditors" into the composer, where it is edited before being sent](docs/demo/pi-snippet.gif)
 
 Real pi, the real extension, and the repo's own `snippet-demo` skill
 (`.pi/skills/snippet-demo`) for the scenario. The model is
@@ -54,8 +54,12 @@ What is happening in it:
   while the message streams, `sent (waiting)` while the second model writes,
   then `3 new chips`. On the next message it has nothing to add and says so —
   `0 new chips`.
-- **`Alt+7` puts *Kevin* in the composer**, where it gets `, obviously` typed
-  onto the end before it is sent. Inserting never sends.
+- **`Alt+2` puts all 43 characters of *Negotiate peace with the Gnome Tax
+  Auditors* in the composer**, on one keystroke, and then `, and bring snacks`
+  is typed onto the end before it is sent. That is the whole point of the
+  thing: the reply you were going to type is already on screen, written by the
+  model, and taking it costs a chord instead of a sentence. Inserting never
+  sends, so it is a starting point rather than an answer.
 
 Ctrl+click does the same thing with the mouse, and is the one part a terminal
 recording cannot show — the click is resolved by the desktop, not by anything
