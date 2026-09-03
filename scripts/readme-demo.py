@@ -8,25 +8,32 @@ for both models — driven at reading speed instead of test speed, with
 what pi painted. Nothing here is a mock-up of the UI: every superscript, every
 footer state and the insertion are the extension's own output.
 
-The scenario is the repo's own pi skill, `.pi/skills/snippet-demo` — the
-Wizard of Cardboard, chosen there because its three shapes (a numbered list of
-whole options, a binary framed as two complete replies, and a flat list of
-bare names) are the three shapes a chip comes in. The mock plays the reply a
-model following that skill would write, so the recording costs nothing and
-comes out the same every time; what the reply is *rendered into* is real.
+**The scenario is pi-snippet itself**: someone in this repo asking how the
+chip numbers work, and being answered by a model that marks its own offers of
+what to do next. A demo of a suggestion tool should be a session someone could
+actually have had, and the reply doubles as documentation — the numbering rule
+it describes is the one the recording then demonstrates on screen. (The repo's
+`.pi/skills/snippet-demo` skill exists for the other case: a throwaway
+scenario for showing chips off with no real task attached. It is the better
+thing to run by hand and the worse thing to put at the top of the README,
+where a reader is still deciding what this is.)
+
+The reply keeps the three shapes a chip comes in — a numbered list of whole
+options, a binary framed as two complete replies, and a flat list of bare
+names, here the three files the rules live in, left untagged so the second
+model has something to find.
 
 The exchange shows, in order: chips lighting up mid-stream as the primary
 model closes each tag; the footer moving through `not sent` → `sent (waiting)`
-→ `3 new chips`; the second model tagging the parrot's three names, which the
-primary left bare, and those chips taking the next free numbers rather than
-renumbering what is already on screen; `Alt+2` inserting a chip into the
-composer; and the inserted text being edited before it is sent, because
-inserting never sends.
+→ `3 new chips`; the second model tagging those three filenames and its chips
+taking the next free numbers rather than renumbering what is already on
+screen; `Alt+2` inserting a chip into the composer; and the inserted text
+being edited before it is sent, because inserting never sends.
 
 **The chip that gets inserted is the longest one on screen, deliberately.**
-`Negotiate peace with the Gnome Tax Auditors` is 43 characters that arrive on
-one keystroke, which is the whole argument for the feature; demonstrating it
-on a one-word chip shows the mechanism and hides the point.
+`Explain why a chip's number never shifts mid-stream` is 50 characters that
+arrive on one keystroke, which is the whole argument for the feature;
+demonstrating it on a one-word chip shows the mechanism and hides the point.
 
 Three things about the harness itself:
 
@@ -73,44 +80,48 @@ ROWS, COLS = 30, 100
 # the harness's copy — if the prompt moves, both go stale together.
 INFER_MARKER = "You add to an AI coding assistant's message"
 
-PROMPT_ONE = "demo the snippet chips for me"
-# The skill's scenario, marked up the way the injected prompt asks for. The
-# parrot's three names are deliberately left bare: they are what the second
-# model has left to find.
+PROMPT_ONE = "how do the chip numbers work?"
+# The answer a model working on this repo would give, marked up the way the
+# injected prompt asks for. The three filenames at the end are deliberately
+# left bare: they are what the second model has left to find.
 PRIMARY_ONE = (
-	"Welcome, adventurer. The Wizard of Cardboard has three quests posted on the board. "
-	"Which will you take:\n\n"
-	"1. <snippet>Retrieve the Sock of Infinite Static</snippet>?\n"
-	"2. <snippet>Negotiate peace with the Gnome Tax Auditors</snippet>?\n"
-	"3. <snippet>Teach the dragon to do taxes instead</snippet>?\n\n"
-	"Also, the tavern keeper wants to know: should I <snippet>put anchovies on it</snippet>, "
-	"or <snippet>absolutely not, never again</snippet>?\n\n"
-	"One more thing — the parrot keeps repeating a name. Options seen so far: "
-	"Bartholomew, Kevin, or Nigel the Unwise. Which one sticks?"
+	"Chips come from two layers and share one numbering. Layer 1 is the tags the model "
+	"writes itself; layer 2 is a second model that reads the finished message and adds "
+	"more, appended in arrival order. Where do you want to start:\n\n"
+	"1. <snippet>Show me where the merge happens</snippet>?\n"
+	"2. <snippet>Explain why a chip's number never shifts mid-stream</snippet>?\n"
+	"3. <snippet>Walk me through the second model's prompt</snippet>?\n\n"
+	"There is also an open question about the footer: should it "
+	"<snippet>keep the four states it has</snippet>, or "
+	"<snippet>collapse them into one line</snippet>?\n\n"
+	"The rules live in three files: tui-markdown.ts, inferred.ts, and link-url.ts. "
+	"Which one do you want open?"
 )
 # The second model's re-emission: the five tags above come back unchanged (and
 # are dropped at validation — layer 1 already paints them), plus the three
-# names the primary never tagged, which land as ⁶ ⁷ ⁸ without disturbing ¹–⁵.
+# filenames the primary never tagged, which land as ⁶ ⁷ ⁸ without disturbing ¹–⁵.
 INFER_ONE = (
-	"Welcome, adventurer. The Wizard of Cardboard has three quests posted on the board. "
-	"Which will you take:\n\n"
-	"1. <snippet>Retrieve the Sock of Infinite Static</snippet>?\n"
-	"2. <snippet>Negotiate peace with the Gnome Tax Auditors</snippet>?\n"
-	"3. <snippet>Teach the dragon to do taxes instead</snippet>?\n\n"
-	"Also, the tavern keeper wants to know: should I <snippet>put anchovies on it</snippet>, "
-	"or <snippet>absolutely not, never again</snippet>?\n\n"
-	"One more thing — the parrot keeps repeating a name. Options seen so far: "
-	"<snippet>Bartholomew</snippet>, <snippet>Kevin</snippet>, or "
-	"<snippet>Nigel the Unwise</snippet>. Which one sticks?"
+	"Chips come from two layers and share one numbering. Layer 1 is the tags the model "
+	"writes itself; layer 2 is a second model that reads the finished message and adds "
+	"more, appended in arrival order. Where do you want to start:\n\n"
+	"1. <snippet>Show me where the merge happens</snippet>?\n"
+	"2. <snippet>Explain why a chip's number never shifts mid-stream</snippet>?\n"
+	"3. <snippet>Walk me through the second model's prompt</snippet>?\n\n"
+	"There is also an open question about the footer: should it "
+	"<snippet>keep the four states it has</snippet>, or "
+	"<snippet>collapse them into one line</snippet>?\n\n"
+	"The rules live in three files: <snippet>tui-markdown.ts</snippet>, "
+	"<snippet>inferred.ts</snippet>, and <snippet>link-url.ts</snippet>. "
+	"Which one do you want open?"
 )
 # What the user adds to the inserted chip before sending it, to show that
-# inserting is not sending. Kept short on purpose: the contrast between the 43
-# characters Alt+2 delivered and the four typed after it is the demo.
-EDIT = ", and bring snacks"
+# inserting is not sending. Kept short on purpose: the contrast between the 50
+# characters Alt+2 delivered and the handful typed after it is the demo.
+EDIT = ", with an example"
 PRIMARY_TWO = (
-	"Peace talks it is, snacks acquired. Shall I "
-	"<snippet>open with the Sock of Infinite Static</snippet>, or "
-	"<snippet>let the dragon speak first</snippet>?"
+	"The set is rebuilt from the message on every tick, and layer-2 anchors land after "
+	"layer 1, so a number never moves once you can see it. Want the "
+	"<snippet>test that pins it</snippet>, or <snippet>the click path next</snippet>?"
 )
 # Nothing left for the second model to find, which is the ordinary case and
 # the footer says so: `0 new chips`.
@@ -267,23 +278,26 @@ def main():
 		send(b"\r")
 
 		# --- layer 1: chips close and light up while the model is still writing ---
-		wait_for("¹Retrieve", 30, "the ¹ chip mid-stream")
-		wait_for("⁵absolutely", 30, "the last layer-1 chip")
-		wait_for("Which one sticks?", 30, "the primary reply to finish")
+		# Short fragments throughout: pi wraps at 100 columns and the captured
+		# text carries the break, so a predicate long enough to straddle one
+		# never matches. Every fragment below sits well inside a line.
+		wait_for("¹Show", 30, "the ¹ chip mid-stream")
+		wait_for("⁵collapse", 30, "the last layer-1 chip")
+		wait_for("link-url", 30, "the primary reply to finish")
 		time.sleep(2.0)
 
-		# --- layer 2: the three bare names become chips ⁶ ⁷ ⁸ ---
-		wait_for("⁸Nigel", 45, "the second model's last chip")
+		# --- layer 2: the three bare filenames become chips ⁶ ⁷ ⁸ ---
+		wait_for("⁸link", 45, "the second model's last chip")
 		wait_for("3 new chips", 15, "the footer to report the new chips")
 		time.sleep(3.5)
 
-		# --- Alt+2 inserts 43 characters; ESC-prefixed, as a terminal sends it ---
+		# --- Alt+2 inserts 50 characters; ESC-prefixed, as a terminal sends it ---
 		# Checked rather than slept through: the mock answers whatever is sent,
 		# so a chord that never arrived would still produce a plausible-looking
 		# recording of the wrong thing.
 		mark = len(pump.text())
 		send(b"\x1b2")
-		wait_regex("(?<!²)Negotiate peace with the Gnome Tax Auditors", mark, 15,
+		wait_regex("(?<!²)Explain why a chip's number never shifts mid-stream", mark, 15,
 				   "Alt+2 to put the chip in the composer")
 		time.sleep(2.2)
 		type_text(EDIT)
@@ -291,10 +305,8 @@ def main():
 		send(b"\r")
 
 		# --- the second exchange, so the loop is visible ---
-		wait_for("snacks acquired", 30, "the second reply")
-		# Short fragments only: at 100 columns pi wraps this reply inside
-		# "²let the dragon", and the captured text carries the break.
-		wait_for("²let", 30, "the second reply's own chips")
+		wait_for("rebuilt from the message", 30, "the second reply")
+		wait_for("²the click", 30, "the second reply's own chips")
 		wait_for("0 new chips", 20, "the second model's report on the second message")
 		time.sleep(3.5)
 
