@@ -1,14 +1,14 @@
 /**
- * The second model: reads a finished assistant message and streams back the
- * same message with `<snippet>` tags added (shared/inferred.ts holds the
- * contract and the validation).
+ * The second model: reads the assistant message the agent's turn ended on and
+ * streams back the same message with `<snippet>` tags added
+ * (shared/inferred.ts holds the contract and the validation).
  *
  * ## Which model
  *
  * A fixed one, chosen deliberately rather than guessed: OpenRouter's
  * `qwen/qwen3.7-flash`. Small and cheap rather than free — this layer runs
- * after every assistant message (there is no question-mark gate; a status
- * update pays the same as a question), so its latency must be invisible and
+ * after every turn the agent finishes (there is no question-mark gate; a
+ * status update pays the same as a question), so its latency must be invisible and
  * its cost per call must round to nothing (~$0.00004 at this model's rates:
  * a few hundred tokens in, a hundred or so out). The free tier was tried
  * first and lost on availability, not on quality: OpenRouter meters free
@@ -53,7 +53,7 @@
  * - Never keeps trying on a dead credential. `hasConfiguredAuth()` answers
  *   whether credentials are *configured*, not whether they work — an expired
  *   key or a model the account cannot invoke would otherwise fire a request
- *   that cannot succeed after every assistant message. Three
+ *   that cannot succeed at the end of every turn. Three
  *   consecutive failures stand the layer down for the session.
  */
 

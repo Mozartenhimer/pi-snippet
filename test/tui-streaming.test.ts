@@ -213,9 +213,12 @@ describe("pi-snippet-tui: addressing while the model is still writing", () => {
 });
 
 /**
- * The second model (layer 2): when an assistant message ends, a small model
- * re-emits it with `<snippet>` tags around replies the primary model didn't
- * tag, and its chips light up one at a time as that reply streams in. These
+ * The second model (layer 2): when the agent finishes its turn, a small model
+ * re-emits the message it stopped on with `<snippet>` tags around replies the
+ * primary model didn't tag, and its chips light up one at a time as that reply
+ * streams in. Every one of these tests therefore ends its turn with an
+ * `agent_settled` after the `message_end` — a `message_end` alone is the
+ * middle of a tool-calling turn, and nothing is sent there. These
  * tests drive the whole extension — lifecycle handlers, inference engine, and
  * the registered markdown transformer — because the render path is where the
  * layer has actually broken: the anchors are keyed by what the transformer is
@@ -269,6 +272,7 @@ describe("pi-snippet-tui: the second model's chips render as they arrive", () =>
 				ctx,
 			);
 			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			handlers.get("agent_settled")!({}, ctx);
 
 			// Reduce a real URL link to its bare label so the assertions hold
 			// whether this environment paints `pisnip://` links or bare labels.
@@ -317,6 +321,7 @@ describe("pi-snippet-tui: the second model's chips render as they arrive", () =>
 			handlers.get("session_start")!({ reason: "new" }, ctx);
 			handlers.get("message_start")!({ message: partial("") }, ctx);
 			handlers.get("message_end")!({ message: partial("\n" + MESSAGE + "\n") }, ctx);
+			handlers.get("agent_settled")!({}, ctx);
 
 			// Reduce a real URL link to its bare label so the assertions hold
 			// whether this environment paints `pisnip://` links or bare labels.
@@ -412,6 +417,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			expect(statusLine(ctx).at(-1)).toBe("snippet: not sent");
 
 			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			handlers.get("agent_settled")!({}, ctx);
 			expect(statusLine(ctx).at(-1)).toBe("snippet: sent (waiting)");
 
 			// The count is live while the reply streams in.
@@ -439,6 +445,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			handlers.get("session_start")!({ reason: "new" }, ctx);
 			handlers.get("message_start")!({ message: partial("") }, ctx);
 			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			handlers.get("agent_settled")!({}, ctx);
 			await vi.waitFor(() => {
 				expect(statusLine(ctx).at(-1)).toBe("snippet: 0 new chips");
 			});
@@ -462,6 +469,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			handlers.get("session_start")!({ reason: "new" }, ctx);
 			handlers.get("message_start")!({ message: partial("") }, ctx);
 			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			handlers.get("agent_settled")!({}, ctx);
 			await vi.waitFor(() => {
 				expect(statusLine(ctx).at(-1)).toBe("snippet: second model unavailable");
 			});
@@ -491,6 +499,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			handlers.get("session_start")!({ reason: "new" }, ctx);
 			handlers.get("message_start")!({ message: partial("") }, ctx);
 			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			handlers.get("agent_settled")!({}, ctx);
 			await vi.waitFor(() => {
 				expect(statusLine(ctx).at(-1)).toBe("snippet: second model failed");
 			});
@@ -521,6 +530,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			for (const question of ["Rebuild it?", "Ship it?", "Revert it?"]) {
 				handlers.get("message_start")!({ message: partial("") }, ctx);
 				handlers.get("message_end")!({ message: partial(question) }, ctx);
+				handlers.get("agent_settled")!({}, ctx);
 				await vi.waitFor(() => {
 					expect(statusLine(ctx).at(-1)).not.toBe("snippet: sent (waiting)");
 				});
@@ -557,6 +567,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			handlers.get("session_start")!({ reason: "new" }, ctx);
 			handlers.get("message_start")!({ message: partial("") }, ctx);
 			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			handlers.get("agent_settled")!({}, ctx);
 			await vi.waitFor(() => {
 				expect(sent).toBeDefined();
 			});
@@ -603,6 +614,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			handlers.get("session_start")!({ reason: "new" }, ctx);
 			handlers.get("message_start")!({ message: partial("") }, ctx);
 			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			handlers.get("agent_settled")!({}, ctx);
 			if (asked) {
 				await vi.waitFor(() => {
 					expect(statusLine(ctx).at(-1)).toBe("snippet: 0 new chips");
@@ -636,6 +648,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 				{ message: partial("Build is green. Deployed at noon.") },
 				ctx,
 			);
+			handlers.get("agent_settled")!({}, ctx);
 			expect(statusLine(ctx).at(-1)).toBe("snippet: sent (waiting)");
 		} finally {
 			delete process.env.PI_SNIPPET_MODEL;
@@ -653,6 +666,7 @@ describe("pi-snippet-tui: the footer reports the second model", () => {
 			handlers.get("session_start")!({ reason: "new" }, ctx);
 			handlers.get("message_start")!({ message: partial("") }, ctx);
 			handlers.get("message_end")!({ message: partial(MESSAGE) }, ctx);
+			handlers.get("agent_settled")!({}, ctx);
 			await vi.waitFor(() => {
 				expect(statusLine(ctx).at(-1)).toBe("snippet: 0 new chips");
 			});

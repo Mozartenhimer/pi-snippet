@@ -34,7 +34,9 @@
  * The transformer stays pure; the addressable set is derived in the message
  * lifecycle handlers (`message_update` while the model writes, `message_end`
  * when it stops) and held in extension state, never built during
- * transformation (PRD §5.2 hard rule).
+ * transformation (PRD §5.2 hard rule). The second model is asked later still,
+ * at `agent_settled` — once per turn the user can answer, not once per message
+ * a tool-calling turn happens to contain.
  */
 import { putBounded } from "../shared/bounded-map.js";
 import { DigitChord } from "../shared/digit-chord.js";
@@ -159,13 +161,14 @@ export default function piSnippetTui(pi: any): void {
 	};
 
 	/**
-	 * The second model (shared/inferred.ts, extension/infer.ts): after an
-	 * assistant message ends, a small fixed model re-emits it with `<snippet>`
-	 * tags around the replies the primary model didn't tag. Its anchors live
-	 * here — keyed by the stripped message text, appended as they stream in —
-	 * and are merged into the chip numbering by `mergeSuggestions`, which is
-	 * the one place that decides what a message's chips are. Nothing else in
-	 * the UI knows or cares which layer painted a chip.
+	 * The second model (shared/inferred.ts, extension/infer.ts): once the agent
+	 * has finished its turn, a small fixed model re-emits the message it ended
+	 * on with `<snippet>` tags around the replies the primary model didn't tag.
+	 * Its anchors live here — keyed by the stripped message text, appended as
+	 * they stream in — and are merged into the chip numbering by
+	 * `mergeSuggestions`, which is the one place that decides what a message's
+	 * chips are. Nothing else in the UI knows or cares which layer painted a
+	 * chip.
 	 *
 	 * Session-ephemeral by design: a restart loses the answers, and the stored
 	 * transcript (raw tags only, never rewritten) repaints with layer-1 chips
@@ -206,6 +209,25 @@ export default function piSnippetTui(pi: any): void {
 	 */
 	let assistantSeq = 0;
 	let latestAssistantSeq = 0;
+
+	/**
+	 * The assistant message the second model will be asked about, held from the
+	 * `message_end` that produced it until the agent settles.
+	 *
+	 * A tool-calling turn ends several assistant messages before it is done,
+	 * and the ones in the middle are not places a reply can be sent: the user
+	 * cannot answer "shall I rebuild?" while pi is already running the build.
+	 * Asking about each of them spent a request per hop and painted chips onto
+	 * messages that scrolled away behind the tool output before anyone could
+	 * click them. So only the message the agent stopped on is sent, and only
+	 * once `agent_settled` says no retry, compaction or queued continuation
+	 * will move the conversation on again.
+	 *
+	 * Cleared on every branch move: a message that is no longer at the tip has
+	 * no numbering to be merged into, and `applyInferredAnchor`'s sequence
+	 * check would drop its anchors anyway.
+	 */
+	let pendingInference: { role?: string; content?: TextBlock[] } | null = null;
 
 	/**
 	 * `--no-suggestions` is a session override, deliberately kept out of
@@ -753,6 +775,7 @@ export default function piSnippetTui(pi: any): void {
 		// message flips this to "not sent" while it streams.
 		inferStatus = "off";
 		appliedChips = 0;
+		pendingInference = null;
 		syncInferStatus(ctx);
 		// Falls back to the random token from setup if the session has no id
 		// (a trust-limited or otherwise degraded ctx); a socket that dies with
@@ -789,6 +812,7 @@ export default function piSnippetTui(pi: any): void {
 		// sequence must move past anything in flight.
 		assistantSeq++;
 		latestAssistantSeq = assistantSeq;
+		pendingInference = null;
 		hydrateFromBranch(ctx);
 		streamCloseTags = 0;
 		chord.reset();
@@ -829,14 +853,16 @@ export default function piSnippetTui(pi: any): void {
 	 * chips still on screen above it.
 	 */
 	/**
-	 * Send a finished assistant message to the second model.
+	 * Send the message the agent's turn ended on to the second model.
 	 *
 	 * The message goes as stored, layer-1 tags included: the second model sees
 	 * what is already covered and is asked to add more, not to repeat it — and
 	 * anything it echoes anyway is dropped at validation time. Every message
-	 * is sent — there is no question-mark gate; a status update costs the same
-	 * request as a question, and pays for itself in never mis-declining one.
-	 * Every failure inside is silent.
+	 * the agent stops on is sent — there is no question-mark gate; a status
+	 * update costs the same request as a question, and pays for itself in never
+	 * mis-declining one. What is *not* sent is the messages in the middle of a
+	 * tool-calling turn, which are not points the user can reply at (see
+	 * `pendingInference`). Every failure inside is silent.
 	 */
 	const queueInference = (message: { role?: string; content?: TextBlock[] }, ctx: any): void => {
 		if (!inferOn()) return;
@@ -956,7 +982,26 @@ export default function piSnippetTui(pi: any): void {
 		indexMessageForLinks(event.message);
 		streamCloseTags = 0;
 		syncClicks(ctx);
-		queueInference(event.message, ctx);
+		// Not sent yet — the agent may still be calling tools and writing more.
+		// `agent_settled` decides which message was the last one and sends that.
+		pendingInference = event.message;
+	});
+
+	/**
+	 * The agent has stopped: no tool call, retry, compaction or queued
+	 * continuation is going to add another message, so the message on screen is
+	 * the one the user is about to reply to. That is the only message worth
+	 * asking the second model about.
+	 *
+	 * `agent_settled` rather than `agent_end`, which pi fires once per agent
+	 * loop — a retried or continued run fires it several times and only the
+	 * last of those is the end of the turn.
+	 */
+	pi.on("agent_settled", (_event: unknown, ctx: any) => {
+		const message = pendingInference;
+		pendingInference = null;
+		if (!message) return; // a turn that ended without an assistant message
+		queueInference(message, ctx);
 	});
 
 	// pi's /hotkeys table gives every registerShortcut call its own row (no

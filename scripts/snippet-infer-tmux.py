@@ -2,8 +2,8 @@
 """Watch the second model kick in, in a real terminal, end to end.
 
 The user story this pins down: the primary model's reply streams
-immediately; when it ends, the second model re-emits the message with more
-`<snippet>` tags and its chips light up one at a time; and every superscript
+immediately; when the agent's turn ends on it, the second model re-emits the
+message with more `<snippet>` tags and its chips light up one at a time; and every superscript
 already on screen stays exactly what it was — even when a new chip lands
 *before* an older one in the text, so painted order and numbered order
 deliberately diverge.

@@ -119,6 +119,7 @@ describe("an answer that arrives while the session has moved on", () => {
 		pi.fire("session_start", { reason: "startup" }, ctx);
 		pi.fire("message_start", { message: { role: "assistant" } }, ctx);
 		pi.fire("message_end", { message: msg(ASKED) }, ctx);
+		pi.fire("agent_settled", {}, ctx);
 		expect(statuses.at(-1)).toContain("sent (waiting)");
 
 		// A new turn begins before the second model gets a word in.
@@ -139,6 +140,7 @@ describe("an answer that arrives while the session has moved on", () => {
 		pi.fire("session_start", { reason: "startup" }, ctx);
 		pi.fire("message_start", { message: { role: "assistant" } }, ctx);
 		pi.fire("message_end", { message: msg(ASKED) }, ctx);
+		pi.fire("agent_settled", {}, ctx);
 		await settle();
 		pi.press("alt+1", ctx);
 		expect(ctx.ui.getEditorText()).toBe("rebuild");
@@ -146,6 +148,7 @@ describe("an answer that arrives while the session has moved on", () => {
 		// The same message again: the engine answers from its cache and replays
 		// the anchors, every one of which is already known.
 		pi.fire("message_end", { message: msg(ASKED) }, ctx);
+		pi.fire("agent_settled", {}, ctx);
 		await settle();
 		pi.press("alt+1", ctx);
 		expect(ctx.ui.getEditorText()).toBe("rebuild rebuild"); // two presses, one chip
@@ -160,6 +163,7 @@ describe("an answer that arrives while the session has moved on", () => {
 		pi.fire("session_start", { reason: "startup" }, ctx);
 		pi.fire("message_start", { message: { role: "assistant" } }, ctx);
 		pi.fire("message_end", { message: msg(ASKED) }, ctx);
+		pi.fire("agent_settled", {}, ctx);
 
 		// `/snippets` → Suggestions → off, while the request is still out.
 		await pi.run("", ctx);
@@ -186,6 +190,7 @@ describe("the runaway cap applies across both layers", () => {
 		pi.fire("session_start", { reason: "startup" }, ctx);
 		pi.fire("message_start", { message: { role: "assistant" } }, ctx);
 		pi.fire("message_end", { message: msg(asked) }, ctx);
+		pi.fire("agent_settled", {}, ctx);
 		await settle();
 
 		// The cap is what the keyboard can reach, so nothing past it is
@@ -204,8 +209,104 @@ describe("a message with an empty text block", () => {
 		pi.fire("session_start", { reason: "startup" }, ctx);
 		pi.fire("message_start", { message: { role: "assistant" } }, ctx);
 		pi.fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: "" }, { type: "text", text: ASKED }] } }, ctx);
+		pi.fire("agent_settled", {}, ctx);
 		await settle();
 		pi.press("alt+1", ctx);
 		expect(ctx.ui.getEditorText()).toBe("rebuild");
+	});
+});
+
+/**
+ * A tool-calling turn ends several assistant messages before the agent stops.
+ * Only the message it stops on is a place the user can reply, so only that one
+ * is handed to the second model — the middle ones would each spend a request
+ * and paint chips onto text about to scroll away behind tool output.
+ */
+describe("the turn, not the message, is what asks the second model", () => {
+	/** The same registry, plus a record of every message it was asked about. */
+	function makeRecordingRegistry(answer: string) {
+		const asked: string[] = [];
+		return {
+			asked,
+			registry: {
+				getAvailable: () => [MODEL],
+				hasConfiguredAuth: () => true,
+				getApiKeyAndHeaders: () => ({ apiKey: "test-key" }),
+				getProvider: (provider: string) =>
+					provider === "openrouter"
+						? {
+								async *streamSimple(_model: unknown, context: { messages: Array<{ content?: string }> }) {
+									asked.push(context.messages[0]?.content ?? "");
+									yield { type: "text_delta", delta: answer };
+								},
+							}
+						: undefined,
+			},
+		};
+	}
+
+	it("leaves the mid-turn messages unsent and asks only about the one the agent stopped on", async () => {
+		const pi = makeFakePi();
+		const { asked, registry } = makeRecordingRegistry(ANSWERED);
+		const { ctx, statuses } = makeCtx(registry);
+		pi.fire("session_start", { reason: "startup" }, ctx);
+
+		// The agent's first message, before it goes off to run a tool.
+		pi.fire("message_start", { message: { role: "assistant" } }, ctx);
+		pi.fire("message_end", { message: msg("Let me look at the build log.") }, ctx);
+		await settle();
+		expect(asked).toEqual([]);
+		expect(statuses.at(-1)).toContain("not sent");
+
+		// The message it stops on.
+		pi.fire("message_start", { message: { role: "assistant" } }, ctx);
+		pi.fire("message_end", { message: msg(ASKED) }, ctx);
+		await settle();
+		expect(asked).toEqual([]);
+
+		pi.fire("agent_settled", {}, ctx);
+		await settle();
+		expect(asked).toHaveLength(1);
+		expect(asked[0]).toContain(ASKED);
+		expect(asked[0]).not.toContain("build log");
+		pi.press("alt+1", ctx);
+		expect(ctx.ui.getEditorText()).toBe("rebuild");
+	});
+
+	it("asks nothing when a turn settles without an assistant message", async () => {
+		const pi = makeFakePi();
+		const { asked, registry } = makeRecordingRegistry(ANSWERED);
+		const { ctx, statuses } = makeCtx(registry);
+		pi.fire("session_start", { reason: "startup" }, ctx);
+		pi.fire("agent_settled", {}, ctx);
+		await settle();
+		expect(asked).toEqual([]);
+		expect(statuses.at(-1)).toBe(""); // session_start's clear, nothing since
+
+		// And the message from a settled turn is not asked about a second time
+		// when the next turn settles on nothing of its own.
+		pi.fire("message_start", { message: { role: "assistant" } }, ctx);
+		pi.fire("message_end", { message: msg(ASKED) }, ctx);
+		pi.fire("agent_settled", {}, ctx);
+		await settle();
+		expect(asked).toHaveLength(1);
+		pi.fire("agent_settled", {}, ctx);
+		await settle();
+		expect(asked).toHaveLength(1);
+	});
+
+	it("forgets the message a turn ended on once the branch moves", async () => {
+		// `/tree` walked away before the agent settled: the message is no longer
+		// at the tip, so there is no numbering for its anchors to join.
+		const pi = makeFakePi();
+		const { asked, registry } = makeRecordingRegistry(ANSWERED);
+		const { ctx } = makeCtx(registry);
+		pi.fire("session_start", { reason: "startup" }, ctx);
+		pi.fire("message_start", { message: { role: "assistant" } }, ctx);
+		pi.fire("message_end", { message: msg(ASKED) }, ctx);
+		pi.fire("session_tree", {}, ctx);
+		pi.fire("agent_settled", {}, ctx);
+		await settle();
+		expect(asked).toEqual([]);
 	});
 });

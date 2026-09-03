@@ -48,12 +48,13 @@ What is happening in it:
 - **¹–⁵ are the primary model's own tags**, and each goes live the moment its
   closing tag arrives — the first three are already clickable in the frame
   where the message is still being written.
-- **⁶ ⁷ ⁸ are the second model's.** It read the finished message and tagged the
-  three filenames the first one left bare; they take the next free numbers
-  instead of renumbering chips already on screen. The footer tracks that pass:
-  `not sent` while the message streams, `sent (waiting)` while the second model
-  writes, then `3 new chips`. On the next message it has nothing to add and
-  says so — `0 new chips`.
+- **⁶ ⁷ ⁸ are the second model's.** Once the agent stopped — the end of the
+  turn, not of every message it wrote along the way — it read that message and
+  tagged the three filenames the first one left bare; they take the next free
+  numbers instead of renumbering chips already on screen. The footer tracks
+  that pass: `not sent` while the turn is still running, `sent (waiting)` while
+  the second model writes, then `3 new chips`. On the next turn it has nothing
+  to add and says so — `0 new chips`.
 - **`Alt+2` puts all 50 characters of *Explain why a chip's number never shifts
   mid-stream* in the composer**, on one keystroke, and then `, with an example`
   is typed onto the end before it is sent. That is the whole point of the
