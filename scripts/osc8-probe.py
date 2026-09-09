@@ -18,8 +18,8 @@ terminal it thinks it is talking to:
                them perfectly well (docs/linux-terminals.md). The chip label
                is expected, the URL is not, and neither is the paren fallback.
 
-`scripts/alacritty-click.py` is the same question asked of a real window
-rather than a pty.
+`scripts/terminal-click.py` is the same question asked of a real window
+rather than a pty, and of terminals other than these two.
 
 Usage:  python3 scripts/osc8-probe.py [ghostty|unknown|alacritty] [--url URL]
 """

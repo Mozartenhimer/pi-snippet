@@ -56,9 +56,14 @@ What is left:
    version (measured on 0.13.2, and absent from upstream's tty code and
    changelog through 0.18.0-dev), so it falls through to "everything else".
    The terminal itself does paint OSC 8 and dispatches a `pisnip://` click to
-   `xdg-open` on a plain left click — measured end to end by
-   `scripts/alacritty-click.py`. `docs/linux-terminals.md` has the detail and
-   the upstream one-liner (`ALACRITTY_WINDOW_ID`).
+   `xdg-open`, on any gesture including a plain click.
+
+   So of the four terminals measured with `scripts/terminal-click.py`, **kitty
+   is the only one where clicking works as shipped** — Alacritty and
+   gnome-terminal both do everything asked of a terminal and are simply not
+   recognised (`PI_HYPERLINKS=1` is the whole fix), and Konsole ignores OSC 8
+   hyperlinks itself. `docs/linux-terminals.md` has the measurements and the
+   two upstream one-liners (`ALACRITTY_WINDOW_ID`, `GNOME_TERMINAL_SERVICE`).
 
    So gnome-terminal, Konsole, xterm and foot get nothing — not because they
    cannot do it (VTE has painted OSC 8 since 0.48 and activates on Ctrl+click),
