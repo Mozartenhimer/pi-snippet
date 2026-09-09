@@ -36,7 +36,7 @@ and already measured (§6 of the clicks doc).
 | Konsole | yes | yes | no |
 | xterm | yes (recent builds) | yes | no |
 | foot | yes | yes | no |
-| Alacritty | verify | verify | yes (hmm — see below) |
+| **Alacritty** | **yes** (0.13.2, measured) | **yes — plain click, no modifier** | **no** (see below) |
 | tmux / GNU screen | forwards only if client advertises `hyperlinks` | outer terminal's gesture | conditional (pi-tui asks tmux) |
 
 There is only one detection column because there is only one table: the
@@ -47,7 +47,8 @@ copy of its answers.
 terminal does not work merely by being able to: **pi-tui decides whether to
 emit OSC 8 at all**, from its own capability table (`getCapabilities()`,
 measured in the 0.84.x snap binary: kitty, ghostty, wezterm, warp, iTerm2,
-Windows Terminal, VS Code — unknown terminal ⇒ no hyperlinks). The extension
+Windows Terminal, VS Code, and an Alacritty entry that never fires — unknown
+terminal ⇒ no hyperlinks). The extension
 asks that same function, so the two can no longer disagree. Guess more
 generously than pi-tui and every chip trails a visible
 `(pisnip://a1b2c3d4/ff2ee691/c1)` — pi-tui falls back to printing the href in
@@ -57,8 +58,9 @@ terminal that could have worked gets nothing.
 `PI_HYPERLINKS=1` and `=0` force pi-tui's answer either way, which is the
 quickest way to see both regimes without changing terminal.
 
-Entries marked *verify* are reported-by-documentation rather than measured
-here; each has a ten-second test below.
+Ghostty and Alacritty are measured here — Ghostty in the clicks doc, Alacritty
+by `scripts/alacritty-click.py`, which drives a real window. The rest are
+reported-by-documentation; each has the ten-second test below.
 
 ## gnome-terminal, specifically
 
@@ -106,6 +108,57 @@ Why it does not work today, and what it takes:
 **One VTE-family caveat that is easy to misread as a bug:** gnome-terminal
 underlines hyperlinks only on hover (and only some themes show any affordance
 at rest). A chip that never looks clickable is still clickable.
+
+## Alacritty, specifically
+
+Alacritty is the one row in the table that was wrong in both directions: it was
+listed as painted-by-pi-tui when it never is, and its two terminal obligations
+were listed as unverified when in fact it honours both. Both halves were
+measured on 0.13.2 with `scripts/alacritty-click.py`, which puts a real window
+on a display, runs real pi in it, and clicks the chip with a real pointer.
+
+**The terminal does everything asked of it.** Its default configuration ships a
+hint with `hyperlinks = true` and `command = xdg-open`, so an OSC 8 URL is
+matched by the hyperlink itself and never by the hint's URL regex — which is
+what lets a scheme the regex has never heard of through. A click on a chip ran
+`xdg-open pisnip://vm/2c64141d/ff2ee691/c1`, verbatim, and the suggestion
+landed in the composer: paint, dispatch, handler, socket, insertion, all of it.
+
+**The gesture is a plain left click, no modifier.** Alacritty's default hint
+sets no mouse mods (`HintMouse { enabled: true, mods: Default::default() }`),
+so Ctrl is not needed — though Ctrl+click and Ctrl+Shift+click work too, since
+the mods are a floor and not a filter. Selection is not lost to this: a *drag*
+across a chip selects and does not activate, because a hint fires on a click
+that did not become a drag. Ctrl+Shift+O opens the same hints from the
+keyboard. This is the one terminal in the table where the README's "Ctrl+click"
+is more ceremony than the terminal requires.
+
+**pi-tui never paints the links there, and cannot.** Its Alacritty entry is
+`TERM_PROGRAM === "alacritty"`, and **Alacritty sets no `TERM_PROGRAM`** — not
+in 0.13.2 (it exports `ALACRITTY_WINDOW_ID`, `ALACRITTY_SOCKET`,
+`ALACRITTY_LOG`, `COLORTERM=truecolor` and `TERM`, and nothing else), and not
+upstream either: the string appears nowhere in `alacritty_terminal/src/tty/`
+or in the changelog through 0.18.0-dev. So the entry is dead code that can only
+fire for someone who sets the variable by hand. `TERM` is no help as a
+substitute either — Alacritty falls back to `TERM=xterm-256color` whenever its
+own terminfo entry is not installed (`terminfo_exists("alacritty")`), which is
+the common case on a distro that keeps it in a separate package.
+
+What a stock session looks like, then: the chip paints as a bare superscript
+label — correctly, with **no** trailing `(pisnip://…)`, since the extension
+gates on the same `getCapabilities().hyperlinks` that said no — and a click
+reaches nothing at all. `alacritty-click.py --stock` asserts exactly that, so
+the day pi-tui learns to detect Alacritty, the harness fails and says so.
+
+Two fixes, one of them not ours:
+
+1. **Upstream, one line**: key the entry on `ALACRITTY_WINDOW_ID` the way kitty
+   and WezTerm are keyed on `KITTY_WINDOW_ID` and `WEZTERM_PANE`, rather than
+   on a variable Alacritty does not set. Nothing in this repo moves; bump the
+   dependency and the chips light up.
+2. **Today, for a user**: `PI_HYPERLINKS=1` in the environment pi runs in.
+   Measured end to end — chip, click, insertion — with no other change and
+   without pretending to be a different terminal.
 
 ## The same test for any other terminal
 

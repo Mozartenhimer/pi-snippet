@@ -324,7 +324,9 @@ without asking anyone.
 
 `getCapabilities()` (`pi-tui/dist/terminal-image.js`) is env-sniffing, and it is
 worth knowing which terminals it says yes to: Ghostty, kitty, WezTerm, Warp,
-iTerm2, Windows Terminal, VS Code, Alacritty → `hyperlinks: true`. Under tmux it
+iTerm2, Windows Terminal, VS Code → `hyperlinks: true`. Alacritty is in that
+list too, but keyed on a `TERM_PROGRAM` Alacritty never sets, so in practice
+it is not — `docs/linux-terminals.md` has that measurement. Under tmux it
 shells out to `tmux display-message -p '#{client_termfeatures}'` and requires
 `hyperlinks` in the list. screen, JetBrains, and anything unrecognised → false.
 

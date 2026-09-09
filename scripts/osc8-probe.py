@@ -7,13 +7,21 @@ would survive the trip. That is a claim about pi-tui, and this answers it by
 reading the bytes rather than the source: fork a pty, run real pi against the
 mock LLM, and dump what lands on the wire.
 
-Two regimes, because pi-tui's `detectCapabilities()` gates OSC 8 on the
+Three regimes, because pi-tui's `detectCapabilities()` gates OSC 8 on the
 terminal it thinks it is talking to:
 
-    ghostty   TERM_PROGRAM=ghostty  → hyperlinks: true  → OSC 8 expected
-    unknown   TERM=xterm-256color   → hyperlinks: false → " (url)" expected
+    ghostty    TERM_PROGRAM=ghostty  → hyperlinks: true  → OSC 8 expected
+    unknown    TERM=xterm-256color   → hyperlinks: false → " (url)" expected
+    alacritty  exactly what Alacritty exports — which contains no
+               TERM_PROGRAM, so pi-tui falls through to the unknown case and
+               a real Alacritty gets no hyperlinks at all despite rendering
+               them perfectly well (docs/linux-terminals.md). The chip label
+               is expected, the URL is not, and neither is the paren fallback.
 
-Usage:  python3 scripts/osc8-probe.py [ghostty|unknown] [--url URL]
+`scripts/alacritty-click.py` is the same question asked of a real window
+rather than a pty.
+
+Usage:  python3 scripts/osc8-probe.py [ghostty|unknown|alacritty] [--url URL]
 """
 import json
 import os
@@ -57,14 +65,25 @@ env.update(
 )
 if regime == "ghostty":
     env.update(TERM="xterm-ghostty", TERM_PROGRAM="ghostty", COLORTERM="truecolor")
+elif regime == "alacritty":
+    # Copied off a running alacritty 0.13.2: TERM is the terminfo fallback
+    # whenever the alacritty entry is not installed, and the window id is the
+    # only variable that names the terminal at all.
+    env.update(TERM="xterm-256color", COLORTERM="truecolor",
+               ALACRITTY_WINDOW_ID="2097155", ALACRITTY_LOG="/tmp/Alacritty-1.log")
+    env.pop("TERM_PROGRAM", None)
+    env.pop("GHOSTTY_RESOURCES_DIR", None)
 else:
     env.update(TERM="xterm-256color")
     env.pop("TERM_PROGRAM", None)
     env.pop("GHOSTTY_RESOURCES_DIR", None)
 env.pop("TMUX", None)
 
-args = ["pi", "--no-session", "--no-extensions", "-e", FIXTURE, "-e", EXT,
-        "--provider", "mockllm", "--model", "mock-small"]
+# --approve and --offline because PI_CODING_AGENT_DIR is a fresh directory
+# every run: without them pi 0.84.4 opens the "Trust project folder?" prompt
+# and then goes looking for `fd`, and the probe reads a startup screen.
+args = ["pi", "--no-session", "--no-extensions", "--approve", "--offline",
+        "-e", FIXTURE, "-e", EXT, "--provider", "mockllm", "--model", "mock-small"]
 
 pid, master = pty.fork()
 if pid == 0:
