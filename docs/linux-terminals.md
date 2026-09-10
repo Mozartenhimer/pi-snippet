@@ -190,9 +190,11 @@ in 0.13.2 (it exports `ALACRITTY_WINDOW_ID`, `ALACRITTY_SOCKET`,
 upstream either: the string appears nowhere in `alacritty_terminal/src/tty/`
 or in the changelog through 0.18.0-dev. So the entry is dead code that can only
 fire for someone who sets the variable by hand. `TERM` is no help as a
-substitute either — Alacritty falls back to `TERM=xterm-256color` whenever its
-own terminfo entry is not installed (`terminfo_exists("alacritty")`), which is
-the common case on a distro that keeps it in a separate package.
+substitute in every case either — Alacritty falls back to
+`TERM=xterm-256color` whenever its own terminfo entry is not installed
+(`terminfo_exists("alacritty")`), which is what a container without
+`ncurses-term` looks like. With the entry installed, which is the ordinary
+desktop case, it is `TERM=alacritty`.
 
 What a stock session looks like, then: the chip paints as a bare superscript
 label — correctly, with **no** trailing `(pisnip://…)`, since the extension
@@ -203,13 +205,43 @@ so.
 
 Two fixes, one of them not ours:
 
-1. **Upstream, one line**: key the entry on `ALACRITTY_WINDOW_ID` the way kitty
-   and WezTerm are keyed on `KITTY_WINDOW_ID` and `WEZTERM_PANE`, rather than
-   on a variable Alacritty does not set. Nothing in this repo moves; bump the
-   dependency and the chips light up.
+1. **Upstream, one line: `TERM`.** The entry becomes
+   `termProgram === "alacritty" || term.includes("alacritty")`, which is
+   exactly the shape the ghostty entry beside it already has. **Verified by
+   patching it into a real pi**: with that one clause, a stock Alacritty
+   session — nothing forced, no `PI_HYPERLINKS` — painted OSC 8 chips with no
+   paren fallback, and every gesture inserted. `terminal-click.py alacritty
+   --stock` then reports `UNEXPECTED … has pi-tui learned to detect it?`,
+   which is the harness noticing the fix landed.
+
+   `TERM` beats the `ALACRITTY_WINDOW_ID` this doc first suggested, for a
+   reason this repo cares about more than most: **`TERM` crosses ssh and that
+   variable does not.** ssh carries `TERM` in the pty request itself
+   (RFC 4254 §6.2) while `ALACRITTY_*` is dropped unless someone has written
+   `SendEnv`/`AcceptEnv` rules for it — and a remote pi painting chips for a
+   local Alacritty to click is the whole of the SSH story here (ADR 0001).
+   Its one blind spot is the terminfo fallback above: no `alacritty` terminfo
+   entry, no `TERM=alacritty`. Keying on both covers that, in that order.
+
+   None of this makes gnome-terminal work: VTE sets `TERM=xterm-256color` and
+   always has, so its entry has to be `GNOME_TERMINAL_SERVICE`/`VTE_VERSION`.
+   Konsole is the same, and would not benefit anyway.
 2. **Today, for a user**: `PI_HYPERLINKS=1` in the environment pi runs in.
    Measured end to end — chip, click, insertion — with no other change and
    without pretending to be a different terminal.
+
+**A warning for whoever tries that patch**, because it cost an hour here: the
+capability table exists in *three* copies on a machine, and two of them are
+live. esbuild bundles pi-tui into `dist/extension/pi-snippet-tui.js`, so the
+extension carries its own copy and that is what decides whether a chip gets an
+href; pi's renderer reads pi's own copy, nested at
+`pi-coding-agent/node_modules/@earendil-works/pi-tui`, and that is what decides
+whether an href is emitted as OSC 8 or printed in parentheses; a third,
+inert copy sits inside pi's `dist/bundle/chunks/`, which `dist/cli.js` never
+loads. Patch only the extension's and you get precisely the failure this repo
+warns about — `¹rebuild the solution (pisnip://…)`, visible parens, because the
+two answers disagreed. That is the concrete shape of "the gate has to agree
+with the renderer that would print the parens".
 
 ## The same test for any other terminal
 

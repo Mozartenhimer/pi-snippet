@@ -63,7 +63,10 @@ What is left:
    gnome-terminal both do everything asked of a terminal and are simply not
    recognised (`PI_HYPERLINKS=1` is the whole fix), and Konsole ignores OSC 8
    hyperlinks itself. `docs/linux-terminals.md` has the measurements and the
-   two upstream one-liners (`ALACRITTY_WINDOW_ID`, `GNOME_TERMINAL_SERVICE`).
+   two upstream one-liners: `term.includes("alacritty")` — `TERM`, which
+   crosses ssh where `ALACRITTY_WINDOW_ID` does not, and which was verified by
+   patching it into a real pi — and `GNOME_TERMINAL_SERVICE` for VTE, whose
+   `TERM` is the unspecific `xterm-256color`.
 
    So gnome-terminal, Konsole, xterm and foot get nothing — not because they
    cannot do it (VTE has painted OSC 8 since 0.48 and activates on Ctrl+click),

@@ -17,11 +17,17 @@ terminal it thinks it is talking to:
                a real Alacritty gets no hyperlinks at all despite rendering
                them perfectly well (docs/linux-terminals.md). The chip label
                is expected, the URL is not, and neither is the paren fallback.
+    alacritty-terminfo
+               the same, on a machine where the alacritty terminfo entry is
+               installed, so TERM is `alacritty` rather than the
+               `xterm-256color` fallback. Same answer from pi-tui today, and
+               the regime to re-run against a pi-tui that has learned to key
+               the entry on TERM (docs/linux-terminals.md).
 
 `scripts/terminal-click.py` is the same question asked of a real window
 rather than a pty, and of terminals other than these two.
 
-Usage:  python3 scripts/osc8-probe.py [ghostty|unknown|alacritty] [--url URL]
+Usage:  python3 scripts/osc8-probe.py [ghostty|unknown|alacritty|alacritty-terminfo] [--url URL]
 """
 import json
 import os
@@ -65,6 +71,12 @@ env.update(
 )
 if regime == "ghostty":
     env.update(TERM="xterm-ghostty", TERM_PROGRAM="ghostty", COLORTERM="truecolor")
+elif regime == "alacritty-terminfo":
+    # What a desktop install looks like: alacritty ships this terminfo entry
+    # and picks it over the xterm-256color fallback.
+    env.update(TERM="alacritty", COLORTERM="truecolor", ALACRITTY_WINDOW_ID="2097155")
+    env.pop("TERM_PROGRAM", None)
+    env.pop("GHOSTTY_RESOURCES_DIR", None)
 elif regime == "alacritty":
     # Copied off a running alacritty 0.13.2: TERM is the terminfo fallback
     # whenever the alacritty entry is not installed, and the window id is the
