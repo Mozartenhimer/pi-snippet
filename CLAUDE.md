@@ -41,6 +41,7 @@ python3 scripts/snippet-model-tmux.py  # real pi, real terminal: /snippets model
 python3 scripts/snippet-infer-tmux.py  # real pi, real terminal: primary streams, second model's chips light up, superscripts stay put, footer tracks not sent / waiting / new-chip count
 sudo bash scripts/docker-ssh-env.sh    # two containers, real sshd (once; no registry pull — debootstrap + import)
 sudo python3 scripts/ssh-click-docker.py  # real SSH: the ssh-back relay, end to end, with nothing set up anywhere
+sudo bash scripts/docker-click.sh        # pi in a container (root and --user), handler on the host, socket dir bind-mounted
 python3 scripts/readme-demo.py --cwd /path/to/a/main/checkout  # re-record the README's GIF (asciinema; agg renders it)
 ```
 

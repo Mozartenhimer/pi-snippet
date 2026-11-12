@@ -20,6 +20,9 @@
  *
  * `PI_SNIPPET_SOCKET_DIR` is first in that list precisely so a confined build
  * can be pointed at a directory both sides can see.
+ * The same is how pi in a Docker container is reached: bind-mount the host's
+ * `$XDG_RUNTIME_DIR/pi-snippet` and point this variable at it (README,
+ * "Inside a Docker container"; `scripts/docker-click.sh`).
  *
  * ## Nothing here is allowed to be fatal
  *
@@ -31,6 +34,7 @@
 import {
 	accessSync,
 	chmodSync,
+	chownSync,
 	constants,
 	existsSync,
 	mkdirSync,
@@ -142,6 +146,24 @@ export class LinkServer {
 						chmodSync(path, 0o600); // belt and braces, behind the 0700 directory
 					} catch {
 						/* the directory already prevents anyone else reaching it */
+					}
+					// Hand the socket to whoever owns the directory. For an
+					// ordinary session that is us, and chown-ing a file to its
+					// owner is a no-op. It matters for pi as root in a Docker
+					// container, with the host user's socket directory
+					// bind-mounted in: without this the socket is root:root
+					// 0600 and the host's handler, running as that user, gets
+					// EACCES — measured, the click silently does nothing. It
+					// grants nothing new: the directory is 0700 and its owner
+					// could already unlink and replace the socket. Unconditional
+					// on purpose, with failure (not root, an unmapped uid under
+					// userns-remap) swallowed: a uid comparison here would be a
+					// condition only a root test run could ever make true.
+					try {
+						const owner = statSync(dir);
+						chownSync(path, owner.uid, owner.gid);
+					} catch {
+						/* not ours to give away; the 0600 owner keeps it */
 					}
 				});
 				return path;
