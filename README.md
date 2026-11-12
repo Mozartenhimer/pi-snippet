@@ -125,6 +125,48 @@ on the server to the name you actually use. The `ssh -L` socket forward that
 used to be the other way in has been removed, as have the client host list and
 the one-time bootstrap line that preceded the URL naming its own server.
 
+## Inside a Docker container
+
+The click is resolved on the host, so the handler there has to reach a socket
+that pi binds inside the container. A container shares the host's kernel, so a
+unix socket in a bind-mounted directory is one the host can connect to. Mount
+the directory the host's handler already looks in, and point pi at it:
+
+```bash
+mkdir -p -m 700 "$XDG_RUNTIME_DIR/pi-snippet"     # first, or Docker creates it root-owned
+docker run -it \
+  -v "$XDG_RUNTIME_DIR/pi-snippet:/run/pi-snippet" \
+  -e PI_SNIPPET_SOCKET_DIR=/run/pi-snippet \
+  -e PI_SNIPPET_HOST="$(hostname)" \
+  -e TERM -e TERM_PROGRAM \
+  your-image pi
+```
+
+Register the click handler on the **host**, from a local pi session or
+`/snippets`. Registering inside the container does nothing, because the
+container has no desktop.
+
+- **Root in the container is fine.** pi gives the socket to whoever owns the
+  directory, which is you, so the host's handler is allowed to connect.
+  `--user "$(id -u):$(id -g)"` works too.
+- **`PI_SNIPPET_HOST`** makes the chips name the host instead of the
+  container's random hostname. Locally, that means a click on a dead session
+  fails quietly instead of trying to `ssh` to a name that doesn't exist. Run
+  the same container on a remote server and the ssh-back relay then dials the
+  server, which is the name your machine knows. That remote case has not been
+  tested.
+- **`TERM`/`TERM_PROGRAM`** are what pi-tui uses to decide whether your
+  terminal can paint links. Without them, chips are inert. (`PI_HYPERLINKS=1`
+  forces it, as everywhere else.)
+- **Doesn't work:** Docker Desktop on Linux (a VM: sockets don't cross the
+  file share) and `userns-remap` (the directory's owner has no uid inside the
+  container). On SELinux hosts, add `:z` to the mount.
+
+`sudo bash scripts/docker-click.sh` checks this on a real Docker daemon. It
+runs pi's socket server in a container both as root and with `--user`, runs
+the generated handler on the host as an ordinary user, and confirms the click
+arrives.
+
 ## Inferred chips: not Fully baked yet
 
 Besides the tags the model writes itself, a second small model can read each finished message and add more tags. The mode exists and might work if you hold it right.

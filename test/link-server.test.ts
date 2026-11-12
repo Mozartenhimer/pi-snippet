@@ -7,7 +7,7 @@
  * debris from a killed session does not stop the next one starting, and that
  * nothing arriving from outside the process can insert text of its own.
  */
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chownSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -68,6 +68,40 @@ describe("the click socket", () => {
 		// And it cleans up after itself, so the next session starts clean.
 		expect(existsSync(path!)).toBe(false);
 	});
+
+	it("leaves the socket owned by whoever owns the directory, as an ordinary user does", async () => {
+		const server = serverFor({ inserted: [] });
+		const path = server.start();
+		try {
+			await new Promise((r) => setTimeout(r, 50));
+			expect(statSync(path!).uid).toBe(statSync(dir).uid);
+		} finally {
+			server.stop();
+		}
+	});
+
+	/**
+	 * pi as root in a Docker container, the host user's socket directory
+	 * bind-mounted in: a root-owned 0600 socket there is one the host's
+	 * handler cannot connect to, and the click does nothing. Needs root to
+	 * give a file away, so it runs only where the suite does.
+	 */
+	it.skipIf(process.getuid?.() !== 0)(
+		"hands the socket to the directory's owner when bound as root into someone else's directory",
+		async () => {
+			chownSync(dir, 1500, 1500);
+			const server = serverFor({ inserted: [] });
+			const path = server.start();
+			try {
+				await new Promise((r) => setTimeout(r, 50));
+				const st = statSync(path!);
+				expect([st.uid, st.gid]).toEqual([1500, 1500]);
+				expect(st.mode & 0o777).toBe(0o600);
+			} finally {
+				server.stop();
+			}
+		},
+	);
 
 	it("inserts the suggestion a forwarded click names", async () => {
 		const inserted: string[] = [];
